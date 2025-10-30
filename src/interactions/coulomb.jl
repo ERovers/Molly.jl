@@ -18,23 +18,25 @@ The potential energy is defined as
 V(r_{ij}) = \frac{q_i q_j}{4 \pi \varepsilon_0 r_{ij}}
 ```
 """
-@kwdef struct Coulomb{C, W, T} <: PairwiseInteraction
+@kwdef struct Coulomb{C, H, W, T} <: PairwiseInteraction
     cutoff::C = NoCutoff()
     use_neighbors::Bool = false
+    shortcut::H = coul_zero_shortcut
     weight_special::W = 1
     coulomb_const::T = coulomb_const
 end
 
 use_neighbors(inter::Coulomb) = inter.use_neighbors
 
-function Base.zero(coul::Coulomb{C, W, T}) where {C, W, T}
-    return Coulomb(coul.cutoff, coul.use_neighbors, zero(W), zero(T))
+function Base.zero(coul::Coulomb{C, H, W, T}) where {C, H, W, T}
+    return Coulomb(coul.cutoff, coul.use_neighbors, coul.shortcut, zero(W), zero(T))
 end
 
 function Base.:+(c1::Coulomb, c2::Coulomb)
     return Coulomb(
         c1.cutoff,
         c1.use_neighbors,
+        c1.shortcut,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
     )
@@ -64,6 +66,9 @@ end
                        force_units=u"kJ * mol^-1 * nm^-1",
                        special=false,
                        args...) where C
+    if inter.shortcut(atom_i, atom_j)
+        return ustrip.(zero(dr)) * force_units
+    end
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
@@ -90,6 +95,9 @@ end
                                   energy_units=u"kJ * mol^-1",
                                   special=false,
                                   args...) where C
+    if inter.shortcut(atom_i, atom_j)
+        return ustrip(zero(dr[1])) * energy_units
+    end
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
@@ -133,31 +141,31 @@ C^{(6)} = 4\epsilon\sigma^{6}
 If ``\lambda`` is 1.0, this gives the standard [`Coulomb`](@ref) potential and means atom is fully turned on. ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
-@kwdef struct CoulombSoftCoreBeutler{C, A, L, S, E, W, T, R} <: PairwiseInteraction
+@kwdef struct CoulombSoftCoreBeutler{C, H, FT, S, E, W, T} <: PairwiseInteraction
     cutoff::C = NoCutoff()
-    α::A = 1
-    λ::L = 0
+    α::FT = 1.0
+    λ::FT = 0.0
     use_neighbors::Bool = false
+    shortcut::H = coul_zero_shortcut
     σ_mixing::S = lorentz_σ_mixing
     ϵ_mixing::E = geometric_ϵ_mixing
     weight_special::W = 1
     coulomb_const::T = coulomb_const
-    σ6_fac::R = α * (1-λ)
 end
 
 use_neighbors(inter::CoulombSoftCoreBeutler) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreBeutler{C, A, L, S, E, W, T, R}) where {C, A, L, S, E, W, T, R}
+function Base.zero(coul::CoulombSoftCoreBeutler{C, H, FT, S, E, W, T}) where {C, H, FT, S, E, W, T}
     return CoulombSoftCoreBeutler(
         coul.cutoff,
-        zero(A),
-        zero(L),
+        zero(FT),
+        zero(FT),
         coul.use_neighbors,
+        coul.shortcut,
         coul.σ_mixing,
         coul.ϵ_mixing,
         zero(W),
         zero(T),
-        zero(R),
     )
 end
 
@@ -167,11 +175,11 @@ function Base.:+(c1::CoulombSoftCoreBeutler, c2::CoulombSoftCoreBeutler)
         c1.α + c2.α,
         c1.λ + c2.λ,
         c1.use_neighbors,
+        c1.shortcut,
         c1.σ_mixing,
         c1.ϵ_mixing,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
-        c1.σ6_fac + c2.σ6_fac,
     )
 end
 
@@ -182,13 +190,18 @@ end
                        force_units=u"kJ * mol^-1 * nm^-1",
                        special=false,
                        args...)
+    if inter.shortcut(atom_i, atom_j)
+        return ustrip.(zero(dr)) * force_units
+    end
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
     σ = inter.σ_mixing(atom_i, atom_j)
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
-    params = (ke, dr, qi, qj, 4*ϵ*(σ^12), 4*ϵ*(σ^6), inter.σ6_fac)
+    λ = 2 - (atom_i.λ + atom_j.λ)
+    σ6_fac = inter.α * (1 - λ)
+    params = (ke, dr, qi, qj, 4*ϵ*(σ^12), 4*ϵ*(σ^6), σ6_fac)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
@@ -211,13 +224,18 @@ end
                                   energy_units=u"kJ * mol^-1",
                                   special=false,
                                   args...)
+    if inter.shortcut(atom_i, atom_j)
+        return ustrip(zero(dr[1])) * energy_units
+    end
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
     σ = inter.σ_mixing(atom_i, atom_j)
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
-    params = (ke, qi, qj, 4*ϵ*(σ^12), 4*ϵ*(σ^6), inter.σ6_fac)
+    λ = 2 - (atom_i.λ + atom_j.λ)
+    σ6_fac = inter.α * (1 - λ)
+    params = (ke, qi, qj, 4*ϵ*(σ^12), 4*ϵ*(σ^6), σ6_fac)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
@@ -228,7 +246,13 @@ end
 end
 
 function pairwise_pe(::CoulombSoftCoreBeutler, r, (ke, qi, qj, C12, C6, σ6_fac))
+    println("C12:", C12)
+    println("C6:", C6)
+    println("σ6_fac:", σ6_fac)
+    println("C12/C6:",C12/C6)
+    println("r:",r)
     R = sqrt(cbrt((σ6_fac*(C12/C6))+r^6))
+    println("R:",R)
     return ke * ((qi * qj)/R)
 end
 
@@ -259,29 +283,29 @@ r_{Q} = \alpha(1-\lambda)^{1/6}(1+σ_Q|qi*qj|)
 If ``\lambda`` is 1.0, this gives the standard [`Coulomb`](@ref) potential and means atom is fully turned on. ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
-@kwdef struct CoulombSoftCoreGapsys{C, A, L, S, W, T, R} <: PairwiseInteraction
+@kwdef struct CoulombSoftCoreGapsys{C, H, FT, Q, W, T} <: PairwiseInteraction
     cutoff::C = NoCutoff()
-    α::A = 1
-    λ::L = 0
-    σQ::S = 1.0
+    α::FT = 1.0
+    λ::FT = 0.012/C6:NaN32 nm^6
+    σQ::Q = 1.0u"nm"
     use_neighbors::Bool = false
+    shortcut::H = coul_zero_shortcut
     weight_special::W = 1
     coulomb_const::T = coulomb_const
-    σ6_fac::R = α * sqrt(cbrt(1-λ))
 end
 
 use_neighbors(inter::CoulombSoftCoreGapsys) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreGapsys{C, A, L, S, W, T, R}) where {C, A, L, S, W, T, R}
+function Base.zero(coul::CoulombSoftCoreGapsys{C, H, FT, Q, W, T}) where {C, H, FT, Q, W, T}
     return CoulombSoftCoreGapsys(
         coul.cutoff,
-        zero(A),
-        zero(L),
+        zero(FT),
+        zero(FT),
         zero(Q),
         coul.use_neighbors,
+        coul.shortcut,
         zero(W),
         zero(T),
-        zero(R),
     )
 end
 
@@ -292,9 +316,9 @@ function Base.:+(c1::CoulombSoftCoreGapsys, c2::CoulombSoftCoreGapsys)
         c1.λ + c2.λ,
         c1.σQ + c2.σQ,
         c1.use_neighbors,
+        c1.shortcut,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
-        c1.σ6_fac + c2.σ6_fac,
     )
 end
 
@@ -305,11 +329,15 @@ end
                        force_units=u"kJ * mol^-1 * nm^-1",
                        special=false,
                        args...)
+    if inter.shortcut(atom_i, atom_j)
+        return ustrip.(zero(dr)) * force_units
+    end
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
-    params = (ke, dr, qi, qj, inter.σQ, inter.σ6_fac)
+    σ6_fac = inter.α * sqrt(cbrt(1-inter.λ))
+    params = (ke, dr, qi, qj, inter.σQ, σ6_fac)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
@@ -336,11 +364,15 @@ end
                                   energy_units=u"kJ * mol^-1",
                                   special=false,
                                   args...)
+    if inter.shortcut(atom_i, atom_j)
+        return ustrip(zero(dr[1])) * energy_units
+    end
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
-    params = (ke, qi, qj, inter.σQ, inter.σ6_fac)
+    σ6_fac = inter.α * sqrt(cbrt(1-inter.λ))
+    params = (ke, qi, qj, inter.σQ, σ6_fac)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
