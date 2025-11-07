@@ -98,6 +98,7 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
     end
+
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
@@ -141,7 +142,7 @@ C^{(6)} = 4\epsilon\sigma^{6}
 If ``\lambda`` is 1.0, this gives the standard [`Coulomb`](@ref) potential and means atom is fully turned on. ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
-@kwdef struct CoulombSoftCoreBeutler{C, H, FT, S, E, W, T} <: PairwiseInteraction
+@kwdef struct CoulombSoftCoreBeutler{C, H, FT, S, E, W, T, SC} <: PairwiseInteraction
     cutoff::C = NoCutoff()
     α::FT = 1.0
     λ::FT = 0.0
@@ -151,11 +152,12 @@ If ``\lambda`` is 1.0, this gives the standard [`Coulomb`](@ref) potential and m
     ϵ_mixing::E = geometric_ϵ_mixing
     weight_special::W = 1
     coulomb_const::T = coulomb_const
+    sc_sigma::SC = 0.3u"nm^6"
 end
 
 use_neighbors(inter::CoulombSoftCoreBeutler) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreBeutler{C, H, FT, S, E, W, T}) where {C, H, FT, S, E, W, T}
+function Base.zero(coul::CoulombSoftCoreBeutler{C, H, FT, S, E, W, T, SC}) where {C, H, FT, S, E, W, T, SC}
     return CoulombSoftCoreBeutler(
         coul.cutoff,
         zero(FT),
@@ -166,6 +168,7 @@ function Base.zero(coul::CoulombSoftCoreBeutler{C, H, FT, S, E, W, T}) where {C,
         coul.ϵ_mixing,
         zero(W),
         zero(T),
+        zero(SC),
     )
 end
 
@@ -180,6 +183,7 @@ function Base.:+(c1::CoulombSoftCoreBeutler, c2::CoulombSoftCoreBeutler)
         c1.ϵ_mixing,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
+        c1.sc_sigma,
     )
 end
 
@@ -197,11 +201,16 @@ end
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
-    σ = inter.σ_mixing(atom_i, atom_j)
-    ϵ = inter.ϵ_mixing(atom_i, atom_j)
-    λ = 2 - (atom_i.λ + atom_j.λ)
-    σ6_fac = inter.α * (1 - λ)
-    params = (ke, dr, qi, qj, 4*ϵ*(σ^12), 4*ϵ*(σ^6), σ6_fac)
+    if iszero_value(atom_i.ϵ) || iszero_value(atom_j.ϵ) ||
+           iszero_value(atom_i.σ) || iszero_value(atom_j.σ)
+        sc_sigma = inter.sc_sigma
+    else
+        σ = inter.σ_mixing(atom_i, atom_j)
+        ϵ = inter.ϵ_mixing(atom_i, atom_j)
+        sc_sigma = (4*ϵ*(σ^12))/(4*ϵ*(σ^6))
+    end
+    σ6_fac = inter.α * (1 - inter.λ)
+    params = (ke, dr, qi, qj, sc_sigma, σ6_fac)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
@@ -212,8 +221,8 @@ end
     end
 end
 
-function pairwise_force(::CoulombSoftCoreBeutler, r, (ke, dr, qi, qj, C12, C6, σ6_fac))
-    R = ((σ6_fac*(C12/C6))+r^6)*sqrt(cbrt(((σ6_fac*(C12/C6))+r^6)))
+function pairwise_force(::CoulombSoftCoreBeutler, r, (ke, dr, qi, qj, sc_sigma, σ6_fac))
+    R = ((σ6_fac*(sc_sigma))+r^6)*sqrt(cbrt(((σ6_fac*(sc_sigma))+r^6)))
     return ke * ((qi*qj)/R) * (r^5)
 end
 
@@ -231,11 +240,16 @@ end
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
-    σ = inter.σ_mixing(atom_i, atom_j)
-    ϵ = inter.ϵ_mixing(atom_i, atom_j)
-    λ = 2 - (atom_i.λ + atom_j.λ)
-    σ6_fac = inter.α * (1 - λ)
-    params = (ke, qi, qj, 4*ϵ*(σ^12), 4*ϵ*(σ^6), σ6_fac)
+    if iszero_value(atom_i.ϵ) || iszero_value(atom_j.ϵ) ||
+           iszero_value(atom_i.σ) || iszero_value(atom_j.σ)
+        sc_sigma = inter.sc_sigma
+    else
+        σ = inter.σ_mixing(atom_i, atom_j)
+        ϵ = inter.ϵ_mixing(atom_i, atom_j)
+        sc_sigma = (4*ϵ*(σ^12))/(4*ϵ*(σ^6))
+    end
+    σ6_fac = inter.α * (1 - inter.λ)
+    params = (ke, qi, qj, sc_sigma, σ6_fac)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
@@ -245,14 +259,8 @@ end
     end
 end
 
-function pairwise_pe(::CoulombSoftCoreBeutler, r, (ke, qi, qj, C12, C6, σ6_fac))
-    println("C12:", C12)
-    println("C6:", C6)
-    println("σ6_fac:", σ6_fac)
-    println("C12/C6:",C12/C6)
-    println("r:",r)
-    R = sqrt(cbrt((σ6_fac*(C12/C6))+r^6))
-    println("R:",R)
+function pairwise_pe(::CoulombSoftCoreBeutler, r, (ke, qi, qj, sc_sigma, σ6_fac))
+    R = sqrt(cbrt((σ6_fac*(sc_sigma))+r^6))
     return ke * ((qi * qj)/R)
 end
 
@@ -286,7 +294,7 @@ If ``\lambda`` is 1.0, this gives the standard [`Coulomb`](@ref) potential and m
 @kwdef struct CoulombSoftCoreGapsys{C, H, FT, Q, W, T} <: PairwiseInteraction
     cutoff::C = NoCutoff()
     α::FT = 1.0
-    λ::FT = 0.012/C6:NaN32 nm^6
+    λ::FT = 0.0
     σQ::Q = 1.0u"nm"
     use_neighbors::Bool = false
     shortcut::H = coul_zero_shortcut
@@ -336,8 +344,17 @@ end
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
-    σ6_fac = inter.α * sqrt(cbrt(1-inter.λ))
-    params = (ke, dr, qi, qj, inter.σQ, σ6_fac)
+    if iszero_value(inter.λ)
+        if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
+            λ = minimum((atom_i.λ,atom_j.λ))
+        else
+            λ = lorentz_λ_mixing(atom_i, atom_j)
+        end
+    else
+        λ = inter.λ
+    end
+    σ6_fac = inter.α * sqrt(cbrt(1-λ))
+    params = (ke, dr, qi, qj, inter.σQ, σ6_fac, λ)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
@@ -348,12 +365,12 @@ end
     end
 end
 
-function pairwise_force(::CoulombSoftCoreGapsys, r, (ke, dr, qi, qj, σQ, σ6_fac))
+function pairwise_force(::CoulombSoftCoreGapsys, r, (ke, dr, qi, qj, σQ, σ6_fac, λ))
     R = σ6_fac*(1u"nm"+(σQ*abs(qi*qj)))
     if r >= R
-        return ke * ((qi*qj)/(r^2))
-    elseif r < R
-        return ke * (-(((2*qi*qj)/(R^3)) * r) + ((3*qi*qj)/(R^2))) 
+        return λ * (ke * ((qi*qj)/(r^2)))
+    else
+        return λ * (ke * (-(((2*qi*qj)/(R^3)) * r) + ((3*qi*qj)/(R^2)))) 
     end
 end
 
@@ -367,12 +384,22 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
     end
+
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
-    σ6_fac = inter.α * sqrt(cbrt(1-inter.λ))
-    params = (ke, qi, qj, inter.σQ, σ6_fac)
+    if iszero_value(inter.λ)
+        if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
+            λ = minimum((atom_i.λ,atom_j.λ))
+        else
+            λ = lorentz_λ_mixing(atom_i, atom_j)
+        end
+    else
+        λ = inter.λ
+    end
+    σ6_fac = inter.α * sqrt(cbrt(1-λ))
+    params = (ke, qi, qj, inter.σQ, σ6_fac, λ)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
@@ -382,12 +409,12 @@ end
     end
 end
 
-function pairwise_pe(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac))
+function pairwise_pe(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac, λ))
     R = σ6_fac*(1u"nm"+(σQ*abs(qi*qj)))
     if r >= R
-        return ke * ((qi*qj)/r)
-    elseif r < R
-        return ke * ((((qi*qj)/(R^3))*(r^2))-(((3*qi*qj)/(R^2))*r)+((3*qi*qj)/R))
+        return λ * (ke * ((qi*qj)/r))
+    else
+        return λ * (ke * ((((qi*qj)/(R^3))*(r^2))-(((3*qi*qj)/(R^2))*r)+((3*qi*qj)/R)))
     end
 end
 

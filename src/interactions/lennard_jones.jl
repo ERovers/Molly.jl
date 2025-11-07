@@ -118,6 +118,7 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
     end
+
     σ = inter.σ_mixing(atom_i, atom_j)
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
 
@@ -350,10 +351,19 @@ end
     end
     σ = inter.σ_mixing(atom_i, atom_j)
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
-
+    if iszero_value(inter.λ)
+        if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
+            λ = minimum((atom_i.λ,atom_j.λ))
+        else
+            λ = lorentz_λ_mixing(atom_i, atom_j)
+        end
+    else
+        λ = inter.λ
+    end
+    
     cutoff = inter.cutoff
     r = norm(dr)
-    params = (dr, 4*ϵ*(σ^12), 4*ϵ*(σ^6))
+    params = (dr, 4*ϵ*(σ^12), 4*ϵ*(σ^6), λ)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
@@ -364,14 +374,13 @@ end
     end
 end
 
-function pairwise_force(inter::LennardJonesSoftCoreGapsys{C, FT, H, S, E, W}, r, (dr, C12, C6)) where {C, FT, H, S, E, W}
-    frac = FT(26/7)
-    R = inter.α*sqrt(cbrt((frac*(C12/C6)*(1-inter.λ))))
+function pairwise_force(inter::LennardJonesSoftCoreGapsys, r, (dr, C12, C6, λ))
+    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-λ))/7))
     invR = 1/R
     if r >= R
-        return (((12*C12)/r^13)-((6*C6)/r^7))
+        return λ * ((((12*C12)/r^13)-((6*C6)/r^7)))
     else
-        return (((-156*C12*(invR^14)) + (42*C6*(invR^8)))*r + (168*C12*(invR^13)) - (48*C6*(invR^7)))
+        return λ * ((((-156*C12*(invR^14)) + (42*C6*(invR^8)))*r + (168*C12*(invR^13)) - (48*C6*(invR^7))))
     end
 end
 
@@ -387,10 +396,19 @@ end
     end
     σ = inter.σ_mixing(atom_i, atom_j)
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
-
+    if iszero_value(inter.λ)
+        if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
+            λ = minimum((atom_i.λ, atom_j.λ))
+        else
+            λ = lorentz_λ_mixing(atom_i, atom_j)
+        end
+    else
+        λ = inter.λ
+    end
+    
     cutoff = inter.cutoff
     r = norm(dr)
-    params = (4*ϵ*(σ^12), 4*ϵ*(σ^6))
+    params = (4*ϵ*(σ^12), 4*ϵ*(σ^6), λ)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
@@ -400,14 +418,13 @@ end
     end
 end
 
-function pairwise_pe(inter::LennardJonesSoftCoreGapsys{C, FT, H, S, E, W}, r, (C12, C6)) where {C, FT, H, S, E, W}
-    frac = FT(26/7)
-    R = inter.α*sqrt(cbrt((frac*(C12/C6)*(1-inter.λ))))
+function pairwise_pe(inter::LennardJonesSoftCoreGapsys, r, (C12, C6, λ))
+    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-λ))/7))
     invR = inv(R)
     if r >= R
-        return (C12/(r^12))-(C6/(r^6))
+        return λ * ((C12/(r^12))-(C6/(r^6)))
     else
-        return (((78*C12*(invR^14)) - (21*C6*(invR^8)))*(r^2) - ((168*C12*(invR^13)) - (48*C6*(invR^7)))*r + (91*C12*(invR^12)) - (28*C6*(invR^6)))
+        return λ * ((((78*C12*(invR^14)) - (21*C6*(invR^8)))*(r^2) - ((168*C12*(invR^13)) - (48*C6*(invR^7)))*r + (91*C12*(invR^12)) - (28*C6*(invR^6))))
     end
 end
 
