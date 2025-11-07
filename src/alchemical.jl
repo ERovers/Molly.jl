@@ -43,11 +43,6 @@ function Base.show(io::IO, a::Atom_L)
 end
 
 # Shortcuts
-function lj_zero_shortcut(atom_i, atom_j)
-    return iszero_value(atom_i.ϵ) || iszero_value(atom_j.ϵ) ||
-           iszero_value(atom_i.σ) || iszero_value(atom_j.σ)
-end
-
 function lj_λ_less_one_shortcut(atom_i, atom_j)
     return iszero_value(atom_i.ϵ) || iszero_value(atom_j.ϵ) ||
            iszero_value(atom_i.σ) || iszero_value(atom_j.σ) ||
