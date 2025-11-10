@@ -150,7 +150,7 @@ If ``\lambda`` is zero the interaction is turned off.
 @kwdef struct CoulombSoftCoreBeutler{C, H, FT, S, E, W, T, SC} <: PairwiseInteraction
     cutoff::C = NoCutoff()
     α::FT = 1.0
-    λ::FT = 0.0
+    λ::FT = nothing
     use_neighbors::Bool = false
     shortcut::H = coul_zero_shortcut
     σ_mixing::S = lorentz_σ_mixing
@@ -214,8 +214,19 @@ end
         ϵ = inter.ϵ_mixing(atom_i, atom_j)
         sc_sigma = (4*ϵ*(σ^12))/(4*ϵ*(σ^6))
     end
-    σ6_fac = inter.α * (1 - inter.λ)
-    params = (ke, dr, qi, qj, sc_sigma, σ6_fac)
+
+    if λ == nothing
+        if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
+            λ = minimum((atom_i.λ,atom_j.λ))
+        else
+            λ = lorentz_λ_mixing(atom_i, atom_j)
+        end
+    else
+        λ = inter.λ
+    end
+    
+    σ6_fac = inter.α * (1 - λ)
+    params = (ke, dr, qi, qj, sc_sigma, σ6_fac, λ)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
@@ -226,10 +237,10 @@ end
     end
 end
 
-function pairwise_force(::CoulombSoftCoreBeutler, r, (ke, qi, qj, C12, C6, σ6_fac))
+function pairwise_force(::CoulombSoftCoreBeutler, r, (ke, qi, qj, C12, C6, σ6_fac, λ))
     r3 = r^3
     R = ((σ6_fac*(C12/C6))+(r3*r3))*sqrt(cbrt(((σ6_fac*(C12/C6))+(r3*r3))))
-    return ke * ((qi*qj)/R) * (r3*r*r)
+    return λ * (ke * ((qi*qj)/R) * (r3*r*r))
 end
 
 @inline function potential_energy(inter::CoulombSoftCoreBeutler,
@@ -254,8 +265,19 @@ end
         ϵ = inter.ϵ_mixing(atom_i, atom_j)
         sc_sigma = (4*ϵ*(σ^12))/(4*ϵ*(σ^6))
     end
-    σ6_fac = inter.α * (1 - inter.λ)
-    params = (ke, qi, qj, sc_sigma, σ6_fac)
+
+    if λ == nothing
+        if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
+            λ = minimum((atom_i.λ,atom_j.λ))
+        else
+            λ = lorentz_λ_mixing(atom_i, atom_j)
+        end
+    else
+        λ = inter.λ
+    end
+    
+    σ6_fac = inter.α * (1 - λ)
+    params = (ke, qi, qj, sc_sigma, σ6_fac, λ)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
@@ -265,9 +287,9 @@ end
     end
 end
 
-function pairwise_pe(::CoulombSoftCoreBeutler, r, (ke, qi, qj, sc_sigma, σ6_fac))
+function pairwise_pe(::CoulombSoftCoreBeutler, r, (ke, qi, qj, sc_sigma, σ6_fac, λ))
     R = sqrt(cbrt((σ6_fac*(sc_sigma))+r^6))
-    return ke * ((qi * qj)/R)
+    return λ * (ke * ((qi * qj)/R))
 end
 
 @doc raw"""
@@ -304,7 +326,7 @@ If ``\lambda`` is zero the interaction is turned off.
 @kwdef struct CoulombSoftCoreGapsys{C, H, FT, Q, W, T} <: PairwiseInteraction
     cutoff::C = NoCutoff()
     α::FT = 1.0
-    λ::FT = 0.0
+    λ::FT = nothing
     σQ::Q = 1.0u"nm"
     use_neighbors::Bool = false
     shortcut::H = coul_zero_shortcut
@@ -354,7 +376,7 @@ end
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
-    if iszero_value(inter.λ)
+    if λ == nothing
         if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
             λ = minimum((atom_i.λ,atom_j.λ))
         else
@@ -375,13 +397,13 @@ end
     end
 end
 
-function pairwise_force(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac))
+function pairwise_force(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac, λ))
     qij = qi * qj
     R = σ6_fac*(oneunit(r)+(σQ*abs(qij)))
     if r >= R
-        return ke * (qij/(r^2))
+        return λ * (ke * (qij/(r^2)))
     elseif r < R
-        return ke * (-(((2*qij)/(R^3)) * r) + ((3*qij)/(R^2)))
+        return λ * (ke * (-(((2*qij)/(R^3)) * r) + ((3*qij)/(R^2))))
     end
 end
 
@@ -400,7 +422,7 @@ end
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
-    if iszero_value(inter.λ)
+    if λ == nothing
         if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
             λ = minimum((atom_i.λ,atom_j.λ))
         else
@@ -420,13 +442,13 @@ end
     end
 end
 
-function pairwise_pe(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac))
+function pairwise_pe(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac, λ))
     qij = qi * qj
     R = σ6_fac*(oneunit(r)+(σQ*abs(qij)))
     if r >= R
-        return ke * (qij/r)
+        return λ * (ke * (qij/r))
     elseif r < R
-        return ke * (((qij/(R^3))*(r^2))-(((3*qij)/(R^2))*r)+((3*qij)/R))
+        return λ * (ke * (((qij/(R^3))*(r^2))-(((3*qij)/(R^2))*r)+((3*qij)/R)))
     end
 end
 
