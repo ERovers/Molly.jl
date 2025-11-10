@@ -9,7 +9,6 @@
     dr12 = vector(c1, c2, boundary)
     dr13 = vector(c1, c3, boundary)
     dr14 = vector(c1, c4, boundary)
-    
 
     @test Molly.lorentz_σ_mixing(a1, a2)        ≈ 0.25u"nm"
     @test Molly.lorentz_ϵ_mixing(a1, a2)        ≈ 0.15u"kJ * mol^-1"
@@ -666,7 +665,7 @@ end
                     array_type=AT,
                     dist_cutoff=T(dist_cutoff),
                     dist_buffer=zero(T(dist_cutoff)),
-                    nonbonded_method="ewald",
+                    nonbonded_method=:ewald,
                     center_coords=false,
                 )
                 sys = System(
@@ -736,7 +735,7 @@ end
                         array_type=AT,
                         dist_cutoff=T(dist_cutoff),
                         dist_buffer=zero(T(dist_cutoff)),
-                        nonbonded_method="pme",
+                        nonbonded_method=:pme,
                         center_coords=false,
                     )
                     sys = System(

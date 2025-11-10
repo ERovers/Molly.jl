@@ -3,8 +3,7 @@
 
 export
     ImplicitSolventOBC,
-    ImplicitSolventGBN2,
-    born_radii_and_grad
+    ImplicitSolventGBN2
 
 # Generalized Born (GB) implicit solvent models augmented with the
 #   hydrophobic solvent accessible surface area (SA) term
@@ -653,14 +652,9 @@ function born_radii_sum(or, offset, I, α, β, γ)
     return B, B_grad
 end
 
-"""
-    born_radii_and_grad(inter, coords, boundary)
-
-Calculate Born radii, gradients of Born radii and surface area overlap
-with respect to atomic distance.
-
-Custom GBSA methods should implement this function.
-"""
+# Calculate Born radii, gradients of Born radii and surface area overlap
+#     with respect to atomic distance
+# Custom GBSA methods should implement this function
 function born_radii_and_grad(inter::ImplicitSolventOBC{T}, coords, boundary) where T
     Is = fill(zero(T) / unit(inter.dist_cutoff), length(coords))
     @inbounds for i in eachindex(coords)
@@ -930,8 +924,8 @@ function forces_gbsa!(fs, sys, inter, Bs, B_grads, I_grads, born_forces, atom_ch
     return fs
 end
 
-function forces_gbsa!(fs, sys::System{D, AT, T}, inter, Bs, B_grads, I_grads, born_forces,
-                      atom_charges) where {D, AT <: AbstractGPUArray, T}
+function forces_gbsa!(fs, sys::System{D, <:AbstractGPUArray, T}, inter, Bs, B_grads, I_grads,
+                      born_forces, atom_charges) where {D, T}
     fs_mat_1, born_forces_mod_ustrip = gbsa_force_1_gpu(sys.coords, sys.boundary, inter.dist_cutoff,
                         inter.factor_solute, inter.factor_solvent, inter.kappa, Bs, atom_charges,
                         sys.force_units)

@@ -141,11 +141,13 @@ function pairwise_pe(::LennardJones, r, (σ2, ϵ))
 end
 
 @doc raw"""
-    LennardJonesSoftCoreBeutler(; cutoff, α, λ, use_neighbors, shortcut, σ_mixing, ϵ_mixing,
-                         weight_special)
+    LennardJonesSoftCoreBeutler(; cutoff, α, λ, use_neighbors, shortcut, σ_mixing,
+                                ϵ_mixing, weight_special)
 
-The Lennard-Jones 6-12 interaction between two atoms with a soft core, used for appearing and disappearing of atoms.
+The Lennard-Jones 6-12 interaction between two atoms with a soft core, used for
+the appearing and disappearing of atoms.
 
+See [Beutler et al. 1994](https://doi.org/10.1016/0009-2614(94)00397-1).
 The potential energy is defined as
 ```math
 V(r_{ij}) = \frac{C^{(12)}}{r_{LJ}^{12}} - \frac{C^{(6)}}{r_{LJ}^{6}}
@@ -163,7 +165,10 @@ and
 C^{(12)} = 4\epsilon\sigma^{12}
 C^{(6)} = 4\epsilon\sigma^{6}
 ```
-If ``\lambda`` is 1.0, this gives the standard [`LennardJones`](@ref) potential and means atom is fully turned on. ``\lambda`` is zero the interaction is turned off.
+
+If ``\lambda`` is 1.0, this gives the standard [`LennardJones`](@ref) potential and means
+the atom is fully turned on.
+If ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
 @kwdef struct LennardJonesSoftCoreBeutler{C, H, S, E, FT, W} <: PairwiseInteraction
@@ -215,7 +220,7 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip.(zero(dr)) * force_units
     end
-    σ = inter.σ_mixing(atom_i, atom_j)
+    σ6 = inter.σ_mixing(atom_i, atom_j)^6
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
 
     cutoff = inter.cutoff
@@ -232,9 +237,10 @@ end
     end
 end
 
-function pairwise_force(::LennardJonesSoftCoreBeutler, r, (dr, C12, C6, σ6_fac))
+function pairwise_force(::LennardJonesSoftCoreBeutler, r, (C12, C6, σ6_fac))
     R = sqrt(cbrt((σ6_fac*(C12/C6))+r^6))
-    return (((12*C12)/(R^13)) - ((6*C6)/(R^7)))*((r/R)^5)
+    R6 = R^6
+    return (((12*C12)/(R6*R6*R)) - ((6*C6)/(R6*R)))*((r/R)^5)
 end
 
 @inline function potential_energy(inter::LennardJonesSoftCoreBeutler,
@@ -247,13 +253,14 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
     end
-    σ = inter.σ_mixing(atom_i, atom_j)
+    σ6 = inter.σ_mixing(atom_i, atom_j)^6
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
 
     cutoff = inter.cutoff
     r = norm(dr)
     σ6_fac = inter.α * (1-inter.λ)
-    params = (4*ϵ*(σ^12), 4*ϵ*(σ^6), σ6_fac)
+    C6 = 4 * ϵ * σ6
+    params = (C6 * σ6, C6, inter.σ6_fac)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
@@ -264,16 +271,18 @@ end
 end
 
 function pairwise_pe(::LennardJonesSoftCoreBeutler, r, (C12, C6, σ6_fac))
-    R = sqrt(cbrt((σ6_fac*(C12/C6))+r^6))
-    return ((C12/(R^12)) - (C6/(R^6)))
+    R6 = (σ6_fac*(C12/C6))+r^6
+    return ((C12/(R6*R6)) - (C6/(R6)))
 end
 
 @doc raw"""
-    LennardJonesSoftCoreGapsys(; cutoff, α, λ, use_neighbors, shortcut, σ_mixing, ϵ_mixing,
-                         weight_special)
+    LennardJonesSoftCoreGapsys(; cutoff, α, λ, use_neighbors, shortcut, σ_mixing,
+                               ϵ_mixing, weight_special)
 
-The Lennard-Jones 6-12 interaction between two atoms with a soft core potential based on the Gapsys et al. 2012 (JCTC) paper, used for appearing and disappearing of atoms
+The Lennard-Jones 6-12 interaction between two atoms with a soft core potential, used for
+the appearing and disappearing of atoms.
 
+See [Gapsys et al. 2012](https://doi.org/10.1021/ct300220p).
 The potential energy is defined as
 ```math
 V(r_{ij}) = \left\{ \begin{array}{cl}
@@ -297,7 +306,10 @@ and
 C^{(12)} = 4\epsilon\sigma^{12}
 C^{(6)} = 4\epsilon\sigma^{6}
 ```
-If ``\lambda`` are 1.0 this gives the standard [`LennardJones`](@ref) potential and means atom is fully turned on. ``\lambda`` is zero the interaction is turned off.
+
+If ``\lambda`` is 1.0, this gives the standard [`LennardJones`](@ref) potential and means
+the atom is fully turned on.
+If ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
 @kwdef struct LennardJonesSoftCoreGapsys{C, FT, H, S, E, W} <: PairwiseInteraction
@@ -349,7 +361,7 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip.(zero(dr)) * force_units
     end
-    σ = inter.σ_mixing(atom_i, atom_j)
+    σ6 = inter.σ_mixing(atom_i, atom_j)^6
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
     if iszero_value(inter.λ)
         if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
@@ -363,7 +375,8 @@ end
     
     cutoff = inter.cutoff
     r = norm(dr)
-    params = (dr, 4*ϵ*(σ^12), 4*ϵ*(σ^6), λ)
+    C6 = 4 * ϵ * σ6
+    params = (C6 * σ6, C6)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
@@ -374,13 +387,17 @@ end
     end
 end
 
-function pairwise_force(inter::LennardJonesSoftCoreGapsys, r, (dr, C12, C6, λ))
-    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-λ))/7))
-    invR = 1/R
+function pairwise_force(inter::LennardJonesSoftCoreGapsys, r, (C12, C6))
+    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-inter.λ)/7)))
+    r6 = r^6
+    invR = inv(R)
+    invR2 = invR^2
+    invR6 = invR^6
     if r >= R
-        return λ * ((((12*C12)/r^13)-((6*C6)/r^7)))
-    else
-        return λ * ((((-156*C12*(invR^14)) + (42*C6*(invR^8)))*r + (168*C12*(invR^13)) - (48*C6*(invR^7))))
+        return (((12*C12)/(r6*r6*r))-((6*C6)/(r6*r)))
+    elseif r < R
+        return (((-156*C12*(invR6*invR6*invR2)) + (42*C6*(invR2*invR6)))*r +
+                    (168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR)))
     end
 end
 
@@ -394,7 +411,7 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
     end
-    σ = inter.σ_mixing(atom_i, atom_j)
+    σ6 = inter.σ_mixing(atom_i, atom_j)^6
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
     if iszero_value(inter.λ)
         if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
@@ -408,7 +425,8 @@ end
     
     cutoff = inter.cutoff
     r = norm(dr)
-    params = (4*ϵ*(σ^12), 4*ϵ*(σ^6), λ)
+    C6 = 4 * ϵ * σ6
+    params = (C6 * σ6, C6)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
@@ -418,13 +436,18 @@ end
     end
 end
 
-function pairwise_pe(inter::LennardJonesSoftCoreGapsys, r, (C12, C6, λ))
-    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-λ))/7))
+function pairwise_pe(inter::LennardJonesSoftCoreGapsys, r, (C12, C6))
+    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-inter.λ)/7)))
+    r6 = r^6
     invR = inv(R)
+    invR2 = invR^2
+    invR6 = invR^6
     if r >= R
-        return λ * ((C12/(r^12))-(C6/(r^6)))
-    else
-        return λ * ((((78*C12*(invR^14)) - (21*C6*(invR^8)))*(r^2) - ((168*C12*(invR^13)) - (48*C6*(invR^7)))*r + (91*C12*(invR^12)) - (28*C6*(invR^6))))
+        return (C12/(r6*r6))-(C6/(r6))
+    elseif r < R
+        return ((78*C12*(invR6*invR6*invR2)) - (21*C6*(invR2*invR6)))*(r^2) -
+                    ((168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR)))*r +
+                    (91*C12*(invR6*invR6)) - (28*C6*(invR6))
     end
 end
 

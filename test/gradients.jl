@@ -39,7 +39,7 @@ end
     AT = Array
     ff = MolecularForceField(
         T,
-        joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml", "his.xml"])...,
+        joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml"])...,
         units=false,
     )
     sys = System(
@@ -47,7 +47,7 @@ end
         ff;
         units=false,
         array_type=AT,
-        nonbonded_method="pme",
+        nonbonded_method=:pme,
         grad_safe=true,
     )
 
@@ -311,14 +311,14 @@ end
 
 @testset "Differentiable protein" begin
     function create_sys(AT)
-        ff = MolecularForceField(joinpath.(ff_dir, ["ff99SBildn.xml", "his.xml"])...; units=false)
+        ff = MolecularForceField(joinpath.(ff_dir, ["ff99SBildn.xml"])...; units=false)
         return System(
             joinpath(data_dir, "6mrr_nowater.pdb"),
             ff;
             units=false,
             array_type=AT,
-            nonbonded_method="cutoff",
-            implicit_solvent="gbn2",
+            nonbonded_method=:cutoff,
+            implicit_solvent=:gbn2,
             kappa=0.7,
         )
     end
@@ -326,7 +326,7 @@ end
     EnzymeRules.inactive(::typeof(create_sys), args...) = nothing
 
     function test_energy_grad(params_dic, sys_ref, coords, neighbor_finder, n_threads)
-        atoms, pis, sis, gis = inject_gradients(sys_ref, params_dic)
+        atoms, pis, sis, gis = Molly.inject_gradients(sys_ref, params_dic)
 
         sys = System(
             atoms=atoms,
@@ -344,7 +344,7 @@ end
     end
 
     function test_forces_grad(params_dic, sys_ref, coords, neighbor_finder, n_threads)
-        atoms, pis, sis, gis = inject_gradients(sys_ref, params_dic)
+        atoms, pis, sis, gis = Molly.inject_gradients(sys_ref, params_dic)
 
         sys = System(
             atoms=atoms,
@@ -363,7 +363,7 @@ end
     end
 
     function test_sim_grad(params_dic, sys_ref, coords, neighbor_finder, n_threads)
-        atoms, pis, sis, gis = inject_gradients(sys_ref, params_dic)
+        atoms, pis, sis, gis = Molly.inject_gradients(sys_ref, params_dic)
 
         sys = System(
             atoms=atoms,
