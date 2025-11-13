@@ -178,6 +178,7 @@ struct MolecularForceField{T, M, D, E, K}
     bond_types::Dict{Tuple{String, String}, HarmonicBond{K, D}}
     angle_types::Dict{Tuple{String, String, String}, HarmonicAngle{E, T}}
     torsion_types::Dict{Tuple{String, String, String, String}, PeriodicTorsionType{T, E}}
+    custom_torsion_types::Dict{Tuple{String, String, String, String}, ImproperTorsion{E, T}}
     torsion_order::String
     weight_14_coulomb::T
     weight_14_lj::T
@@ -195,6 +196,7 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
     bond_types = Dict{Tuple{String, String}, HarmonicBond}()
     angle_types = Dict{Tuple{String, String, String}, HarmonicAngle}()
     torsion_types = Dict{Tuple{String, String, String, String}, PeriodicTorsionType}()
+    custom_torsion_types = Dict{Tuple{String, String, String, String}, ImproperTorsion}()
     torsion_order = ""
     weight_14_coulomb, weight_14_lj = one(T), one(T)
     weight_14_coulomb_set, weight_14_lj_set = false, false
@@ -210,6 +212,7 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
                                                                           resname_replacements  = resname_replacements,
                                                                           atomname_replacements = atomname_replacements)
     end
+        
     if !isnothing(custom_residue_templates)
         standard_bonds = load_bond_definitions(; xmlpath = custom_residue_templates,
                                                  standardBonds = standard_bonds) 
@@ -467,10 +470,80 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
                 @warn "Residue patches not currently supported, this entry will be ignored"
             elseif entry_name == "Include"
                 @warn "File includes not currently supported, this entry will be ignored"
+            elseif entry_name == "LennardJonesForce"
+                if haskey(entry, "lj14scale")
+                    weight_14_lj_new = parse(T, entry["lj14scale"])
+                    if weight_14_lj_set && weight_14_lj_new != weight_14_lj
+                        error("found multiple NonbondedForce entries with different lj14scale values")
+                    end
+                    weight_14_lj = weight_14_lj_new
+                    weight_14_lj_set = true
+                end
+                for atom_or_attr in eachelement(entry)
+                    if atom_or_attr.name == "Atom"
+                        ch = haskey(atom_or_attr, "charge") ? parse(T, atom_or_attr["charge"]) : missing
+                        σ = units ? parse(T, atom_or_attr["sigma"])u"nm" : parse(T, atom_or_attr["sigma"])
+                        ϵ = units ? parse(T, atom_or_attr["epsilon"])u"kJ * mol^-1" : parse(T, atom_or_attr["epsilon"])
+                        if haskey(atom_or_attr, "class")
+                            class = atom_or_attr["class"] 
+                            for (type, atom) in atom_types
+                                if atom.class == class
+                                    if !haskey(atom_types, type)
+                                        # Skip types not defined above
+                                        continue
+                                    end
+                                    complete_type = AtomType{T, typeof(atom.mass), typeof(σ), typeof(ϵ)}(
+                                                type, atom.class, atom.element,
+                                                ch, atom.mass, σ, ϵ)
+                                    atom_types[type] = complete_type
+                                end
+                            end
+                        else
+                            # Update previous atom types
+                            atom_type = atom_or_attr["type"]
+                            if !haskey(atom_types, atom_type)
+                                # Skip types not defined above
+                                continue
+                            end
+                            partial_type = atom_types[atom_type]
+                            
+                            complete_type = AtomType{T, typeof(partial_type.mass), typeof(σ), typeof(ϵ)}(
+                                        partial_type.type, partial_type.class, partial_type.element,
+                                        ch, partial_type.mass, σ, ϵ)
+                            atom_types[atom_type] = complete_type
+                        end
+                        
+                    elseif atom_or_attr.name == "UseAttributeFromResidue"
+                        if !(atom_or_attr["name"] in attributes_from_residue)
+                            push!(attributes_from_residue, atom_or_attr["name"])
+                        end
+                        if atom_or_attr["name"] != "charge"
+                            @warn "UseAttributeFromResidue only currently supported for charge, " *
+                                  "this entry will be ignored"
+                        end
+                    end
+                end    
+            elseif entry_name == "CustomTorsionForce"
+                improper_order = haskey(entry, "ordering") ? entry["ordering"] : "default"
+                for atom_or_attr in eachelement(entry)
+                    if atom_or_attr.name == "Improper"
+                        k = units ? parse(T, atom_or_attr["k"])u"kJ * mol^-1" : parse(T, ang["k"])
+                        θ0 = parse(T, atom_or_attr["theta0"])
+    
+                        atom_type_1 = atom_or_attr["type1"]
+                        atom_type_2 = atom_or_attr["type2"]
+                        atom_type_3 = atom_or_attr["type3"]
+                        atom_type_4 = atom_or_attr["type4"]
+                        
+                        custom_torsion_types[(atom_type_1, atom_type_2, atom_type_3, atom_type_4)] = ImproperTorsion(k, θ0)
+                    else
+                        continue
+                    end 
+                end
             elseif entry_name in ("RBTorsionForce", "CMAPTorsionForce", "GBSAOBCForce",
                                   "CustomBondForce", "CustomAngleForce", "CustomTorsionForce",
                                   "CustomNonbondedForce", "CustomGBForce", "CustomHbondForce",
-                                  "CustomManyParticleForce", "LennardJonesForce")
+                                  "CustomManyParticleForce")
                 @warn "$entry_name entries not currently supported, this entry will be ignored"
             end
         end
@@ -485,7 +558,7 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
         M, D, E, K = T, T, T, T
     end
     return MolecularForceField{T, M, D, E, K}(atom_types, residues, bond_types, angle_types,
-            torsion_types, torsion_order, weight_14_coulomb, weight_14_lj, attributes_from_residue,
+            torsion_types, custom_torsion_types, torsion_order, weight_14_coulomb, weight_14_lj, attributes_from_residue,
             resname_replacements, atomname_replacements, standard_bonds)
 end
 
@@ -496,7 +569,8 @@ end
 function Base.show(io::IO, ff::MolecularForceField)
     print(io, "MolecularForceField with ", length(ff.atom_types), " atom types, ",
             length(ff.residues), " residues, ", length(ff.bond_types), " bond types, ",
-            length(ff.angle_types), " angle types and ", length(ff.torsion_types), " torsion types")
+            length(ff.angle_types), " angle types, ", length(ff.torsion_types), " torsion types and ", 
+            length(ff.custom_torsion_types), " custom torsion types")
 end
 
 get_res_id(res) = (Chemfiles.id(res), ("chainid" in Chemfiles.list_properties(res)) ? Chemfiles.property(res, "chainid") : "X")
@@ -715,7 +789,7 @@ function System(coord_file::AbstractString,
     end
     
     canonical_system = canonicalize_system(top, resname_replacements, atomname_replacements)
-
+        println(canonical_system)
     top_bonds = create_bonds(canonical_system, standard_bonds)
     if disulfide_bonds
         top_bonds = create_disulfide_bonds(coords, boundary_used, canonical_system, top_bonds)
@@ -797,6 +871,7 @@ function System(coord_file::AbstractString,
     angles_il  = InteractionList3Atoms(HarmonicAngle)
     tors_il    = InteractionList4Atoms(PeriodicTorsion)
     imps_il    = InteractionList4Atoms(PeriodicTorsion)
+    custom_il  = InteractionList4Atoms(ImproperTorsion)
     eligible = trues(n_atoms, n_atoms)
     special  = falses(n_atoms, n_atoms)
     torsion_n_terms = 6
@@ -947,6 +1022,27 @@ function System(coord_file::AbstractString,
                 end
             end
         end
+
+        for kkey in keys(force_field.custom_torsion_types)
+            (kkey[1] == t1 || kkey[1] == "") || continue
+            for ke2 in permutations(kkey[2:end])
+                valid = true
+                score = (kkey[1] == t1 ? 1 : 0)
+                for (idx, v) in enumerate(ke2)
+                    if v == (t2,t3,t4)[idx]
+                        score += 1
+                    elseif v != ""
+                        valid = false
+                        break
+                    end
+                end
+                if valid && (score == 4 || best_score == -1)
+                    best_score = score
+                    best_key   = kkey
+                    tt         = force_field.custom_torsion_types[kkey]
+                end
+            end
+        end
         isnothing(tt) && continue
 
         r2 = resnum_from_atom_idx(j, canonical_system)
@@ -1031,10 +1127,11 @@ function System(coord_file::AbstractString,
                                 proper=t.proper, n_terms=torsion_n_terms) for t in tors_il.inters]
     imps_pad = [PeriodicTorsion(periodicities=t.periodicities, phases=t.phases, ks=t.ks,
                                 proper=t.proper, n_terms=torsion_n_terms) for t in imps_il.inters]
+    custom_pad = [ImproperTorsion(k=t.k, θ0=t.θ0) for t in custom_il.inters]
 
     return System(T, AT, to_device([atoms_abst...], AT), coords, boundary_used, velocities, atoms_data,
-                  loggers, data, bonds_il, angles_il, tors_il, imps_il, tors_pad, imps_pad,
-                  eligible, special, units, dist_cutoff, constraints, rigid_water, nonbonded_method,
+                  loggers, data, bonds_il, angles_il, tors_il, imps_il, custom_il, tors_pad, imps_pad,
+                  custom_pad, eligible, special, units, dist_cutoff, constraints, rigid_water, nonbonded_method,
                   ewald_error_tol, approximate_pme, neighbor_finder_type, implicit_solvent, kappa,
                   grad_safe, dist_neighbors, weight_14_lj, weight_14_coulomb)
 end
@@ -1443,8 +1540,8 @@ function exchange_constraints(T, bonds_all, angles_all, atoms_data, constraints_
 end
 
 function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
-                loggers, data, bonds_all, angles_all, torsions, impropers, torsion_inters_pad,
-                improper_inters_pad, eligible, special, units, dist_cutoff, constraints_type,
+                loggers, data, bonds_all, angles_all, torsions, impropers, custom, torsion_inters_pad,
+                improper_inters_pad, custom_inters_pad, eligible, special, units, dist_cutoff, constraints_type,
                 rigid_water, nonbonded_method, ewald_error_tol, approximate_pme,
                 neighbor_finder_type, implicit_solvent, kappa, grad_safe, dist_neighbors,
                 weight_14_lj, weight_14_coulomb)
@@ -1552,6 +1649,16 @@ function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
             to_device(impropers.ls, AT),
             to_device(improper_inters_pad, AT),
             impropers.types,
+        ))
+    end
+    if length(custom.is) > 0
+        push!(specific_inter_array, InteractionList4Atoms(
+            to_device(custom.is, AT),
+            to_device(custom.js, AT),
+            to_device(custom.ks, AT),
+            to_device(custom.ls, AT),
+            to_device(custom_inters_pad, AT),
+            custom.types,
         ))
     end
     specific_inter_lists = tuple(specific_inter_array...)
