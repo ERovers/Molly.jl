@@ -191,8 +191,9 @@ function potential_energy(sys::System, neighbors, buffers=nothing, step_n::Integ
         sils_2_atoms = filter(il -> il isa InteractionList2Atoms, values(sys.specific_inter_lists))
         sils_3_atoms = filter(il -> il isa InteractionList3Atoms, values(sys.specific_inter_lists))
         sils_4_atoms = filter(il -> il isa InteractionList4Atoms, values(sys.specific_inter_lists))
+        sils_5_atoms = filter(il -> il isa InteractionList5Atoms, values(sys.specific_inter_lists))
         pe += specific_pe(sys.atoms, sys.coords, sys.velocities, sys.boundary, sys.energy_units,
-                          sils_1_atoms, sils_2_atoms, sils_3_atoms, sils_4_atoms, Val(T), step_n)
+                          sils_1_atoms, sils_2_atoms, sils_3_atoms, sils_4_atoms, sils_5_atoms, Val(T), step_n)
     end
 
     for inter in values(sys.general_inters)
@@ -298,7 +299,7 @@ function pairwise_pe_loop(atoms, coords, velocities, boundary, neighbors, energy
 end
 
 function specific_pe(atoms, coords, velocities, boundary, energy_units, sils_1_atoms,
-                     sils_2_atoms, sils_3_atoms, sils_4_atoms, ::Val{T}, step_n=0) where T
+                     sils_2_atoms, sils_3_atoms, sils_4_atoms, sils_5_atoms, ::Val{T}, step_n=0) where T
     pe = zero(T) * energy_units
 
     @inbounds for inter_list in sils_1_atoms
@@ -335,6 +336,18 @@ function specific_pe(atoms, coords, velocities, boundary, energy_units, sils_1_a
             pe_inter = potential_energy(inter, coords[i], coords[j], coords[k], coords[l], boundary,
                                   atoms[i], atoms[j], atoms[k], atoms[l], energy_units,
                                   velocities[i], velocities[j], velocities[k], velocities[l],
+                                  step_n)
+            check_energy_units(pe_inter, energy_units)
+            pe += pe_inter
+        end
+    end
+
+    @inbounds for inter_list in sils_5_atoms
+        for (i, j, k, l, m, inter) in zip(inter_list.is, inter_list.js, inter_list.ks, inter_list.ls,
+                                       inter_list.ms, inter_list.inters)
+            pe_inter = potential_energy(inter, coords[i], coords[j], coords[k], coords[l], coords[m], 
+                                  boundary, atoms[i], atoms[j], atoms[k], atoms[l], atoms[m], energy_units,
+                                  velocities[i], velocities[j], velocities[k], velocities[l], velocities[m],
                                   step_n)
             check_energy_units(pe_inter, energy_units)
             pe += pe_inter

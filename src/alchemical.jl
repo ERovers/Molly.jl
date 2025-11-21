@@ -27,7 +27,7 @@ Similar to Atom Type, but with λ scaling for alchemical transformations.
 - `λ::L=1.0: the λ scaling factor (if λ is 1.0, all potentials are regular energy potentials)
 """
 
-@kwdef struct Atom_L{T, M, C, S, E, L}
+@kwdef struct Atom_L{T, M, C, S, E, L, Q}
     index::Int = 1
     atom_type::T = 1
     mass::M = 1.0u"g/mol"
@@ -35,6 +35,7 @@ Similar to Atom Type, but with λ scaling for alchemical transformations.
     σ::S = 0.0u"nm"
     ϵ::E = 0.0u"kJ * mol^-1"
     λ::L = 1.0
+    charge2::Q = 0.0
 end
 
 function Base.show(io::IO, a::Atom_L)

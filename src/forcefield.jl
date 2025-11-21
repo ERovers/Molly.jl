@@ -44,6 +44,8 @@ struct AtomType{C, M, S, E}
     mass::M
     σ::S
     ϵ::E
+    σ14::S
+    ϵ14::E
 end
 
 struct PeriodicTorsionType{T, E}
@@ -51,6 +53,16 @@ struct PeriodicTorsionType{T, E}
     phases::Vector{T}
     ks::Vector{E}
     proper::Bool
+end
+
+struct CustomTorsionType{T, E}
+    k::E
+    θ0::T
+end
+
+struct CMAPTorsionType{T}
+    size::Int
+    energy::Vector{T}
 end
 
 # These are used to materialise the bonded terms present
@@ -79,11 +91,20 @@ struct AngleRule{K,D}
     params::HarmonicAngle{K,D}
     specificity::UInt8
 end
-struct AngleResolver{K,D}
-    rules::Vector{AngleRule{K,D}}
+# Amoeba Urey Bradley angle
+struct UreyRule{K,D}
+    p1::AtomPattern
+    p2::AtomPattern
+    p3::AtomPattern
+    params::HarmonicBond{K,D}
+    specificity::UInt8
+end
+struct AngleResolver{KA,DA,K,D}
+    rules::Vector{Union{AngleRule{KA,DA}, UreyRule{K,D}}}
     # index by center atom
     idx::Dict{Tuple{Symbol,String}, Vector{Int}}  # (:type|:class|:wild, key)
-    cache::Dict{NTuple{3,String}, Union{HarmonicAngle{K,D},Nothing}}
+    angle_cache::Dict{NTuple{3,String}, Any}
+    urey_cache::Dict{NTuple{3,String}, Any}
 end
 
 # Torsions
@@ -98,8 +119,20 @@ struct TorsionRule{T,E}
     params::PeriodicTorsionType{T,E}
     specificity::UInt8         # TYPE=2, CLASS=1, WILD=0, used to bias towards specific definitions
 end
+
+struct CustomRule{T,E}
+    p1::AtomPattern
+    p2::AtomPattern
+    p3::AtomPattern
+    p4::AtomPattern
+    proper::Bool
+    has_wildcard::Bool         # any position is WILD
+    params::CustomTorsionType{T,E}
+    specificity::UInt8         # TYPE=2, CLASS=1, WILD=0, used to bias towards specific definitions
+end
+
 struct TorsionResolver{T,E}
-    rules::Vector{TorsionRule{T,E}}
+    rules::Vector{Union{TorsionRule{T,E}, CustomRule{T,E}}}
 
     # candidate lists keyed by type1 or class1 for impropers, and by type2 or class2 for propers
     impropers_by_type1::Dict{String,Vector{Int}}
@@ -116,6 +149,25 @@ struct TorsionResolver{T,E}
     improper_cache::Dict{NTuple{4,String}, Any}
 end
 
+# CMAPs
+struct CMAPRule{E}
+    p1::AtomPattern
+    p2::AtomPattern
+    p3::AtomPattern
+    p4::AtomPattern
+    p5::AtomPattern
+    has_wildcard::Bool
+    params::CMAPTorsionType{E}
+    specificity::UInt8         # TYPE=2, CLASS=1, WILD=0, used to bias towards specific definitions
+end
+
+struct CMAPResolver{E}
+    rules::Vector{CMAPRule{E}}
+    # indexes: ordered type pair, ordered class pair
+    idx::Dict{Tuple{Symbol,String,String,String,String,String}, Vector{Int}}
+    cache::Dict{Tuple{String,String,String,String,String}, Union{CMAPTorsionType{E},Nothing}}
+end
+
 
 # Proper torsions: lookup with cache
 @inline function find_proper_match(
@@ -128,7 +180,7 @@ end
     pc  = resolver.proper_cache
     if haskey(pc, sig)
         v = pc[sig]
-        return v === :miss ? (nothing, nothing) : (resolver.rules[v::Int].params, resolver.rules[v::Int].specificity)
+        return v === :miss ? (nothing, nothing) : (resolver.rules[v::Int ].params, resolver.rules[v::Int ].specificity)
     end
 
     # candidates by central atom 2 (type → class → wild)
@@ -260,8 +312,9 @@ struct MolecularForceField{T, M, D, DA, E, K, KA}
     # Class/torsion machinery
     class_of::Dict{String,String}                # type -> class
     bond_resolver::BondResolver{K, D}
-    angle_resolver::AngleResolver{KA, DA}
+    angle_resolver::AngleResolver{KA,DA,K,D}
     torsion_resolver::TorsionResolver{T, E}
+    cmap_resolver::CMAPResolver{E}                                                            
 end
 
 function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=true,
@@ -297,7 +350,10 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
     # Accumulators for pattern rules
     bond_rule_specs   = Any[]
     angle_rule_specs  = Any[]
+    urey_rule_specs   = Any[]
     torsion_rule_spec = Any[]
+    custom_rule_spec  = Any[]
+    cmap_rule_spec    = Any[]
     nb_class_updates  = Any[]
 
     for ff_file in ff_files
@@ -316,8 +372,10 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
                     atom_mass = units ? parse(T, atom_type["mass"])u"g/mol" : parse(T, atom_type["mass"])
                     σ = units ? T(-1u"nm") : T(-1)
                     ϵ = units ? T(-1u"kJ * mol^-1") : T(-1)
+                    σ14 = units ? T(-1u"nm") : T(-1)
+                    ϵ14 = units ? T(-1u"kJ * mol^-1") : T(-1)
                     atom_types[at_type] = AtomType{T, typeof(atom_mass), typeof(σ), typeof(ϵ)}(
-                        at_type, at_class, element, ch, atom_mass, σ, ϵ)
+                        at_type, at_class, element, ch, atom_mass, σ, ϵ, σ14, ϵ14)
                     type_info[at_type] = (element, at_class)
                 end
 
@@ -410,7 +468,53 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
                     params_any = (:params, periodicities, phases, ks, proper)
                     push!(torsion_rule_spec, (:torsion_rule, p1, p2, p3, p4, spec, params_any, local_ordering, has_wildcard))
                 end
+            
+            elseif entry_name == "CustomTorsionForce"
+                if entry["energy"] != "k*(theta-theta0)^2"
+                    @warn "Only Custom Torsion forces in the form k*(theta-theta0)^2 are currently supported; ignoring"
+                    continue
+                end    
+                for torsion in eachelement(entry)
+                    if torsion.name == "Improper"
+                        proper        = torsion.name == "Proper"
+                        k = units ? parse(T, torsion["k"])u"kJ * mol^-1" : parse(T, ang["k"])
+                        θ0 = parse(T, torsion["theta0"])
+    
+                        p1 = pattern_from_attrs(torsion, "type1","class1")
+                        p2 = pattern_from_attrs(torsion, "type2","class2")
+                        p3 = pattern_from_attrs(torsion, "type3","class3")
+                        p4 = pattern_from_attrs(torsion, "type4","class4")
 
+                        has_wildcard = (p1.kind==WILD || p2.kind==WILD || p3.kind==WILD || p4.kind==WILD)
+                        spec = UInt8(spec_score(p1)+spec_score(p2)+spec_score(p3)+spec_score(p4))
+                        params_any = (:params, k, θ0, proper)
+                        push!(torsion_rule_spec, (:custom_rule, p1, p2, p3, p4, spec, params_any, has_wildcard))
+                    end
+                end
+
+            elseif entry_name == "CMAPTorsionForce"
+                maps = Any[]
+                index0 = false
+                for cmap in eachelement(entry)
+                    if cmap.name == "Map"
+                        push!(maps, parse.(T,split(cmap.content))u"kJ * mol^-1")
+                    elseif cmap.name == "Torsion"
+                        mapn = parse(Int,cmap["map"])
+                        if mapn == 0 || index0
+                            index0 = true
+                            mapn += 1
+                        end
+                        p1   = pattern_from_attrs(cmap, "type1","class1")
+                        p2   = pattern_from_attrs(cmap, "type2","class2")
+                        p3   = pattern_from_attrs(cmap, "type3","class3")
+                        p4   = pattern_from_attrs(cmap, "type4","class4")
+                        p5   = pattern_from_attrs(cmap, "type5","class5")
+
+                        has_wildcard = (p1.kind==WILD || p2.kind==WILD || p3.kind==WILD || p4.kind==WILD)
+                        push!(cmap_rule_spec, (:cmap_rule, p1, p2, p3, p4, p5, has_wildcard, CMAPTorsionType(Int(sqrt(length(maps[mapn]))), maps[mapn])))
+                    end
+                end
+                    
             elseif entry_name == "NonbondedForce"
                 if haskey(entry, "coulomb14scale")
                     w = parse(T, entry["coulomb14scale"])
@@ -440,7 +544,7 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
                             if haskey(atom_types, atom_type)
                                 at = atom_types[atom_type]
                                 atom_types[atom_type] = AtomType{T, typeof(at.mass), typeof(σ), typeof(ϵ)}(
-                                    at.type, at.class, at.element, ch, at.mass, σ, ϵ)
+                                    at.type, at.class, at.element, ch, at.mass, σ, ϵ, at.σ14, at.ϵ14)
                             end
                         end
                     elseif atom_or_attr.name == "UseAttributeFromResidue"
@@ -452,15 +556,73 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
                         end
                     end
                 end
-
+            elseif entry_name == "LennardJonesForce"
+                if haskey(entry, "coulomb14scale")
+                    w = parse(T, entry["coulomb14scale"])
+                    if weight_14_coulomb_set && w != weight_14_coulomb
+                        error("multiple NonbondedForce entries with different coulomb14scale")
+                    end
+                    weight_14_coulomb = w
+                    weight_14_coulomb_set = true
+                end
+                if haskey(entry, "lj14scale")
+                    w = parse(T, entry["lj14scale"])
+                    if weight_14_lj_set && w != weight_14_lj
+                        error("multiple NonbondedForce entries with different lj14scale")
+                    end
+                    weight_14_lj = w
+                    weight_14_lj_set = true
+                end
+                for atom_or_attr in eachelement(entry)
+                    if atom_or_attr.name == "Atom"
+                        ch = haskey(atom_or_attr, "charge") ? parse(T, atom_or_attr["charge"]) : missing
+                        σ  = units ? parse(T, atom_or_attr["sigma"])u"nm" : parse(T, atom_or_attr["sigma"])
+                        ϵ  = units ? parse(T, atom_or_attr["epsilon"])u"kJ * mol^-1" : parse(T, atom_or_attr["epsilon"])
+                        if haskey(atom_or_attr, "sigma14")
+                            σ14 = units ? parse(T, atom_or_attr["sigma14"])u"nm" : parse(T, atom_or_attr["sigma14"])
+                            ϵ14 = units ? parse(T, atom_or_attr["epsilon14"])u"kJ * mol^-1" : parse(T, atom_or_attr["epsilon14"])
+                        else
+                            σ14 = units ? T(-1u"nm") : T(-1)
+                            ϵ14 = units ? T(-1u"kJ * mol^-1") : T(-1)
+                        end
+                        if haskey(atom_or_attr, "class")
+                            push!(nb_class_updates, (:nb_class, atom_or_attr["class"], ch, σ, ϵ, σ14, ϵ14))
+                        else
+                            atom_type = atom_or_attr["type"]
+                            if haskey(atom_types, atom_type)
+                                at = atom_types[atom_type]
+                                atom_types[atom_type] = AtomType{T, typeof(at.mass), typeof(σ), typeof(ϵ)}(
+                                    at.type, at.class, at.element, ch, at.mass, σ, ϵ, σ14, ϵ14)
+                            end
+                        end
+                    elseif atom_or_attr.name == "UseAttributeFromResidue"
+                        if !(atom_or_attr["name"] in attributes_from_residue)
+                            push!(attributes_from_residue, atom_or_attr["name"])
+                        end
+                        if atom_or_attr["name"] != "charge"
+                            @warn "UseAttributeFromResidue only supported for charge; ignoring"
+                        end
+                    end
+                end
+                @warn "NBFixPair currently not implemented"
+            elseif entry_name == "AmoebaUreyBradleyForce"
+                @warn "AmoebaUreyBradleyForce implemented similar to OpenMM, this class only specifies the bond parameters, the angle should be specified in HarmonicAngleForce field"
+                for ang in eachelement(entry)
+                    k  = units ? 2*parse(T, ang["k"])u"kJ * mol^-1 * nm^-2" : parse(T, ang["k"])
+                    r0 = units ? parse(T, ang["d"])u"nm"           : parse(T, ang["d"])
+                    p1 = pattern_from_attrs(ang, "type1","class1")
+                    p2 = pattern_from_attrs(ang, "type2","class2")
+                    p3 = pattern_from_attrs(ang, "type3","class3")
+                    push!(urey_rule_specs, (:urey_rule, p1,p2,p3, HarmonicBond(k,r0)))
+                end
             elseif entry_name == "Patches"
                 @warn "Residue patches not currently supported; ignoring"
             elseif entry_name == "Include"
                 @warn "File includes not currently supported; ignoring"
-            elseif entry_name in ("RBTorsionForce","CMAPTorsionForce","GBSAOBCForce",
-                                  "CustomBondForce","CustomAngleForce","CustomTorsionForce",
+            elseif entry_name in ("RBTorsionForce","GBSAOBCForce",
+                                  "CustomBondForce","CustomAngleForce",
                                   "CustomNonbondedForce","CustomGBForce","CustomHbondForce",
-                                  "CustomManyParticleForce","LennardJonesForce")
+                                  "CustomManyParticleForce")
                 @warn "$entry_name not currently supported; ignoring"
             end
         end
@@ -491,7 +653,7 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
         for t in get(types_by_class, cls, String[])
             at = atom_types[t]
             atom_types[t] = AtomType{T, typeof(at.mass), typeof(σ), typeof(ϵ)}(
-                at.type, at.class, at.element, ch, at.mass, σ, ϵ)
+                at.type, at.class, at.element, ch, at.mass, σ, ϵ, at.σ14, at.ϵ14)
         end
     end
 
@@ -518,7 +680,7 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
                                       Dict{Tuple{String,String}, Union{HarmonicBond{K,D}, Nothing}}())
 
     # Angles resolver
-    angle_rules = AngleRule{KA,DA}[]
+    angle_rules = Union{AngleRule{KA,DA},UreyRule{K,D}}[]
     aidx = Dict{Tuple{Symbol,String}, Vector{Int}}()
     for spec in angle_rule_specs
         _, p1::AtomPattern, p2::AtomPattern, p3::AtomPattern, ha::HarmonicAngle{KA,DA} = spec
@@ -533,12 +695,28 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
             push!(get!(aidx, (:wild,  ""), Int[]), i)
         end
     end
-    angle_resolver = AngleResolver{KA,DA}(angle_rules,
+
+    for spec in urey_rule_specs
+        _, p1::AtomPattern, p2::AtomPattern, p3::AtomPattern, hb::HarmonicBond{K,D} = spec
+        push!(angle_rules, UreyRule{K,D}(p1,p2,p3, hb, UInt8(spec_score(p1)+spec_score(p2)+spec_score(p3))))
+        i = length(angle_rules)
+        # central indexing: use p2 as key
+        if p2.kind==TYPE
+            push!(get!(aidx, (:type,  p2.val), Int[]), i)
+        elseif p2.kind==CLASS
+            push!(get!(aidx, (:class, p2.val), Int[]), i)
+        else
+            push!(get!(aidx, (:wild,  ""), Int[]), i)
+        end
+    end
+        
+    angle_resolver = AngleResolver{KA,DA,K,D}(angle_rules,
                                           aidx,
-                                          Dict{NTuple{3,String}, Union{HarmonicAngle{KA,DA}, Nothing}}())
+                                          Dict{NTuple{3,String}, Any}(),
+                                          Dict{NTuple{3,String}, Any}())
 
     # Torsion resolver
-    torsion_rules = TorsionRule{T,E}[]
+    torsion_rules = Union{TorsionRule{T,E}, CustomRule{T,E}}[]
 
     # candidate lists
     propers_by_type2   = Dict{String,Vector{Int}}()
@@ -576,6 +754,43 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
                     push!(wild_impropers, ridx)
                 end
             end
+        elseif item[1] === :custom_rule
+            
+            _, p1, p2, p3, p4, spec, params_any, wildcard  = item
+            _, k, θ0, proper = params_any
+            params = CustomTorsionType{T,E}(k, θ0)
+
+            push!(torsion_rules, CustomRule{T,E}(p1, p2, p3, p4, proper, wildcard, params, spec))
+            ridx = length(torsion_rules)
+
+            # OpenMM-style candidate lists
+            if p1.kind==TYPE
+                push!(get!(impropers_by_type1,  p1.val, Int[]), ridx)
+            elseif p1.kind==CLASS
+                push!(get!(impropers_by_class1, p1.val, Int[]), ridx)
+            else
+                push!(wild_impropers, ridx)
+            end
+        end
+    end
+
+    # Check whether there are not TWO definitions for improper torsions
+    per = Any[]
+    cus = Any[]
+    for rule in torsion_rules
+        if !rule.proper
+            if rule.params isa PeriodicTorsionType
+                push!(per, (rule.p1.val,rule.p2.val,rule.p3.val,rule.p4.val))
+            elseif rule.params isa CustomTorsionType
+                push!(cus, (rule.p1.val,rule.p2.val,rule.p3.val,rule.p4.val))
+            end
+        end
+    end
+    if length(cus)>0
+        for x in per
+            if x in cus
+                @warn "Two improper torsion definitions found for: " * x[1]*","*x[2]*","*x[3]*","*x[4]
+            end
         end
     end
 
@@ -591,10 +806,30 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
         Dict{NTuple{4,String}, Any}(),                          # improper_cache
     )
 
+    # CMAP resolver
+    cmap_rules = CMAPRule{E}[]
+    cmapidx = Dict{Tuple{Symbol,String,String,String,String,String}, Vector{Int}}()
+    for spec in cmap_rule_spec
+        _, p1::AtomPattern, p2::AtomPattern, p3::AtomPattern, p4::AtomPattern, p5::AtomPattern, wc::Bool, cmap::CMAPTorsionType{E}= spec
+        push!(cmap_rules, CMAPRule{E}(p1, p2, p3, p4, p5, wc, cmap, UInt8(spec_score(p1)+spec_score(p2)+spec_score(p3)+spec_score(p4)+spec_score(p5))))
+        i = length(cmap_rules)
+        # index both orientations
+        for (a,b,c,d,e) in ((p1,p2,p3,p4,p5),(p5,p4,p3,p2,p1))
+            if a.kind==TYPE && b.kind==TYPE && c.kind==TYPE && d.kind==TYPE && e.kind==TYPE
+                push!(get!(cmapidx, (:type,  a.val, b.val, c.val, d.val, e.val), Int[]), i)
+            elseif a.kind==CLASS && b.kind==CLASS && c.kind==CLASS && d.kind==CLASS && e.kind==CLASS 
+                push!(get!(cmapidx, (:class, a.val, b.val, c.val, d.val, e.val), Int[]), i)
+            end
+        end
+    end
+    cmap_resolver = CMAPResolver{E}(cmap_rules,
+                                      cmapidx, 
+                                      Dict{Tuple{String,String,String,String,String}, Union{CMAPTorsionType{E},Nothing}}())
+
     return MolecularForceField{T, M, D, DA, E, K, KA}(
         atom_types, residues, torsion_order, weight_14_coulomb, weight_14_lj, attributes_from_residue,
         resname_replacements, atomname_replacements, standard_bonds,
-        class_of, bond_resolver, angle_resolver, torsion_resolver
+        class_of, bond_resolver, angle_resolver, torsion_resolver, cmap_resolver
     )
 end
 

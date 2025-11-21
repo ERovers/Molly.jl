@@ -1,4 +1,4 @@
-export ImproperTorsion
+export CustomTorsion
 
 """
     ImproperTorsion(; k, θ0)
@@ -7,14 +7,14 @@ A improper torsion angle between four atoms.
 
 Only compatible with 3D systems.
 """
-struct ImproperTorsion{K, D}
+struct CustomTorsion{K, D}
     k::K
     θ0::D
 end
 
-ImproperTorsion(; k, θ0) = ImproperTorsion{typeof(k),typeof(θ0)}(k, θ0)
+CustomTorsion(; k, θ0) = CustomTorsion{typeof(k),typeof(θ0)}(k, θ0)
 
-@inline function force(d::ImproperTorsion, coords_i, coords_j, coords_k, coords_l, boundary, args...)
+@inline function force(d::CustomTorsion, coords_i, coords_j, coords_k, coords_l, boundary, args...)
     ab = vector(coords_i, coords_j, boundary)
     bc = vector(coords_j, coords_k, boundary)
     cd = vector(coords_k, coords_l, boundary)
@@ -35,7 +35,7 @@ ImproperTorsion(; k, θ0) = ImproperTorsion{typeof(k),typeof(θ0)}(k, θ0)
     return SpecificForce4Atoms(fi, fj, fk, fl)
 end
 
-@inline function potential_energy(d::ImproperTorsion, coords_i, coords_j, coords_k,
+@inline function potential_energy(d::CustomTorsion, coords_i, coords_j, coords_k,
                                   coords_l, boundary, args...)
     θ = torsion_angle(coords_i, coords_j, coords_k, coords_l, boundary)
     return d.k * (θ - d.θ0)^2

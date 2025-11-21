@@ -118,9 +118,9 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
     end
-
-    σ = inter.σ_mixing(atom_i, atom_j)
-    ϵ = inter.ϵ_mixing(atom_i, atom_j)
+    
+    σ = inter.σ_mixing(atom_i, atom_j, special)
+    ϵ = inter.ϵ_mixing(atom_i, atom_j, special)
 
     cutoff = inter.cutoff
     r = norm(dr)
