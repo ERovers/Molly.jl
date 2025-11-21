@@ -9,6 +9,7 @@ export
     SpecificForce2Atoms,
     SpecificForce3Atoms,
     SpecificForce4Atoms,
+    SpecificForce5Atoms,
     forces,
     forces_virial
 
@@ -107,6 +108,19 @@ struct SpecificForce4Atoms{D, T}
     f4::SVector{D, T}
 end
 
+"""
+    SpecificForce5Atoms(f1, f2, f3, f4, f5)
+
+Forces on five atoms arising from an interaction such as a CMAP torsion potential.
+"""
+struct SpecificForce5Atoms{D, T}
+    f1::SVector{D, T}
+    f2::SVector{D, T}
+    f3::SVector{D, T}
+    f4::SVector{D, T}
+    f5::SVector{D, T}
+end
+
 function SpecificForce1Atoms(f1::StaticArray{Tuple{D}, T}) where {D, T}
     return SpecificForce1Atoms{D, T}(f1)
 end
@@ -125,10 +139,17 @@ function SpecificForce4Atoms(f1::StaticArray{Tuple{D}, T}, f2::StaticArray{Tuple
     return SpecificForce4Atoms{D, T}(f1, f2, f3, f4)
 end
 
+function SpecificForce5Atoms(f1::StaticArray{Tuple{D}, T}, f2::StaticArray{Tuple{D}, T},
+                             f3::StaticArray{Tuple{D}, T}, f4::StaticArray{Tuple{D}, T},
+                             f5::StaticArray{Tuple{D}, T}) where {D, T}
+    return SpecificForce5Atoms{D, T}(f1, f2, f3, f4, f5)
+end
+
 Base.:+(x::SpecificForce1Atoms, y::SpecificForce1Atoms) = SpecificForce1Atoms(x.f1 + y.f1)
 Base.:+(x::SpecificForce2Atoms, y::SpecificForce2Atoms) = SpecificForce2Atoms(x.f1 + y.f1, x.f2 + y.f2)
 Base.:+(x::SpecificForce3Atoms, y::SpecificForce3Atoms) = SpecificForce3Atoms(x.f1 + y.f1, x.f2 + y.f2, x.f3 + y.f3)
 Base.:+(x::SpecificForce4Atoms, y::SpecificForce4Atoms) = SpecificForce4Atoms(x.f1 + y.f1, x.f2 + y.f2, x.f3 + y.f3, x.f4 + y.f4)
+Base.:+(x::SpecificForce5Atoms, y::SpecificForce5Atoms) = SpecificForce4Atoms(x.f1 + y.f1, x.f2 + y.f2, x.f3 + y.f3, x.f4 + y.f4, x.f5 + y.f5)
 
 struct BuffersCPU{F, A, V, VN, VC, KT, PT}
     fs_nounits::F

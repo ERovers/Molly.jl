@@ -102,25 +102,47 @@ struct InteractionList4Atoms{I, T} <: SpecificInteractionList{4}
     types::Vector{String}
 end
 
+"""
+    InteractionList5Atoms(is, js, ks, ls, ms, inters)
+    InteractionList5Atoms(is, js, ks, ls, ms, inters, types)
+    InteractionList5Atoms(inter_type)
+
+A list of specific interactions that involve eight atoms such as cmap corrections.
+"""
+struct InteractionList5Atoms{I, T} <: SpecificInteractionList{8}
+    is::I
+    js::I
+    ks::I
+    ls::I
+    ms::I
+    inters::T
+    types::Vector{String}
+end
+
 InteractionList1Atoms(is, inters) = InteractionList1Atoms(is, inters, fill("", length(is)))
 InteractionList2Atoms(is, js, inters) = InteractionList2Atoms(is, js, inters, fill("", length(is)))
 InteractionList3Atoms(is, js, ks, inters) = InteractionList3Atoms(is, js, ks, inters,
                                                                   fill("", length(is)))
 InteractionList4Atoms(is, js, ks, ls, inters) = InteractionList4Atoms(is, js, ks, ls, inters,
                                                                       fill("", length(is)))
+InteractionList5Atoms(is, js, ks, ls, ms, inters) = InteractionList5Atoms(is, js, ks, ls, ms,
+                                                                            inters, fill("", length(is)))
 
 InteractionList1Atoms(T) = InteractionList1Atoms{Vector{Int32}, Vector{T}}([], T[], [])
 InteractionList2Atoms(T) = InteractionList2Atoms{Vector{Int32}, Vector{T}}([], [], T[], [])
 InteractionList3Atoms(T) = InteractionList3Atoms{Vector{Int32}, Vector{T}}([], [], [], T[], [])
 InteractionList4Atoms(T) = InteractionList4Atoms{Vector{Int32}, Vector{T}}([], [], [], [], T[], [])
+InteractionList5Atoms(T) = InteractionList5Atoms{Vector{Int32}, Vector{T}}([], [], [], [], [], T[], [])
 
 interaction_type(::InteractionList1Atoms{I, T}) where {I, T} = eltype(T)
 interaction_type(::InteractionList2Atoms{I, T}) where {I, T} = eltype(T)
 interaction_type(::InteractionList3Atoms{I, T}) where {I, T} = eltype(T)
 interaction_type(::InteractionList4Atoms{I, T}) where {I, T} = eltype(T)
+interaction_type(::InteractionList5Atoms{I, T}) where {I, T} = eltype(T)
 
 Base.length(inter_list::Union{InteractionList1Atoms, InteractionList2Atoms,
-                              InteractionList3Atoms, InteractionList4Atoms}) = length(inter_list.is)
+                              InteractionList3Atoms, InteractionList4Atoms,
+                              InteractionList5Atoms}) = length(inter_list.is)
 
 function Base.zero(inter_list::InteractionList1Atoms{I, T}) where {I, T}
     n_inters = length(inter_list)
@@ -155,6 +177,19 @@ end
 function Base.zero(inter_list::InteractionList4Atoms{I, T}) where {I, T}
     n_inters = length(inter_list)
     return InteractionList4Atoms{I, T}(
+        fill(0, n_inters),
+        fill(0, n_inters),
+        fill(0, n_inters),
+        fill(0, n_inters),
+        zero.(inter_list.inters),
+        fill("", n_inters),
+    )
+end
+
+function Base.zero(inter_list::InteractionList5Atoms{I, T}) where {I, T}
+    n_inters = length(inter_list)
+    return InteractionList5Atoms{I, T}(
+        fill(0, n_inters),
         fill(0, n_inters),
         fill(0, n_inters),
         fill(0, n_inters),
@@ -201,6 +236,17 @@ function Base.:+(il1::InteractionList4Atoms{I, T}, il2::InteractionList4Atoms{I,
         il1.types,
     )
 end
+function Base.:+(il1::InteractionList5Atoms{I, T}, il2::InteractionList5Atoms{I, T}) where {I, T}
+    return InteractionList4Atoms{I, T}(
+        il1.is,
+        il1.js,
+        il1.ks,
+        il1.ls,
+        il1.ms,
+        il1.inters .+ il2.inters,
+        il1.types,
+    )
+end
 
 function inject_interaction_list(inter::InteractionList1Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
@@ -224,6 +270,12 @@ function inject_interaction_list(inter::InteractionList4Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
                                 inter.types, (params_dic,)), AT)
     InteractionList4Atoms(inter.is, inter.js, inter.ks, inter.ls, inters_grad, inter.types)
+end
+
+function inject_interaction_list(inter::InteractionList5Atoms, params_dic, AT)
+    inters_grad = to_device(inject_interaction.(from_device(inter.inters),
+                                inter.types, (params_dic,)), AT)
+    InteractionList5Atoms(inter.is, inter.js, inter.ks, inter.ls, inter.ms, inters_grad, inter.types)
 end
 
 """
@@ -254,6 +306,8 @@ The types used should be bits types if the GPU is going to be used.
     charge::C = 0.0
     σ::S = 0.0u"nm"
     ϵ::E = 0.0u"kJ * mol^-1"
+    σ14::S = -1.0u"nm"
+    ϵ14::E = -1.0u"kJ * mol^-1"
 end
 
 function Base.zero(::Atom{T, M, C, S, E}) where {T, M, C, S, E}
@@ -319,14 +373,63 @@ end
 
 no_shortcut(atom_i, atom_j) = false
 
-lorentz_σ_mixing(atom_i, atom_j) = (atom_i.σ + atom_j.σ) / 2
-lorentz_ϵ_mixing(atom_i, atom_j) = (atom_i.ϵ + atom_j.ϵ) / 2
-lorentz_λ_mixing(atom_i, atom_j) = (atom_i.λ + atom_j.λ) / 2
+# All mixing functions
+# Lorentz mixing functions with rules for 1-4 interactions
+lorentz_λ_mixing(atom_i, atom_j, special=false) = (atom_i.λ + atom_j.λ) / 2
+# lorentz_σ_mixing(atom_i, atom_j, special=false) = (atom_i.σ + atom_j.σ) / 2
+# lorentz_ϵ_mixing(atom_i, atom_j, special=false) = (atom_i.ϵ + atom_j.ϵ) / 2
 
-geometric_σ_mixing(atom_i, atom_j) = sqrt(atom_i.σ * atom_j.σ)
-geometric_ϵ_mixing(atom_i, atom_j) = sqrt(atom_i.ϵ * atom_j.ϵ)
-geometric_λ_mixing(atom_i, atom_j) = sqrt(atom_i.λ * atom_j.λ)
+function lorentz_σ_mixing(atom_i, atom_j, special=false)
+    if special
+        T = typeof(atom_i.σ)
+        σ1 = atom_i.σ14 > zero(T) ? atom_i.σ14 : atom_i.σ
+        σ2 = atom_j.σ14 > zero(T) ? atom_j.σ14 : atom_j.σ
+        return (σ1 + σ2) / 2
+    else
+        return (atom_i.σ + atom_j.σ) / 2
+    end
+end
 
+function lorentz_ϵ_mixing(atom_i, atom_j, special=false)
+    if special
+        T = typeof(atom_i.ϵ)
+        ϵ1 = atom_i.ϵ14 > zero(T) ? atom_i.ϵ14 : atom_i.ϵ
+        ϵ2 = atom_j.ϵ14 > zero(T) ? atom_j.ϵ14 : atom_j.ϵ
+        return (ϵ1 + ϵ2) / 2
+    else
+        return (atom_i.ϵ + atom_j.ϵ) / 2
+    end
+end
+
+# Geometric mixing functions with rules for 1-4 interactions
+geometric_λ_mixing(atom_i, atom_j, special=false) = sqrt(atom_i.λ * atom_j.λ)
+# geometric_σ_mixing(atom_i, atom_j, special=false) = sqrt(atom_i.σ * atom_j.σ)
+# geometric_ϵ_mixing(atom_i, atom_j, special=false) = sqrt(atom_i.ϵ * atom_j.ϵ)
+
+function geometric_σ_mixing(atom_i, atom_j, special=false)
+    if special
+        T = typeof(atom_i.σ)
+        σ1 = atom_i.σ14 > zero(T) ? atom_i.σ14 : atom_i.σ
+        σ2 = atom_j.σ14 > zero(T) ? atom_j.σ14 : atom_j.σ
+        println("σ:",atom_i.σ, ", σ14", σ1)
+        return sqrt(σ1 * σ2)
+    else
+        return sqrt(atom_i.σ * atom_j.σ)
+    end
+end
+
+function geometric_ϵ_mixing(atom_i, atom_j, special=false)
+    if special
+        T = typeof(atom_i.ϵ)
+        ϵ1 = atom_i.ϵ14 > zero(T) ? atom_i.ϵ14 : atom_i.ϵ
+        ϵ2 = atom_j.ϵ14 > zero(T) ? atom_j.ϵ14 : atom_j.ϵ
+        return sqrt(ϵ1 * ϵ2)
+    else
+        return sqrt(atom_i.ϵ * atom_j.ϵ)
+    end
+end
+
+# Waldman-Hagler mixing functions
 function waldman_hagler_σ_mixing(atom_i, atom_j)
     T = typeof(ustrip(atom_i.σ))
     return ((atom_i.σ^6 + atom_j.σ^6) / 2) ^ T(1/6)

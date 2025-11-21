@@ -255,8 +255,8 @@ end
 @inline function resolve_angle(ff::MolecularForceField, t1::String,t2::String,t3::String)
 
     key = (t1,t2,t3)
-    if haskey(ff.angle_resolver.cache, key)
-        return ff.angle_resolver.cache[key]
+    if haskey(ff.angle_resolver.angle_cache, key) || haskey(ff.angle_resolver.urey_cache, key)
+        return ff.angle_resolver.angle_cache[key], ff.angle_resolver.urey_cache[key]
     end
 
     cand = Int[]
@@ -264,28 +264,46 @@ end
     append!(cand, get(ff.angle_resolver.idx, (:class, get(ff.class_of, t2, "")), Int[]))
     append!(cand, get(ff.angle_resolver.idx, (:wild,  ""), Int[]))
 
-    best = nothing
-    bestspec = Int8(-1)
+    best_angle = nothing
+    bestspec_angle = Int8(-1)
+    best_urey = nothing
+    bestspec_urey = Int8(-1)
     @inbounds for i in cand
         r = ff.angle_resolver.rules[i]
         if matches(r.p1,t1,ff.class_of) && matches(r.p2,t2,ff.class_of) && matches(r.p3,t3,ff.class_of)
-            if r.specificity > bestspec
-                bestspec = r.specificity
-                best = r.params
+            if r isa AngleRule
+                if r.specificity > bestspec_angle
+                    bestspec_angle = r.specificity
+                    best_angle = r.params
+                end
+            elseif r isa UreyRule
+                if r.specificity > bestspec_urey
+                    bestspec_urey = r.specificity
+                    best_urey = r.params
+                end
             end
         end
         # neighbor-reversed
         if matches(r.p1,t3,ff.class_of) && matches(r.p2,t2,ff.class_of) && matches(r.p3,t1,ff.class_of)
-            if r.specificity > bestspec
-                bestspec = r.specificity
-                best = r.params
+            if r isa AngleRule
+                if r.specificity > bestspec_angle
+                    bestspec_angle = r.specificity
+                    best_angle = r.params
+                end
+            elseif r isa UreyRule
+                if r.specificity > bestspec_urey
+                    bestspec_urey = r.specificity
+                    best_urey = r.params
+                end
             end
         end
     end
     # symmetric caching
-    ff.angle_resolver.cache[(t1,t2,t3)] = best
-    ff.angle_resolver.cache[(t3,t2,t1)] = best
-    return best
+    ff.angle_resolver.angle_cache[(t1,t2,t3)] = best_angle
+    ff.angle_resolver.angle_cache[(t3,t2,t1)] = best_angle
+    ff.angle_resolver.urey_cache[(t1,t2,t3)] = best_urey
+    ff.angle_resolver.urey_cache[(t3,t2,t1)] = best_urey
+    return best_angle, best_urey
 end
 
 
@@ -331,6 +349,54 @@ end
         src = (t1,t2,t3,t4)
         key = (src[perm[1]], src[perm[2]], src[perm[3]], src[perm[4]])
         return (p, key)
+    end
+end
+
+@inline function resolve_cmap(
+    ff::MolecularForceField,
+    t1::String,t2::String,t3::String,t4::String,t5::String    
+)
+    key = (t1,t2,t3,t4,t5)
+    if haskey(ff.cmap_resolver.cache, key)
+        return ff.cmap_resolver.cache[key]
+    end
+
+    cand = Int[]
+    append!(cand, get(ff.cmap_resolver.idx, (:type,  t1, t2, t3, t4, t5), Int[]))
+    append!(cand, get(ff.cmap_resolver.idx, (:type,  t5, t4, t3, t2, t1), Int[]))
+    c1 = get(ff.class_of, t1, "")
+    c2 = get(ff.class_of, t2, "")
+    c3 = get(ff.class_of, t3, "")
+    c4 = get(ff.class_of, t4, "")
+    c5 = get(ff.class_of, t5, "")
+    append!(cand, get(ff.cmap_resolver.idx, (:class, c1, c2, c3, c4, c5), Int[]))
+    append!(cand, get(ff.cmap_resolver.idx, (:class, c5, c4, c3, c2, c1), Int[]))
+
+    best = nothing
+    bestspec = Int8(-1)
+    @inbounds for i in cand
+        r = ff.cmap_resolver.rules[i]
+        if (matches(r.p1, t1, ff.class_of) && matches(r.p2, t2, ff.class_of) && matches(r.p3, t3, ff.class_of) &&
+            matches(r.p4, t4, ff.class_of) && matches(r.p5, t5, ff.class_of))
+            if match == nothing || !r.has_wildcard
+                bestspec = r.specificity
+                best = r.params
+                if !r.has_wildcard
+                    ff.cmap_resolver.cache[(t1,t2,t3,t4,t5)] = best
+                    return (best, (t1,t2,t3,t4,t5))
+                end
+            elseif r.specificity > bestspec
+                bestspec = r.specificity
+                best = r.params
+            end
+        end
+    end
+    if best == nothing
+        return (nothing, ("","","",""))
+    else
+        # symmetric caching
+        ff.cmap_resolver.cache[(t1,t2,t3,t4,t5)] = best
+        return (best, (t1,t2,t3,t4,t5))
     end
 end
 
@@ -526,6 +592,7 @@ function System(coord_file::AbstractString,
     top_angles    = build_angles(adj, top_bonds)
     top_torsions  = build_torsions(adj, top_angles)
     top_impropers = build_impropers(adj)
+    top_cmap      = build_cmaps(adj, top_torsions)
 
     # Allocate interaction lists and particles
     atoms_abst = Atom[]
@@ -534,6 +601,9 @@ function System(coord_file::AbstractString,
     angles_il  = InteractionList3Atoms(HarmonicAngle)
     tors_il    = InteractionList4Atoms(PeriodicTorsion)
     imps_il    = InteractionList4Atoms(PeriodicTorsion)
+    custom_il  = InteractionList4Atoms(CustomTorsion)
+    cmaps_il   = InteractionList5Atoms(CMAPTorsion)
+
     eligible = trues(n_atoms, n_atoms)
     special  = falses(n_atoms, n_atoms)
     torsion_n_terms = 6
@@ -552,7 +622,7 @@ function System(coord_file::AbstractString,
         else
             chrge = force_field.atom_types[atype].charge
         end
-        push!(atoms_abst, Atom(index=ai, mass=at.mass, charge=chrge, σ=at.σ, ϵ=at.ϵ))
+        push!(atoms_abst, Atom(index=ai, mass=at.mass, charge=chrge, σ=at.σ, ϵ=at.ϵ, σ14=at.σ14, ϵ14=at.ϵ14))
 
         # minimal AtomData
         res     = residue_from_atom_idx(ai, canonical_system)
@@ -584,17 +654,29 @@ function System(coord_file::AbstractString,
     # Angles
     for (i,j,k) in top_angles
         t1,t2,t3 = atom_type_of[i], atom_type_of[j], atom_type_of[k]
-        ha = resolve_angle(force_field, t1,t2,t3)
-        if isnothing(ha)
-            throw(ArgumentError("No angle parameters found for ($t1,$t2,$t3)"))
+        ha, hb = resolve_angle(force_field, t1,t2,t3)
+        if isnothing(ha) && isnothing(hb)
+            continue
+            # throw(ArgumentError("No angle parameters found for ($t1,$t2,$t3)"))
         end
-        push!(angles_il.is,i)
-        push!(angles_il.js,j)
-        push!(angles_il.ks,k)
-        push!(angles_il.types, atom_types_to_string(t1,t2,t3))
-        push!(angles_il.inters, ha)
-        eligible[i,k] = false
-        eligible[k,i] = false
+
+        if !isnothing(ha)
+            push!(angles_il.is,i)
+            push!(angles_il.js,j)
+            push!(angles_il.ks,k)
+            push!(angles_il.types, atom_types_to_string(t1,t2,t3))
+            push!(angles_il.inters, ha)
+            eligible[i,k] = false
+            eligible[k,i] = false
+        end
+        if !isnothing(hb)
+            push!(bonds_il.is,i)
+            push!(bonds_il.js,k)
+            push!(bonds_il.types, atom_types_to_string(t1,t2,t3))
+            push!(bonds_il.inters, hb)
+            eligible[i,k] = false
+            eligible[k,i] = false
+        end
     end
 
     # Proper torsions
@@ -626,7 +708,8 @@ function System(coord_file::AbstractString,
         # resolve improper params and oriented key (central first)
         tt, key = resolve_improper_torsion(force_field, t1,t2,t3,t4)
         tt === nothing && continue
-
+        tt isa CustomTorsionType && continue
+        
         # recover metadata from resolver cache
         ic = force_field.torsion_resolver.improper_cache
         hit = get(ic, (t1, t2, t3, t4), :miss)
@@ -778,6 +861,105 @@ function System(coord_file::AbstractString,
         push!(imps_il.inters, PeriodicTorsion(periodicities = tt.periodicities,
                                               phases = tt.phases, ks = tt.ks, proper = false))
     end
+    empty!(force_field.torsion_resolver.improper_cache)
+
+    # Custom Impropers
+    for (c, j, k, l) in top_impropers
+        t1, t2, t3, t4 = atom_type_of[c], atom_type_of[j], atom_type_of[k], atom_type_of[l]
+        
+        # resolve improper params and oriented key (central first)
+        tt, key = resolve_improper_torsion(force_field, t1,t2,t3,t4)
+        tt === nothing && continue
+        tt isa PeriodicTorsionType && continue
+
+        # recover metadata from resolver cache
+        ic = force_field.torsion_resolver.improper_cache
+        hit = get(ic, (t1, t2, t3, t4), :miss)
+        ordering::String = "default"
+        has_wild::Bool = false
+        if hit !== :miss
+            perm, ridx = hit
+            r = force_field.torsion_resolver.rules[ridx]
+            has_wild = r.has_wildcard
+
+            # Reorder indices based on how atoms were permuted
+            src_atoms = (c, j, k, l)
+            j = src_atoms[perm[2]]
+            k = src_atoms[perm[3]]
+            l = src_atoms[perm[4]]
+
+            # refresh types after remapping
+            t2, t3, t4 = atom_type_of[j], atom_type_of[k], atom_type_of[l]
+        end
+
+        # topology indices for current j,k,l
+        r2 = resnum_from_atom_idx(j, canonical_system)
+        r3 = resnum_from_atom_idx(k, canonical_system)
+        r4 = resnum_from_atom_idx(l, canonical_system)
+
+        res2 = residue_from_atom_idx(j, canonical_system)
+        res3 = residue_from_atom_idx(k, canonical_system)
+        res4 = residue_from_atom_idx(l, canonical_system)
+
+        ta2 = findfirst(isequal(j), res2.atom_inds)
+        ta3 = findfirst(isequal(k), res3.atom_inds)
+        ta4 = findfirst(isequal(l), res4.atom_inds)
+
+        e2 = Symbol(element_of[j])
+        e3 = Symbol(element_of[k])
+        e4 = Symbol(element_of[l])
+
+        if has_wild
+            # Mirror the permutation on the current topology atoms (c,j,k,l).
+            src_atoms = (c, j, k, l)
+
+            # We need the two peripheral atoms in positions 2 and 3, and the remaining peripheral in 4.
+            a1 = src_atoms[perm[2]]
+            a2 = src_atoms[perm[3]]
+            a4 = src_atoms[perm[4]]
+
+            # Elements and masses for tie-break
+            e_a1 = Symbol(element_of[a1])
+            e_a2 = Symbol(element_of[a2])
+            m_a1 = force_field.atom_types[atom_type_of[a1]].mass
+            m_a2 = force_field.atom_types[atom_type_of[a2]].mass
+
+            # 1) If same element, lower atom index first.
+            # 2) Else, prefer carbon; else heavier mass first.
+            if e_a1 == e_a2
+                if a1 > a2
+                    (a1, a2) = (a2, a1)
+                end
+            elseif !(e_a1 == :C) && (e_a2 == :C || m_a1 < m_a2)
+                (a1, a2) = (a2, a1)
+            end
+
+            # Reassign current triplet to ordered pair and remaining peripheral.
+            j, k, l = a1, a2, a4
+        end
+        # If no wildcard leave j,k,l as-is.
+        push!(custom_il.is, c)
+        push!(custom_il.js, j)
+        push!(custom_il.ks, k)
+        push!(custom_il.ls, l)
+        push!(custom_il.types, atom_types_to_string(key...))
+        push!(custom_il.inters, CustomTorsion(k = tt.k, θ0 = tt.θ0))
+    end
+
+    # CMAP corrections
+    for (i,j,k,l,m) in top_cmap
+        t1,t2,t3,t4,t5 = atom_type_of[i], atom_type_of[j], atom_type_of[k], atom_type_of[l], atom_type_of[m]
+        cmap, key = resolve_cmap(force_field, t1,t2,t3,t4,t5)
+        cmap === nothing && continue
+
+        push!(cmaps_il.is,i)
+        push!(cmaps_il.js,j)
+        push!(cmaps_il.ks,k)
+        push!(cmaps_il.ls,l)
+        push!(cmaps_il.ms,m)
+        push!(cmaps_il.types, atom_types_to_string(key...))
+        push!(cmaps_il.inters, CMAPTorsion(size=cmap.size, coeff=calc_coefficients(cmap.size,cmap.energy)))
+    end
 
     # Units and coordinates
     if units
@@ -794,10 +976,12 @@ function System(coord_file::AbstractString,
                                 proper=t.proper, n_terms=torsion_n_terms) for t in tors_il.inters]
     imps_pad = [PeriodicTorsion(periodicities=t.periodicities, phases=t.phases, ks=t.ks,
                                 proper=t.proper, n_terms=torsion_n_terms) for t in imps_il.inters]
+    custom_pad = [CustomTorsion(k=t.k, θ0=t.θ0) for t in custom_il.inters]
+    cmap_pad = [CMAPTorsion(size=t.size, coeff=t.coeff) for t in cmaps_il.inters]
 
     return System(T, AT, to_device([atoms_abst...], AT), coords, boundary_used, velocities, atoms_data,
-                  loggers, data, bonds_il, angles_il, tors_il, imps_il, tors_pad, imps_pad,
-                  eligible, special, units, dist_cutoff, constraints, rigid_water, nonbonded_method,
+                  loggers, data, bonds_il, angles_il, tors_il, imps_il, custom_il, cmaps_il, tors_pad, imps_pad,
+                  custom_pad, cmap_pad, eligible, special, units, dist_cutoff, constraints, rigid_water, nonbonded_method,
                   ewald_error_tol, approximate_pme, neighbor_finder_type, implicit_solvent, kappa,
                   grad_safe, dist_neighbors, weight_14_lj, weight_14_coulomb)
 end
@@ -1206,8 +1390,8 @@ function exchange_constraints(T, bonds_all, angles_all, atoms_data, constraints_
 end
 
 function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
-                loggers, data, bonds_all, angles_all, torsions, impropers, torsion_inters_pad,
-                improper_inters_pad, eligible, special, units, dist_cutoff, constraints_type,
+                loggers, data, bonds_all, angles_all, torsions, impropers, customtorsions, cmaps, torsion_inters_pad,
+                improper_inters_pad, custom_inters_pad, cmap_inters_pad, eligible, special, units, dist_cutoff, constraints_type,
                 rigid_water, nonbonded_method, ewald_error_tol, approximate_pme,
                 neighbor_finder_type, implicit_solvent, kappa, grad_safe, dist_neighbors,
                 weight_14_lj, weight_14_coulomb)
@@ -1315,6 +1499,27 @@ function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
             to_device(impropers.ls, AT),
             to_device(improper_inters_pad, AT),
             impropers.types,
+        ))
+    end
+    if length(customtorsions.is) > 0
+        push!(specific_inter_array, InteractionList4Atoms(
+            to_device(customtorsions.is, AT),
+            to_device(customtorsions.js, AT),
+            to_device(customtorsions.ks, AT),
+            to_device(customtorsions.ls, AT),
+            to_device(custom_inters_pad, AT),
+            customtorsions.types,
+        ))
+    end
+    if length(cmaps.is) > 0
+        push!(specific_inter_array, InteractionList5Atoms(
+            to_device(cmaps.is, AT),
+            to_device(cmaps.js, AT),
+            to_device(cmaps.ks, AT),
+            to_device(cmaps.ls, AT),
+            to_device(cmaps.ms, AT),
+            to_device(cmap_inters_pad, AT),
+            cmaps.types,
         ))
     end
     specific_inter_lists = tuple(specific_inter_array...)
