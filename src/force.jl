@@ -293,9 +293,10 @@ function forces!(fs, sys::System{<:Any, <:Any, T}, neighbors, buffers::BuffersCP
         sils_2_atoms = filter(il -> il isa InteractionList2Atoms, values(sys.specific_inter_lists))
         sils_3_atoms = filter(il -> il isa InteractionList3Atoms, values(sys.specific_inter_lists))
         sils_4_atoms = filter(il -> il isa InteractionList4Atoms, values(sys.specific_inter_lists))
+        sils_5_atoms = filter(il -> il isa InteractionList5Atoms, values(sys.specific_inter_lists))
         specific_forces!(buffers.fs_nounits, buffers.vir_nounits, sys.atoms, sys.coords,
                          sys.velocities, sys.boundary, sys.force_units, sils_1_atoms, sils_2_atoms,
-                         sils_3_atoms, sils_4_atoms, Val(needs_vir), step_n)
+                         sils_3_atoms, sils_4_atoms, sils_5_atoms, Val(needs_vir), step_n)
     end
 
     fs .= buffers.fs_nounits .* sys.force_units
@@ -463,7 +464,7 @@ function pairwise_forces_loop!(fs_nounits, fs_chunks, vir_nounits, vir_chunks, a
 end
 
 function specific_forces!(fs_nounits, vir_nounits, atoms, coords, velocities, boundary, force_units,
-                          sils_1_atoms, sils_2_atoms, sils_3_atoms, sils_4_atoms,
+                          sils_1_atoms, sils_2_atoms, sils_3_atoms, sils_4_atoms, sils_5_atoms,
                           ::Val{needs_vir}, step_n=0) where needs_vir
     @inbounds for inter_list in sils_1_atoms
         for (i, inter) in zip(inter_list.is, inter_list.inters)
@@ -539,6 +540,36 @@ function specific_forces!(fs_nounits, vir_nounits, atoms, coords, velocities, bo
                 vir_nounits .+= ustrip.(r_ji * transpose(sf.f1) +
                                         r_jk * transpose(sf.f3) +
                                         r_jl * transpose(sf.f4) )
+            end
+        end
+    end
+
+    @inbounds for inter_list in sils_5_atoms
+        for (i, j, k, l, m, inter) in zip(inter_list.is, inter_list.js, inter_list.ks, inter_list.ls,
+                                       inter_list.ms, inter_list.inters)
+            sf = force(inter, coords[i], coords[j], coords[k], coords[l], coords[m], boundary, atoms[i],
+                       atoms[j], atoms[k], atoms[l], atoms[m], force_units, velocities[i], velocities[j],
+                       velocities[k], velocities[l], velocities[m], step_n)
+            check_force_units(sf.f1, force_units)
+            check_force_units(sf.f2, force_units)
+            check_force_units(sf.f3, force_units)
+            check_force_units(sf.f4, force_units)
+            check_force_units(sf.f5, force_units)
+            fs_nounits[i] += ustrip.(sf.f1)
+            fs_nounits[j] += ustrip.(sf.f2)
+            fs_nounits[k] += ustrip.(sf.f3)
+            fs_nounits[l] += ustrip.(sf.f4)
+            fs_nounits[m] += ustrip.(sf.f5)
+
+            if needs_vir
+                r_ji = vector(coords[j], coords[i], boundary) # r_i - r_j
+                r_jk = vector(coords[j], coords[k], boundary) # r_k - r_j
+                r_jl = vector(coords[j], coords[l], boundary) # r_l - r_j (direct MIC, not sum)
+                r_jm = vector(coords[j], coords[m], boundary) # r_m - r_j
+                vir_nounits .+= ustrip.(r_ji * transpose(sf.f1) +
+                                        r_jk * transpose(sf.f3) +
+                                        r_jl * transpose(sf.f4) +
+                                        r_jm * transpose(sf.f5))
             end
         end
     end

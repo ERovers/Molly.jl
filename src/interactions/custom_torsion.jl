@@ -14,6 +14,8 @@ end
 
 CustomTorsion(; k, θ0) = CustomTorsion{typeof(k),typeof(θ0)}(k, θ0)
 
+Base.zero(::CustomTorsion{K, D}) where {K, D} = CustomTorsion(k=zero(K), θ0=zero(D))
+
 @inline function force(d::CustomTorsion, coords_i, coords_j, coords_k, coords_l, boundary, args...)
     ab = vector(coords_i, coords_j, boundary)
     bc = vector(coords_j, coords_k, boundary)

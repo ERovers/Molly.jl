@@ -358,7 +358,7 @@ end
 )
     key = (t1,t2,t3,t4,t5)
     if haskey(ff.cmap_resolver.cache, key)
-        return ff.cmap_resolver.cache[key]
+        return (ff.cmap_resolver.cache[key], key)
     end
 
     cand = Int[]

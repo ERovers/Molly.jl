@@ -6,6 +6,7 @@ export
     InteractionList2Atoms,
     InteractionList3Atoms,
     InteractionList4Atoms,
+    InteractionList5Atoms,
     Atom,
     mass,
     charge,
@@ -311,12 +312,12 @@ The types used should be bits types if the GPU is going to be used.
 end
 
 function Base.zero(::Atom{T, M, C, S, E}) where {T, M, C, S, E}
-    return Atom(0, zero(T), zero(M), zero(C), zero(S), zero(E))
+    return Atom(0, zero(T), zero(M), zero(C), zero(S), zero(E), zero(S), zero(E))
 end
 
 function Base.:+(a1::Atom, a2::Atom)
     return Atom(a1.index, a1.atom_type, a1.mass + a2.mass, a1.charge + a2.charge,
-                a1.σ + a2.σ, a1.ϵ + a2.ϵ)
+                a1.σ + a2.σ, a1.ϵ + a2.ϵ, a1.σ14 + a2.σ14, a1.ϵ14 + a2.ϵ14)
 end
 
 # get function errors with AD

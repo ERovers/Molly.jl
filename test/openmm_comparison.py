@@ -103,3 +103,51 @@ for inter in inters:
         with open(os.path.join(out_dir, f"velocities_{n_steps}steps.txt"), "w") as of:
             for vel in velocities:
                 of.write(f"{vel.x} {vel.y} {vel.z}\n")
+
+
+# CHARMM36 forcefields test for energy and forces
+out_dir = os.path.join(data_dir, "openmm_charmm")
+pdb_file = os.path.join(data_dir, "dipeptide_equil_water.pdb")
+
+inters = [
+    "bond_urey_only", "angle_only", "proptor_only", "custom_only", "cmap_only",  "lj_only", "coul_only", 
+    "all_cut", "all_pme", "all_pme_exact",
+]
+
+for inter in inters:
+    pdb = PDBFile(pdb_file)
+    if inter.startswith("all"):
+        force_field = ForceField(
+            os.path.join(ff_dir, f"charmm36.xml"),
+            os.path.join(ff_dir, f"tip3p-pme-b.xml"),
+        )
+    else:
+        force_field = ForceField(
+            os.path.join(ff_dir, f"charmm36-{inter}.xml"),
+            os.path.join(ff_dir, f"tip3p-pme-b-{inter}.xml"),
+        )
+    nonbondedMethod = PME if inter.startswith("all_pme") else CutoffPeriodic
+
+    system = force_field.createSystem(
+        pdb.topology,
+        nonbondedMethod=nonbondedMethod,
+        nonbondedCutoff=1*nanometer,
+        constraints=None,
+        rigidWater=False,
+        switchDistance=None,
+        useDispersionCorrection=False,
+    )
+    integrator = LangevinMiddleIntegrator(300*kelvin, 1/picosecond, 0.004*picoseconds)
+    simulation = Simulation(pdb.topology, system, integrator, platform)
+    simulation.context.setPositions(pdb.positions)
+    
+    state = simulation.context.getState(getEnergy=True, getForces=True)
+    energy = state.getPotentialEnergy()
+    forces = state.getForces()
+
+    with open(os.path.join(out_dir, f"forces_charmm_{inter}.txt"), "w") as of:
+        for force in forces:
+            of.write(f"{force.x} {force.y} {force.z}\n")
+
+    with open(os.path.join(out_dir, f"energy_charmm_{inter}.txt"), "w") as of:
+        of.write(f"{energy.value_in_unit(energy.unit)}\n")
