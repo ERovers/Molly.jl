@@ -9,8 +9,10 @@ Only compatible with 3D systems.
 """
 @kwdef struct CMAPTorsion{E}
     size::Int
-    coeff::Vector{E}
+    coeff::Vector{Vector{E}}
 end
+
+Base.zero(::CMAPTorsion{E}) where {E} = CMAPTorsion(size=0, coeff=Vector{Vector{E}}(undef, 0))
 
 # Setup functions (based on CMAPTorsionForceImpl.cpp in OpenMM)
 function calc_coefficients(size, energy::Vector{E}) where E
@@ -141,7 +143,7 @@ function createPeriodicSpline(x,y,deriv)
     rhs = zeros(tp2,n-1)
     a[1] = x[n]-x[n-1]
     b[1] = 2*(x[2]-x[1]+x[n]-x[n-1])
-    c[1] = x[2]-x[1]
+    c0 = x[2]-x[1]
     rhs[1] =  6*((y[2]-y[1])/(x[2]-x[1]) - (y[n]-y[n-1])/(x[n]-x[n-1]))
     for i in 2:n-1
             a[i] = x[i]-x[i-1]
@@ -218,15 +220,16 @@ function evaluateSplineDerivative(x, y, deriv, t)
 end
 
 @inline function force(d::CMAPTorsion, coords_i, coords_j, coords_k, coords_l, 
-                            coords_m, coords_n, coords_o, coords_p, boundary, args...)
-    F = typeof(ustrip(coords_i[1]))
-    # First angle
-    v0a = vector(coords_i, coords_j, boundary)
-    v1a = vector(coords_k, coords_j, boundary)
-    v2a = vector(coords_k, coords_l, boundary)
-    cp0a = v0a × v1a
-    cp1a = v1a × v2a
-    cosangle = dot(norm(cp0a), norm(cp1a))
+                            coords_m, boundary, args...)
+
+     # First angle
+    v0a = vector(coords_j, coords_i, boundary)
+    v1a = vector(coords_j, coords_k, boundary)
+    v2a = vector(coords_l, coords_k, boundary)
+    cp0a = cross(v0a, v1a)
+    cp1a = cross(v1a, v2a)
+    cosangle = dot(cp0a/norm(cp0a), cp1a/norm(cp1a))
+    F = typeof(cosangle)
     if cosangle > F(0.99) || cosangle < F(-0.99)
         cross_prod = cp0a × cp1a
         scale = dot(cp0a,cp0a) * dot(cp1a,cp1a)
@@ -237,76 +240,78 @@ end
     else
         angleA = acos(cosangle)
     end
-    angleA = (dot(v0a,cp1a)>=0) ? angleA : -angleA
-    angleA = fmod(angleA + F(2.0)*pi, F(2.0)*pi)
-
+    angleA = (ustrip(dot(v0a,cp1a))>=0) ? angleA : -angleA
+    angleA = mod(angleA + 2*pi, 2*pi)
+    
     # Second angle
-    v0b = vector(coords_m, coords_n, boundary)
-    v1b = vector(coords_o, coords_n, boundary)
-    v2b = vector(coords_o, coords_p, boundary)
-    cp0a = v0b × v1b
-    cp1a = v1b × v2b
-    cosangle = dot(norm(cp0b), norm(cp1b))
+    v0b = vector(coords_k, coords_j, boundary)
+    v1b = vector(coords_k, coords_l, boundary)
+    v2b = vector(coords_m, coords_l, boundary)
+    cp0b = cross(v0b, v1b)
+    cp1b = cross(v1b, v2b)
+    cosangle = dot(cp0b/norm(cp0b), cp1b/norm(cp1b))
     if cosangle > F(0.99) || cosangle < F(-0.99)
-        cross_prod = cp0b × cp1b
+        cross_prod = cross(cp0b, cp1b)
         scale = dot(cp0b,cp0b) * dot(cp1b,cp1b)
         angleB = asin(sqrt(dot(cross_prod,cross_prod)/scale))
         if cosangle < F(0.0)
             angleB = pi - angleB
         end
     else
-        angleB = acos(cosangle)
+        angleB = acos(ustrip(cosangle))
     end
-    angleB = (dot(v0b,cp1b)>=0) ? angleB : -angleB
-    angleB = fmod(angleB + F(2.0)*pi, F(2.0)*pi)
+    angleB = (ustrip(dot(v0b,cp1b))>=0) ? angleB : -angleB
+    angleB = mod(angleB + 2*pi, 2*pi)
 
     # Identify Patch
     delta = 2*pi / d.size
-    s = min(angleA/delta, d.size-1)
-    t = min(angleB/delta, d.size-1)
-    idx = 4*(s+d.size*t)
-    c0 = d.COEFF[idx]
-    c1 = d.COEFF[idx+1]
-    c2 = d.COEFF[idx+2]
-    c3 = d.COEFF[idx+3]
+    s = Int(trunc(min(angleA/delta, d.size-1)))
+    t = Int(trunc(min(angleB/delta, d.size-1)))
+    idx = (4*(s+d.size*t))+1
+    c0 = d.coeff[idx]
+    c1 = d.coeff[idx+1]
+    c2 = d.coeff[idx+2]
+    c3 = d.coeff[idx+3]
     da = angleA/delta - s
     db = angleB/delta - t
 
     # Evaluate the spline to determine the energy and gradients.
-    dEdA = (3*c[4].w*da + 2*c[3].w)*da + c[2].w
-    dEdB = (3*c[4].w*db + 2*c[4].z)*db + c[4].y
-    dEdA = db*dEdA + (3*c[4].z*da + 2*c[3].z)*da + c[2].z
-    dEdB = da*dEdB + (3*c[3].w*db + 2*c[3].z)*db + c[3].y
-    dEdA = db*dEdA + (3*c[4].y*da + 2*c[3].y)*da + c[2].y
-    dEdB = da*dEdB + (3*c[2].w*db + 2*c[2].z)*db + c[2].y
-    dEdA = db*dEdA + (3*c[4].x*da + 2*c[3].x)*da + c[2].x
-    dEdB = da*dEdB + (3*c[1].w*db + 2*c[1].z)*db + c[1].y
+    dEdA = (3*c3[4]*da + 2*c2[4])*da + c1[4]
+    dEdB = (3*c3[4]*db + 2*c3[3])*db + c3[2]
+    dEdA = db*dEdA + (3*c3[3]*da + 2*c2[3])*da + c1[3]
+    dEdB = da*dEdB + (3*c2[4]*db + 2*c2[3])*db + c2[2]
+    dEdA = db*dEdA + (3*c3[2]*da + 2*c2[2])*da + c1[2]
+    dEdB = da*dEdB + (3*c1[4]*db + 2*c1[3])*db + c1[2]
+    dEdA = db*dEdA + (3*c3[1]*da + 2*c2[1])*da + c1[1]
+    dEdB = da*dEdB + (3*c0[4]*db + 2*c0[3])*db + c0[2]
+    dEdA /= delta
+    dEdB /= delta
 
     # Calculate the force to the first torsion.
-    normCross1 = dot(cp0a, cp0a);
-    normSqrBC = dot(v1a, v1a);
-    normBC = SQRT(normSqrBC);
-    normCross2 = dot(cp1a, cp1a);
-    dp = RECIP(normSqrBC);
-    ff = make_real4((-dEdA*normBC)/normCross1, dot(v0a, v1a)*dp, dot(v2a, v1a)*dp, (dEdA*normBC)/normCross2);
-    force1 = ff.x*cp0a;
-    force4 = ff.w*cp1a;
-    d = ff.y*force1 - ff.z*force4;
-    force2 = d-force1;
-    force3 = -d-force4;
+    normCross1 = dot(cp0a, cp0a)
+    normSqrBC = dot(v1a, v1a)
+    normBC = sqrt(normSqrBC)
+    normCross2 = dot(cp1a, cp1a)
+    dp = 1/normSqrBC
+    ff = ((-dEdA*normBC)/normCross1, dot(v0a, v1a)*dp, dot(v2a, v1a)*dp, (dEdA*normBC)/normCross2)
+    force1 = ff[1]*cp0a
+    force4 = ff[4]*cp1a
+    d = ff[2]*force1 - ff[3]*force4
+    force2 = d-force1
+    force3 = -d-force4
 
     # Calculate the force to the second torsion.
-    normCross1 = dot(cp0b, cp0b);
-    normSqrBC = dot(v1b, v1b);
-    normBC = SQRT(normSqrBC);
-    normCross2 = dot(cp1b, cp1b);
-    dp = RECIP(normSqrBC);
-    ff = make_real4((-dEdB*normBC)/normCross1, dot(v0b, v1b)*dp, dot(v2b, v1b)*dp, (dEdB*normBC)/normCross2);
-    force5 = ff.x*cp0b;
-    force8 = ff.w*cp1b;
-    d = ff.y*force5 - ff.z*force8;
-    force6 = d-force5;
-    force7 = -d-force8;
+    normCross1 = dot(cp0b, cp0b)
+    normSqrBC = dot(v1b, v1b)
+    normBC = sqrt(normSqrBC)
+    normCross2 = dot(cp1b, cp1b)
+    dp = 1/normSqrBC
+    ff = ((-dEdB*normBC)/normCross1, dot(v0b, v1b)*dp, dot(v2b, v1b)*dp, (dEdB*normBC)/normCross2)
+    force5 = ff[1]*cp0b
+    force8 = ff[4]*cp1b
+    d = ff[2]*force5 - ff[3]*force8
+    force6 = d-force5
+    force7 = -d-force8
 
     # Apply the forces to the atoms
     fi = force1
