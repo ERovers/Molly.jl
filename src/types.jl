@@ -6,6 +6,7 @@ export
     InteractionList2Atoms,
     InteractionList3Atoms,
     InteractionList4Atoms,
+    InteractionList5Atoms,
     Atom,
     mass,
     charge,

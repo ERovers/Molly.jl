@@ -7,27 +7,32 @@ CMAP torsion correction on 8 atoms.
 
 Only compatible with 3D systems.
 """
-@kwdef struct CMAPTorsion{E}
+@kwdef struct CMAPTorsion{AT}
     size::Int
-    coeff::Vector{Vector{E}}
+    coeff::AT
 end
 
-Base.zero(::CMAPTorsion{E}) where {E} = CMAPTorsion(size=0, coeff=Vector{Vector{E}}(undef, 0))
+Base.zero(::CMAPTorsion) = CMAPTorsion(size=0, coeff=Matrix(undef, 0))
+
+function to_device(::Type{AT}, t::CMAPTorsion) where AT
+    return CMAPTorsion(t.size, AT(t.coeff))
+end
 
 # Setup functions (based on CMAPTorsionForceImpl.cpp in OpenMM)
-function calc_coefficients(size, energy::Vector{E}) where E
+@inline function calc_coefficients(size, energy::Vector{E}) where E
     c = calcMapDerivatives(size, energy)
-    coeffVec = Vector{Vector{E}}()
+    coeffMatrix = Matrix(undef, size*size*4, 4)
+    
     for j in 1:(size*size)
-        push!(coeffVec, [c[j,1], c[j,2], c[j,3], c[j,4]])
-        push!(coeffVec, [c[j,5], c[j,6], c[j,7], c[j,8]])
-        push!(coeffVec, [c[j,9], c[j,10], c[j,11], c[j,12]])
-        push!(coeffVec, [c[j,13], c[j,14], c[j,15], c[j,16]])
+        coeffMatrix[(j-1)*4+1, :] .= c[j, 1:4]
+        coeffMatrix[(j-1)*4+2, :] .= c[j, 5:8]
+        coeffMatrix[(j-1)*4+3, :] .= c[j, 9:12]
+        coeffMatrix[(j-1)*4+4, :] .= c[j, 13:16]
     end
-    return (coeffVec)
+    return ustrip.(coeffMatrix)
 end
 
-function calcMapDerivatives(size, energy::Vector{E}) where E
+@inline function calcMapDerivatives(size, energy::Vector{E}) where E
     tp = eltype(energy)
     x     = [(i * 2 * π / size) for i in 0:size]
     y     = zeros(tp, size+1)
@@ -120,7 +125,7 @@ function calcMapDerivatives(size, energy::Vector{E}) where E
     return c
 end
 
-function createPeriodicSpline(x,y,deriv)
+@inline function createPeriodicSpline(x,y,deriv)
     n = length(x)
     if length(y) != n
         # throw error
@@ -175,7 +180,7 @@ function createPeriodicSpline(x,y,deriv)
     return deriv
 end
     
-function solveTridiagonalMatrix(a,b,c,rhs,deriv)
+@inline function solveTridiagonalMatrix(a,b,c,rhs,deriv)
     n = length(a)
     gamma = zeros(n)
     
@@ -195,7 +200,7 @@ function solveTridiagonalMatrix(a,b,c,rhs,deriv)
     return deriv
 end
 
-function evaluateSplineDerivative(x, y, deriv, t)
+@inline function evaluateSplineDerivative(x, y, deriv, t)
     n = length(x)
     if (t<x[1] || t > x[n])
         println("NO")
@@ -268,10 +273,10 @@ end
     s = Int(trunc(min(angleA/delta, d.size-1)))
     t = Int(trunc(min(angleB/delta, d.size-1)))
     idx = (4*(s+d.size*t))+1
-    c0 = d.coeff[idx]
-    c1 = d.coeff[idx+1]
-    c2 = d.coeff[idx+2]
-    c3 = d.coeff[idx+3]
+    c0 = d.coeff[idx,:]
+    c1 = d.coeff[idx+1,:]
+    c2 = d.coeff[idx+2,:]
+    c3 = d.coeff[idx+3,:]
     da = angleA/delta - s
     db = angleB/delta - t
 
@@ -371,10 +376,10 @@ end
     s = Int(trunc(min(angleA/delta, d.size-1)))
     t = Int(trunc(min(angleB/delta, d.size-1)))
     idx = (4*(s+d.size*t))+1
-    c0 = d.coeff[idx]
-    c1 = d.coeff[idx+1]
-    c2 = d.coeff[idx+2]
-    c3 = d.coeff[idx+3]
+    c0 = d.coeff[idx,:]
+    c1 = d.coeff[idx+1,:]
+    c2 = d.coeff[idx+2,:]
+    c3 = d.coeff[idx+3,:]
     da = angleA/delta - s
     db = angleB/delta - t
 
