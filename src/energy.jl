@@ -404,6 +404,7 @@ potential_energy_gpu(inter, ci, bnd, ai, eu, vi, sn) = potential_energy(inter, c
 potential_energy_gpu(inter, ci, cj, bnd, ai, aj, eu, vi, vj, sn) = potential_energy(inter, ci, cj, bnd, ai, aj, eu, vi, vj, sn)
 potential_energy_gpu(inter, ci, cj, ck, bnd, ai, aj, ak, eu, vi, vj, vk, sn) = potential_energy(inter, ci, cj, ck, bnd, ai, aj, ak, eu, vi, vj, vk, sn)
 potential_energy_gpu(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, eu, vi, vj, vk, vl, sn) = potential_energy(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, eu, vi, vj, vk, vl, sn)
+potential_energy_gpu(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, eu, vi, vj, vk, vl, vm, sn) = potential_energy(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, eu, vi, vj, vk, vl, vm, sn)
 
 """
     pairwise_pe(inter, r, params)

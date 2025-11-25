@@ -7,16 +7,12 @@ CMAP torsion correction on 8 atoms.
 
 Only compatible with 3D systems.
 """
-@kwdef struct CMAPTorsion{AT}
-    size::Int
+@kwdef struct CMAPTorsion{S,AT}
+    size::S
     coeff::AT
 end
 
 Base.zero(::CMAPTorsion) = CMAPTorsion(size=0, coeff=Matrix(undef, 0))
-
-function to_device(::Type{AT}, t::CMAPTorsion) where AT
-    return CMAPTorsion(t.size, AT(t.coeff))
-end
 
 # Setup functions (based on CMAPTorsionForceImpl.cpp in OpenMM)
 @inline function calc_coefficients(size, energy::Vector{E}) where E
@@ -29,7 +25,7 @@ end
         coeffMatrix[(j-1)*4+3, :] .= c[j, 9:12]
         coeffMatrix[(j-1)*4+4, :] .= c[j, 13:16]
     end
-    return ustrip.(coeffMatrix)
+    return SMatrix{size*size*4, 4, E}(coeffMatrix)
 end
 
 @inline function calcMapDerivatives(size, energy::Vector{E}) where E
@@ -334,8 +330,8 @@ end
     v0a = vector(coords_j, coords_i, boundary)
     v1a = vector(coords_j, coords_k, boundary)
     v2a = vector(coords_l, coords_k, boundary)
-    cp0a = ustrip(cross(v0a, v1a))
-    cp1a = ustrip(cross(v1a, v2a))
+    cp0a = ustrip.(cross(v0a, v1a))
+    cp1a = ustrip.(cross(v1a, v2a))
     cosangle = dot(cp0a/norm(cp0a), cp1a/norm(cp1a))
     F = typeof(cosangle)
     if cosangle > F(0.99) || cosangle < F(-0.99)
@@ -355,8 +351,8 @@ end
     v0b = vector(coords_k, coords_j, boundary)
     v1b = vector(coords_k, coords_l, boundary)
     v2b = vector(coords_m, coords_l, boundary)
-    cp0b = ustrip(cross(v0b, v1b))
-    cp1b = ustrip(cross(v1b, v2b))
+    cp0b = ustrip.(cross(v0b, v1b))
+    cp1b = ustrip.(cross(v1b, v2b))
     cosangle = dot(cp0b/norm(cp0b), cp1b/norm(cp1b))
     if cosangle > F(0.99) || cosangle < F(-0.99)
         cross_prod = cross(cp0b, cp1b)
@@ -383,7 +379,7 @@ end
     da = angleA/delta - s
     db = angleB/delta - t
 
-    # Spline with coefficients
+    # # Spline with coefficients
     energy = ((c3[4]*db + c3[3])*db + c3[2])*db + c3[1]
     energy = da*energy + ((c2[4]*db + c2[3])*db + c2[2])*db + c2[1]
     energy = da*energy + ((c1[4]*db + c1[3])*db + c1[2])*db + c1[1]

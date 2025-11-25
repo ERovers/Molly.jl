@@ -53,6 +53,7 @@ force_gpu(inter, ci, bnd, ai, fu, vi, sn) = force(inter, ci, bnd, ai, fu, vi, sn
 force_gpu(inter, ci, cj, bnd, ai, aj, fu, vi, vj, sn) = force(inter, ci, cj, bnd, ai, aj, fu, vi, vj, sn)
 force_gpu(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, sn) = force(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, sn)
 force_gpu(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, sn) = force(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, sn)
+force_gpu(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, sn) = force(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, sn)
 
 """
     pairwise_force(inter, r, params)
