@@ -48,12 +48,12 @@ Custom pairwise and specific interaction types should implement this function.
 function force end
 
 # Allow GPU-specific force functions to be defined if required
-force_gpu(inter, dr, ai, aj, fu, sp, ci, cj, bnd, vi, vj, sn) = force(inter, dr, ai, aj, fu, sp, ci, cj, bnd, vi, vj, sn)
-force_gpu(inter, ci, bnd, ai, fu, vi, sn) = force(inter, ci, bnd, ai, fu, vi, sn)
-force_gpu(inter, ci, cj, bnd, ai, aj, fu, vi, vj, sn) = force(inter, ci, cj, bnd, ai, aj, fu, vi, vj, sn)
-force_gpu(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, sn) = force(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, sn)
-force_gpu(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, sn) = force(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, sn)
-force_gpu(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, sn) = force(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, sn)
+force_gpu(inter, dr, ai, aj, fu, sp, ci, cj, bnd, vi, vj, args...) = force(inter, dr, ai, aj, fu, sp, ci, cj, bnd, vi, vj, args...)
+force_gpu(inter, ci, bnd, ai, fu, vi, args...) = force(inter, ci, bnd, ai, fu, vi, args...)
+force_gpu(inter, ci, cj, bnd, ai, aj, fu, vi, vj, args...) = force(inter, ci, cj, bnd, ai, aj, fu, vi, vj, args...)
+force_gpu(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, args...) = force(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, args...)
+force_gpu(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, args...) = force(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, args...)
+force_gpu(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, args...) = force(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, args...)
 
 """
     pairwise_force(inter, r, params)
@@ -469,7 +469,7 @@ function specific_forces!(fs_nounits, vir_nounits, atoms, coords, velocities, bo
                           ::Val{needs_vir}, step_n=0) where needs_vir
     @inbounds for inter_list in sils_1_atoms
         for (i, inter) in zip(inter_list.is, inter_list.inters)
-            sf = force(inter, coords[i], boundary, atoms[i], force_units, velocities[i], step_n)
+            sf = force(inter, coords[i], boundary, atoms[i], force_units, velocities[i], step_n, inter_list.data)
             check_force_units(sf.f1, force_units)
             fs_nounits[i] += ustrip.(sf.f1)
 
@@ -484,7 +484,7 @@ function specific_forces!(fs_nounits, vir_nounits, atoms, coords, velocities, bo
     @inbounds for inter_list in sils_2_atoms
         for (i, j, inter) in zip(inter_list.is, inter_list.js, inter_list.inters)
             sf = force(inter, coords[i], coords[j], boundary, atoms[i], atoms[j], force_units,
-                       velocities[i], velocities[j], step_n)
+                       velocities[i], velocities[j], step_n, inter_list.data)
             check_force_units(sf.f1, force_units)
             check_force_units(sf.f2, force_units)
             fs_nounits[i] += ustrip.(sf.f1)
@@ -502,7 +502,8 @@ function specific_forces!(fs_nounits, vir_nounits, atoms, coords, velocities, bo
     @inbounds for inter_list in sils_3_atoms
         for (i, j, k, inter) in zip(inter_list.is, inter_list.js, inter_list.ks, inter_list.inters)
             sf = force(inter, coords[i], coords[j], coords[k], boundary, atoms[i], atoms[j],
-                       atoms[k], force_units, velocities[i], velocities[j], velocities[k], step_n)
+                       atoms[k], force_units, velocities[i], velocities[j], velocities[k], step_n,
+                        inter_list.data)
             check_force_units(sf.f1, force_units)
             check_force_units(sf.f2, force_units)
             check_force_units(sf.f3, force_units)
@@ -524,7 +525,7 @@ function specific_forces!(fs_nounits, vir_nounits, atoms, coords, velocities, bo
                                        inter_list.inters)
             sf = force(inter, coords[i], coords[j], coords[k], coords[l], boundary, atoms[i],
                        atoms[j], atoms[k], atoms[l], force_units, velocities[i], velocities[j],
-                       velocities[k], velocities[l], step_n)
+                       velocities[k], velocities[l], step_n, inter_list.data)
             check_force_units(sf.f1, force_units)
             check_force_units(sf.f2, force_units)
             check_force_units(sf.f3, force_units)
@@ -550,7 +551,7 @@ function specific_forces!(fs_nounits, vir_nounits, atoms, coords, velocities, bo
                                        inter_list.ms, inter_list.inters)
             sf = force(inter, coords[i], coords[j], coords[k], coords[l], coords[m], boundary, atoms[i],
                        atoms[j], atoms[k], atoms[l], atoms[m], force_units, velocities[i], velocities[j],
-                       velocities[k], velocities[l], velocities[m], step_n)
+                       velocities[k], velocities[l], velocities[m], step_n, inter_list.data)
             check_force_units(sf.f1, force_units)
             check_force_units(sf.f2, force_units)
             check_force_units(sf.f3, force_units)

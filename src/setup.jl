@@ -947,6 +947,8 @@ function System(coord_file::AbstractString,
     end
 
     # CMAP corrections
+    maps = []
+    index = 0
     for (i,j,k,l,m) in top_cmap
         t1,t2,t3,t4,t5 = atom_type_of[i], atom_type_of[j], atom_type_of[k], atom_type_of[l], atom_type_of[m]
         cmap, key = resolve_cmap(force_field, t1,t2,t3,t4,t5)
@@ -958,8 +960,11 @@ function System(coord_file::AbstractString,
         push!(cmaps_il.ls,l)
         push!(cmaps_il.ms,m)
         push!(cmaps_il.types, atom_types_to_string(key...))
-        push!(cmaps_il.inters, CMAPTorsion(size=cmap.size, coeff=calc_coefficients(cmap.size,cmap.energy)))
+        push!(cmaps_il.inters, CMAPTorsion(index, cmap.size))
+        index += 4*cmap.size*cmap.size
+        push!(maps, calc_coefficients(cmap.size,cmap.energy))
     end
+    maps = vcat(maps...)
 
     # Units and coordinates
     if units
@@ -977,11 +982,11 @@ function System(coord_file::AbstractString,
     imps_pad = [PeriodicTorsion(periodicities=t.periodicities, phases=t.phases, ks=t.ks,
                                 proper=t.proper, n_terms=torsion_n_terms) for t in imps_il.inters]
     custom_pad = [CustomTorsion(k=t.k, θ0=t.θ0) for t in custom_il.inters]
-    cmap_pad = [CMAPTorsion(size=t.size, coeff=t.coeff) for t in cmaps_il.inters]
+    cmaps_pad = [CMAPTorsion(index=t.index, size=t.size) for t in cmaps_il.inters]
 
     return System(T, AT, to_device([atoms_abst...], AT), coords, boundary_used, velocities, atoms_data,
                   loggers, data, bonds_il, angles_il, tors_il, imps_il, custom_il, cmaps_il, tors_pad, imps_pad,
-                  custom_pad, cmap_pad, eligible, special, units, dist_cutoff, constraints, rigid_water, nonbonded_method,
+                  custom_pad, cmap_pad, maps, eligible, special, units, dist_cutoff, constraints, rigid_water, nonbonded_method,
                   ewald_error_tol, approximate_pme, neighbor_finder_type, implicit_solvent, kappa,
                   grad_safe, dist_neighbors, weight_14_lj, weight_14_coulomb)
 end
@@ -1391,7 +1396,7 @@ end
 
 function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
                 loggers, data, bonds_all, angles_all, torsions, impropers, customtorsions, cmaps, torsion_inters_pad,
-                improper_inters_pad, custom_inters_pad, cmap_inters_pad, eligible, special, units, dist_cutoff, constraints_type,
+                improper_inters_pad, custom_inters_pad, cmaps_pad, maps, eligible, special, units, dist_cutoff, constraints_type,
                 rigid_water, nonbonded_method, ewald_error_tol, approximate_pme,
                 neighbor_finder_type, implicit_solvent, kappa, grad_safe, dist_neighbors,
                 weight_14_lj, weight_14_coulomb)
@@ -1470,6 +1475,7 @@ function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
             to_device(bonds.js, AT),
             to_device([bonds.inters...], AT),
             bonds.types,
+            nothing,
         ))
     end
     if length(angles.is) > 0
@@ -1479,6 +1485,7 @@ function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
             to_device(angles.ks, AT),
             to_device([angles.inters...], AT),
             angles.types,
+            nothing,
         ))
     end
     if length(torsions.is) > 0
@@ -1489,6 +1496,7 @@ function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
             to_device(torsions.ls, AT),
             to_device(torsion_inters_pad, AT),
             torsions.types,
+            nothing,
         ))
     end
     if length(impropers.is) > 0
@@ -1499,6 +1507,7 @@ function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
             to_device(impropers.ls, AT),
             to_device(improper_inters_pad, AT),
             impropers.types,
+            nothing,
         ))
     end
     if length(customtorsions.is) > 0
@@ -1509,6 +1518,7 @@ function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
             to_device(customtorsions.ls, AT),
             to_device(custom_inters_pad, AT),
             customtorsions.types,
+            nothing,
         ))
     end
     if length(cmaps.is) > 0
@@ -1518,8 +1528,9 @@ function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
             to_device(cmaps.ks, AT),
             to_device(cmaps.ls, AT),
             to_device(cmaps.ms, AT),
-            to_device(cmap_inters_pad, AT),
+            to_device(cmaps_pad, AT),
             cmaps.types,
+            maps,
         ))
     end
     specific_inter_lists = tuple(specific_inter_array...)
