@@ -330,10 +330,10 @@ the atom is fully turned on.
 If ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
-@kwdef struct LennardJonesSoftCoreGapsys{C, FT, H, S, E, W} <: PairwiseInteraction
+@kwdef struct LennardJonesSoftCoreGapsys{C, FT, L, H, S, E, W} <: PairwiseInteraction
     cutoff::C = NoCutoff()
     α::FT = 1.0
-    λ::FT = nothing
+    λ::L = nothing
     use_neighbors::Bool = false
     shortcut::H = lj_zero_shortcut
     σ_mixing::S = lorentz_σ_mixing
@@ -343,11 +343,11 @@ end
 
 use_neighbors(inter::LennardJonesSoftCoreGapsys) = inter.use_neighbors
 
-function Base.zero(lj::LennardJonesSoftCoreGapsys{C, FT, H, S, E, W}) where {C, FT, H, S, E, W}
+function Base.zero(lj::LennardJonesSoftCoreGapsys{C, FT, L, H, S, E, W}) where {C, FT, L, H, S, E, W}
     return LennardJonesSoftCoreGapsys(
         lj.cutoff,
         zero(FT),
-        zero(FT),
+        zero(L),
         lj.use_neighbors,
         lj.shortcut,
         lj.σ_mixing,
@@ -381,7 +381,7 @@ end
     end
     σ6 = inter.σ_mixing(atom_i, atom_j)^6
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
-    if λ == nothing
+    if inter.λ == nothing
         if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
             λ = minimum((atom_i.λ,atom_j.λ))
         else
@@ -406,14 +406,14 @@ end
 end
 
 function pairwise_force(inter::LennardJonesSoftCoreGapsys, r, (C12, C6, λ))
-    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-inter.λ)/7)))
+    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-λ)/7)))
     r6 = r^6
     invR = inv(R)
     invR2 = invR^2
     invR6 = invR^6
     if r >= R
         return λ * (((12*C12)/(r6*r6*r))-((6*C6)/(r6*r)))
-    elseif r < R
+    else
         return λ * (((-156*C12*(invR6*invR6*invR2)) + (42*C6*(invR2*invR6)))*r +
                     (168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR)))
     end
@@ -431,7 +431,7 @@ end
     end
     σ6 = inter.σ_mixing(atom_i, atom_j)^6
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
-    if λ == nothing
+    if inter.λ == nothing
         if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
             λ = minimum((atom_i.λ, atom_j.λ))
         else
@@ -440,7 +440,6 @@ end
     else
         λ = inter.λ
     end
-    
     cutoff = inter.cutoff
     r = norm(dr)
     C6 = 4 * ϵ * σ6
@@ -455,14 +454,14 @@ end
 end
 
 function pairwise_pe(inter::LennardJonesSoftCoreGapsys, r, (C12, C6, λ))
-    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-inter.λ)/7)))
+    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-λ)/7)))
     r6 = r^6
     invR = inv(R)
     invR2 = invR^2
     invR6 = invR^6
     if r >= R
         return λ * ((C12/(r6*r6))-(C6/(r6)))
-    elseif r < R
+    else
         return λ * (((78*C12*(invR6*invR6*invR2)) - (21*C6*(invR2*invR6)))*(r^2) -
                     ((168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR)))*r +
                     (91*C12*(invR6*invR6)) - (28*C6*(invR6)))

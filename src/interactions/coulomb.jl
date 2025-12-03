@@ -323,10 +323,10 @@ the atom is fully turned on.
 If ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
-@kwdef struct CoulombSoftCoreGapsys{C, H, FT, Q, W, T} <: PairwiseInteraction
+@kwdef struct CoulombSoftCoreGapsys{C, H, FT, L, Q, W, T} <: PairwiseInteraction
     cutoff::C = NoCutoff()
     α::FT = 1.0
-    λ::FT = nothing
+    λ::L = nothing
     σQ::Q = 1.0u"nm"
     use_neighbors::Bool = false
     shortcut::H = coul_zero_shortcut
@@ -336,11 +336,11 @@ end
 
 use_neighbors(inter::CoulombSoftCoreGapsys) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreGapsys{C, H, FT, Q, W, T}) where {C, H, FT, Q, W, T}
+function Base.zero(coul::CoulombSoftCoreGapsys{C, H, FT, L, Q, W, T}) where {C, H, FT, L, Q, W, T}
     return CoulombSoftCoreGapsys(
         coul.cutoff,
         zero(FT),
-        zero(FT),
+        zero(L),
         zero(Q),
         coul.use_neighbors,
         coul.shortcut,
@@ -376,9 +376,9 @@ end
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
-    if λ == nothing
+    if inter.λ == nothing
         if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
-            λ = minimum((atom_i.λ,atom_j.λ))
+            λ = minimum((atom_i.λ, atom_j.λ))
         else
             λ = lorentz_λ_mixing(atom_i, atom_j)
         end
@@ -386,7 +386,7 @@ end
         λ = inter.λ
     end
     σ6_fac = inter.α * sqrt(cbrt(1-λ))
-    params = (ke, dr, qi, qj, inter.σQ, σ6_fac, λ)
+    params = (ke, qi, qj, inter.σQ, σ6_fac, λ)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
@@ -402,7 +402,7 @@ function pairwise_force(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac, �
     R = σ6_fac*(oneunit(r)+(σQ*abs(qij)))
     if r >= R
         return λ * (ke * (qij/(r^2)))
-    elseif r < R
+    else
         return λ * (ke * (-(((2*qij)/(R^3)) * r) + ((3*qij)/(R^2))))
     end
 end
@@ -415,16 +415,16 @@ end
                                   special=false,
                                   args...)
     if inter.shortcut(atom_i, atom_j)
-        return ustrip(zero(dr[1])) * energy_units
+        return ustrip(zero(dr[2])) * energy_units
     end
 
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
-    if λ == nothing
+    if inter.λ == nothing
         if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
-            λ = minimum((atom_i.λ,atom_j.λ))
+            λ = minimum((atom_i.λ, atom_j.λ))
         else
             λ = lorentz_λ_mixing(atom_i, atom_j)
         end
@@ -447,7 +447,7 @@ function pairwise_pe(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac, λ))
     R = σ6_fac*(oneunit(r)+(σQ*abs(qij)))
     if r >= R
         return λ * (ke * (qij/r))
-    elseif r < R
+    else
         return λ * (ke * (((qij/(R^3))*(r^2))-(((3*qij)/(R^2))*r)+((3*qij)/R)))
     end
 end

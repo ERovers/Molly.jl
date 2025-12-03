@@ -27,6 +27,7 @@ using SpecialFunctions
 using Unitful
 using UnitfulAtomic
 using StructArrays
+using TimerOutputs
 
 using LinearAlgebra
 using Random
@@ -60,7 +61,8 @@ include("interactions/ewald.jl")
 include("interactions/implicit_solvent.jl")
 include("interactions/muller_brown.jl")
 include("energy.jl")
-include("alchemical.jl")
+include("alchemical_helper.jl")
+include("alchemical_system.jl")
 include("constraints/constraints.jl")
 include("constraints/shake.jl")
 include("simulators.jl")

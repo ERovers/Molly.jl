@@ -7,17 +7,17 @@ CMAP torsion correction on 8 atoms.
 
 Only compatible with 3D systems.
 """
-@kwdef struct CMAPTorsion{S,AT}
-    size::S
-    coeff::AT
+@kwdef struct CMAPTorsion{I}
+    index::I
+    size::I
 end
 
-Base.zero(::CMAPTorsion) = CMAPTorsion(size=0, coeff=Matrix(undef, 0))
+Base.zero(::CMAPTorsion) = CMAPTorsion(index=0, size=0)
 
 # Setup functions (based on CMAPTorsionForceImpl.cpp in OpenMM)
-@inline function calc_coefficients(size, energy::Vector{E}) where E
-    c = calcMapDerivatives(size, energy)
-    coeffMatrix = Matrix(undef, size*size*4, 4)
+function calc_coefficients(size, map::Vector{E}) where E
+    c = calcMapDerivatives(size, map)
+    coeffMatrix = Matrix{E}(undef, size*size*4, 4)
     
     for j in 1:(size*size)
         coeffMatrix[(j-1)*4+1, :] .= c[j, 1:4]
@@ -25,10 +25,10 @@ Base.zero(::CMAPTorsion) = CMAPTorsion(size=0, coeff=Matrix(undef, 0))
         coeffMatrix[(j-1)*4+3, :] .= c[j, 9:12]
         coeffMatrix[(j-1)*4+4, :] .= c[j, 13:16]
     end
-    return SMatrix{size*size*4, 4, E}(coeffMatrix)
+    return coeffMatrix
 end
 
-@inline function calcMapDerivatives(size, energy::Vector{E}) where E
+function calcMapDerivatives(size, energy::Vector{E}) where E
     tp = eltype(energy)
     x     = [(i * 2 * π / size) for i in 0:size]
     y     = zeros(tp, size+1)
@@ -121,7 +121,7 @@ end
     return c
 end
 
-@inline function createPeriodicSpline(x,y,deriv)
+function createPeriodicSpline(x,y,deriv)
     n = length(x)
     if length(y) != n
         # throw error
@@ -176,7 +176,7 @@ end
     return deriv
 end
     
-@inline function solveTridiagonalMatrix(a,b,c,rhs,deriv)
+function solveTridiagonalMatrix(a,b,c,rhs,deriv)
     n = length(a)
     gamma = zeros(n)
     
@@ -196,7 +196,7 @@ end
     return deriv
 end
 
-@inline function evaluateSplineDerivative(x, y, deriv, t)
+function evaluateSplineDerivative(x, y, deriv, t)
     n = length(x)
     if (t<x[1] || t > x[n])
         println("NO")
@@ -220,8 +220,10 @@ end
     return dadx*y[lower]-dadx*y[upper] + ((1-3*a*a)*deriv[lower] + ((3*b*b)-1)*deriv[upper])*dx/6
 end
 
-@inline function force(d::CMAPTorsion, coords_i, coords_j, coords_k, coords_l, 
-                            coords_m, boundary, args...)
+@inline function force(inter::CMAPTorsion, coords_i, coords_j, coords_k, coords_l, 
+                            coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, 
+                            atoms_m, force_units, velocities_i, velocities_j,
+                            velocities_k, velocities_l, velocities_m, step_n, data)
 
      # First angle
     v0a = vector(coords_j, coords_i, boundary)
@@ -265,26 +267,26 @@ end
     angleB = mod(angleB + 2*pi, 2*pi)
 
     # Identify Patch
-    delta = 2*pi / d.size
-    s = Int(trunc(min(angleA/delta, d.size-1)))
-    t = Int(trunc(min(angleB/delta, d.size-1)))
-    idx = (4*(s+d.size*t))+1
-    c0 = d.coeff[idx,:]
-    c1 = d.coeff[idx+1,:]
-    c2 = d.coeff[idx+2,:]
-    c3 = d.coeff[idx+3,:]
+    delta = 2*pi / inter.size
+    s = Int(trunc(min(angleA/delta, inter.size-1)))
+    t = Int(trunc(min(angleB/delta, inter.size-1)))
+    idx = inter.index+(4*(s+inter.size*t))+1
+    # c0 = @view data[idx,:]
+    # c1 = @view data[idx+1,:]
+    # c2 = @view data[idx+2,:]
+    # c3 = @view data[idx+3,:]
     da = angleA/delta - s
     db = angleB/delta - t
 
     # Evaluate the spline to determine the energy and gradients.
-    dEdA = (3*c3[4]*da + 2*c2[4])*da + c1[4]
-    dEdB = (3*c3[4]*db + 2*c3[3])*db + c3[2]
-    dEdA = db*dEdA + (3*c3[3]*da + 2*c2[3])*da + c1[3]
-    dEdB = da*dEdB + (3*c2[4]*db + 2*c2[3])*db + c2[2]
-    dEdA = db*dEdA + (3*c3[2]*da + 2*c2[2])*da + c1[2]
-    dEdB = da*dEdB + (3*c1[4]*db + 2*c1[3])*db + c1[2]
-    dEdA = db*dEdA + (3*c3[1]*da + 2*c2[1])*da + c1[1]
-    dEdB = da*dEdB + (3*c0[4]*db + 2*c0[3])*db + c0[2]
+    dEdA = (3*data[idx+3,4]*da + 2*data[idx+2,4])*da + data[idx+1,4]
+    dEdB = (3*data[idx+3,4]*db + 2*data[idx+3,3])*db + data[idx+3,2]
+    dEdA = db*dEdA + (3*data[idx+3,3]*da + 2*data[idx+2,3])*da + data[idx+1,3]
+    dEdB = da*dEdB + (3*data[idx+2,4]*db + 2*data[idx+2,3])*db + data[idx+2,2]
+    dEdA = db*dEdA + (3*data[idx+3,2]*da + 2*data[idx+2,2])*da + data[idx+1,2]
+    dEdB = da*dEdB + (3*data[idx+1,4]*db + 2*data[idx+1,3])*db + data[idx+1,2]
+    dEdA = db*dEdA + (3*data[idx+3,1]*da + 2*data[idx+2,1])*da + data[idx+1,1]
+    dEdB = da*dEdB + (3*data[idx,4]*db + 2*data[idx,3])*db + data[idx,2]
     dEdA /= delta
     dEdB /= delta
 
@@ -323,8 +325,10 @@ end
     return SpecificForce5Atoms(fi, fj, fk, fl, fm)
 end
 
-@inline function potential_energy(d::CMAPTorsion, coords_i, coords_j, coords_k, coords_l, 
-                            coords_m, boundary, args...)
+@inline function potential_energy(inter::CMAPTorsion, coords_i, coords_j, coords_k, coords_l, 
+                            coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, atoms_m, energy_units,
+                            velocities_i, velocities_j, velocities_k, velocities_l, velocities_m,
+                            step_n, data)
     
     # First angle
     v0a = vector(coords_j, coords_i, boundary)
@@ -368,21 +372,21 @@ end
     angleB = mod(angleB + 2*pi, 2*pi)
 
     # Identify Patch
-    delta = 2*pi / d.size
-    s = Int(trunc(min(angleA/delta, d.size-1)))
-    t = Int(trunc(min(angleB/delta, d.size-1)))
-    idx = (4*(s+d.size*t))+1
-    c0 = d.coeff[idx,:]
-    c1 = d.coeff[idx+1,:]
-    c2 = d.coeff[idx+2,:]
-    c3 = d.coeff[idx+3,:]
+    delta = 2*pi / inter.size
+    s = Int(trunc(min(angleA/delta, inter.size-1)))
+    t = Int(trunc(min(angleB/delta, inter.size-1)))
+    idx = inter.index+(4*(s+inter.size*t))+1
+    # c0 = @view data[idx,:]
+    # c1 = @view data[idx+1,:]
+    # c2 = @view data[idx+2,:]
+    # c3 = @view data[idx+3,:]
     da = angleA/delta - s
     db = angleB/delta - t
 
-    # # Spline with coefficients
-    energy = ((c3[4]*db + c3[3])*db + c3[2])*db + c3[1]
-    energy = da*energy + ((c2[4]*db + c2[3])*db + c2[2])*db + c2[1]
-    energy = da*energy + ((c1[4]*db + c1[3])*db + c1[2])*db + c1[1]
-    energy = da*energy + ((c0[4]*db + c0[3])*db + c0[2])*db + c0[1]
+    # Spline with coefficients
+    energy = ((data[idx+3,4]*db + data[idx+3,3])*db + data[idx+3,2])*db + data[idx+3,1]
+    energy = da*energy + ((data[idx+2,4]*db + data[idx+2,3])*db + data[idx+2,2])*db + data[idx+2,1]
+    energy = da*energy + ((data[idx+1,4]*db + data[idx+1,3])*db + data[idx+1,2])*db + data[idx+1,1]
+    energy = da*energy + ((data[idx,4]*db + data[idx,3])*db + data[idx,2])*db + data[idx,1]
     return energy
 end
