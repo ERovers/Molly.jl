@@ -36,39 +36,41 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
     # Remove all the atoms of selected residue except backbone and set λ to 1.0
     # Make map of backbone to map interactions on later for added side-chains
     map = Dict()
-    backbone_map = Dict()
-    backbone_coords = zeros(T,4,3)u"nm"
+    residue = Dict()
+    for r in res_num
+        residue[r] = Dict("backbone_map" => Dict(), "backbone_coords" => zeros(T,4,3)u"nm")
+    end
     backbone_idx = Dict("N"=>1,"CA"=>2,"C"=>3,"O"=>4)
     count = 1
     for (i,(a,d,c)) in enumerate(zip(sys.atoms, sys.atoms_data, sys.coords))
-        if (res_num-d.res_number)==1 && d.atom_name=="C"
-            backbone_map[d.atom_name*"*"] = count
-        elseif (d.res_number-res_num)==1 && d.atom_name=="N"
-            backbone_map[d.atom_name*"*"] = count
+        if any((r-d.res_number)==1 for r in res_num) && d.atom_name=="C"
+            residue[d.res_number+1]["backbone_map"][d.atom_name*"*"] = count
+        elseif any((d.res_number-r)==1 for r in res_num) && d.atom_name=="N"
+            residue[d.res_number-1]["backbone_map"][d.atom_name*"*"] = count
         end
-        if d.res_number != res_num
+        if !(d.res_number in res_num)
             push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                     σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0)))
             push!(Data, d)
             push!(Coords, c)
             map[i] = count
             count += 1
-        elseif d.res_number == res_num && d.atom_name in ["N","CA","C","O","H","HA","HA2"]
+        elseif (d.res_number in res_num) && d.atom_name in ["N","CA","C","O","H","HA","HA2"]
             push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                     σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0)))
             push!(Data, d)
             push!(Coords, c)
             map[i] = count
-            backbone_map[d.atom_name] = count
+            residue[d.res_number]["backbone_map"][d.atom_name] = count
             if d.atom_name=="HA"
-                backbone_map["HA2"] = count
+                residue[d.res_number]["backbone_map"]["HA2"] = count
             elseif d.atom_name=="HA2"
-                backbone_map["HA"] = count
+                residue[d.res_number]["backbone_map"]["HA"] = count
+            end
+            if d.atom_name in ["N","CA","C","O"]
+                residue[d.res_number]["backbone_coords"][backbone_idx[d.atom_name],:] = c
             end
             count += 1
-            if d.atom_name in ["N","CA","C","O"]
-                backbone_coords[backbone_idx[d.atom_name],:] = c
-            end
         end
     end
     
@@ -100,86 +102,88 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
     # Add new side-chains for selected residue
     map_AA = Dict()
     addition_groups = Dict()
-    for AA in keys(aminos)
-        # Load residue system
-        amino_dir = normpath(@__DIR__, "..", "data/aminoacids")
-        tmp_sys = System(amino_dir*"/"*AA*".pdb", ff;
-                 nonbonded_method=:cutoff, center_coords=false)
-        
-        # Superimpose residue onto backbone
-        backbone_coords2 = zeros(T,4,3)u"nm"
-        for (d,c) in zip(tmp_sys.atoms_data, tmp_sys.coords)
-            if d.atom_name in ["N","CA","C","O"] && (d.res_name!="ACE" && d.res_name!="NME") 
-                backbone_coords2[backbone_idx[d.atom_name],:] = c
+    for r in res_num
+        for AA in keys(aminos)
+            # Load residue system
+            amino_dir = normpath(@__DIR__, "..", "data/aminoacids")
+            tmp_sys = System(amino_dir*"/"*AA*".pdb", ff;
+                     nonbonded_method=:cutoff, center_coords=false)
+            
+            # Superimpose residue onto backbone
+            backbone_coords2 = zeros(T,4,3)u"nm"
+            for (d,c) in zip(tmp_sys.atoms_data, tmp_sys.coords)
+                if d.atom_name in ["N","CA","C","O"] && (d.res_name!="ACE" && d.res_name!="NME") 
+                    backbone_coords2[backbone_idx[d.atom_name],:] = c
+                end
             end
-        end
-        R, t = kabsch(backbone_coords2, backbone_coords)
-        coords2 = hcat(tmp_sys.coords...)' * R .+ t'u"nm"
-        
-        # Create map for interactions and add atoms
-        sidechain_A = []
-        count = isempty(map_AA) ? maximum(values(map))+1 : maximum(values(map_AA))+1
-        map_AA = Dict()
-        for (i,(a,d,c)) in enumerate(zip(tmp_sys.atoms, tmp_sys.atoms_data, eachrow(coords2)))
-            if d.res_name=="ACE" && d.atom_name=="C"
-                map_AA[i] = backbone_map["C*"]
-            elseif d.res_name=="NME" && d.atom_name=="N"
-                map_AA[i] = backbone_map["N*"]
-            elseif d.res_name == AA
-                if  d.atom_name in ["N","H","CA","HA","HA2","C","O"]
-                    map_AA[i] = backbone_map[d.atom_name]
-                else
-                    push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(aminos[AA])))
-                    push!(Data, AtomData(d.atom_type, d.atom_name, res_num, d.res_name, d.chain_id, d.element, d.hetero_atom))
-                    push!(Coords, SVector{length(c)}(c))
-                    map_AA[i] = count
-                    push!(sidechain_A, i)
-                    if !haskey(addition_groups, AA)
-                        addition_groups[AA]  = [count]
+            R, t = kabsch(backbone_coords2, residue[r]["backbone_coords"])
+            coords2 = hcat(tmp_sys.coords...)' * R .+ t'u"nm"
+            
+            # Create map for interactions and add atoms
+            sidechain_A = []
+            count = isempty(map_AA) ? maximum(values(map))+1 : maximum(values(map_AA))+1
+            map_AA = Dict()
+            for (i,(a,d,c)) in enumerate(zip(tmp_sys.atoms, tmp_sys.atoms_data, eachrow(coords2)))
+                if d.res_name=="ACE" && d.atom_name=="C"
+                    map_AA[i] = residue[r]["backbone_map"]["C*"]
+                elseif d.res_name=="NME" && d.atom_name=="N"
+                    map_AA[i] = residue[r]["backbone_map"]["N*"]
+                elseif d.res_name == AA
+                    if  d.atom_name in ["N","H","CA","HA","HA2","C","O"]
+                        map_AA[i] = residue[r]["backbone_map"][d.atom_name]
                     else
-                        addition_groups[AA] = push!(addition_groups[AA], count)
+                        push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
+                        σ14=a.σ14, ϵ14=a.ϵ14, λ=T(aminos[AA])))
+                        push!(Data, AtomData(d.atom_type, d.atom_name, r, d.res_name, d.chain_id, d.element, d.hetero_atom))
+                        push!(Coords, SVector{length(c)}(c))
+                        map_AA[i] = count
+                        push!(sidechain_A, i)
+                        if !haskey(addition_groups, AA)
+                            addition_groups[AA]  = [count]
+                        else
+                            addition_groups[AA] = push!(addition_groups[AA], count)
+                        end
+                        count += 1
                     end
-                    count += 1
                 end
             end
-        end
-    
-        # Add all interactions for the new atoms
-        for interaction in tmp_sys.specific_inter_lists
-            IT = typeof(interaction)
-            field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
-            tmp = [[] for _ in field_names[1:end-1]]
-    
-            if typeof(field_names[end-2][1]).name.name==:CMAPTorsion
-                CMAP = typeof(field_names[end-2][1])
-                for field_tuple in zip(field_names[1:end-1]...)
-                    n_fields = length(field_tuple)
-                    name = typeof(field_tuple[end-1]).name.name
-                    if all(haskey(map_AA, field_tuple[i]) for i in 1:n_fields-2)
-                        for i in 1:n_fields-2
-                            tmp[i] = push!(tmp[i], map_AA[field_tuple[i]])
+        
+            # Add all interactions for the new atoms
+            for interaction in tmp_sys.specific_inter_lists
+                IT = typeof(interaction)
+                field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
+                tmp = [[] for _ in field_names[1:end-1]]
+        
+                if typeof(field_names[end-2][1]).name.name==:CMAPTorsion
+                    CMAP = typeof(field_names[end-2][1])
+                    for field_tuple in zip(field_names[1:end-1]...)
+                        n_fields = length(field_tuple)
+                        name = typeof(field_tuple[end-1]).name.name
+                        if all(haskey(map_AA, field_tuple[i]) for i in 1:n_fields-2)
+                            for i in 1:n_fields-2
+                                tmp[i] = push!(tmp[i], map_AA[field_tuple[i]])
+                            end
+                            
+                            tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion_L(field_tuple[end-1].index, field_tuple[end-1].size, T(aminos[AA])))
+                            tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
                         end
-                        
-                        tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion_L(field_tuple[end-1].index, field_tuple[end-1].size, T(aminos[AA])))
-                        tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
                     end
-                end
-                Interactions = push!(Interactions, InteractionList5Atoms{IT.types[1], Vector{CMAPTorsion_L{CMAP.types[1], T}}, IT.types[end]}(tmp..., interaction.data))
-            else
-                for field_tuple in zip(field_names[1:end-1]...)
-                    n_fields = length(field_tuple)
-                    name = typeof(field_tuple[end-1]).name.name
-                    if any(field_tuple[i] in sidechain_A for i in 1:n_fields-2)
-                        for i in 1:n_fields-2
-                            tmp[i] = push!(tmp[i], map_AA[field_tuple[i]])
+                    Interactions = push!(Interactions, InteractionList5Atoms{IT.types[1], Vector{CMAPTorsion_L{CMAP.types[1], T}}, IT.types[end]}(tmp..., interaction.data))
+                else
+                    for field_tuple in zip(field_names[1:end-1]...)
+                        n_fields = length(field_tuple)
+                        name = typeof(field_tuple[end-1]).name.name
+                        if any(field_tuple[i] in sidechain_A for i in 1:n_fields-2)
+                            for i in 1:n_fields-2
+                                tmp[i] = push!(tmp[i], map_AA[field_tuple[i]])
+                            end
+                            
+                            tmp[n_fields-1] = push!(tmp[n_fields-1], field_tuple[end-1])
+                            tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
                         end
-                        
-                        tmp[n_fields-1] = push!(tmp[n_fields-1], field_tuple[end-1])
-                        tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
                     end
+                    Interactions = push!(Interactions, IT(tmp..., nothing))
                 end
-                Interactions = push!(Interactions, IT(tmp..., nothing))
             end
         end
     end
