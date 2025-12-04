@@ -99,6 +99,7 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
 
     # Add new side-chains for selected residue
     map_AA = Dict()
+    addition_groups = Dict()
     for AA in keys(aminos)
         # Load residue system
         amino_dir = normpath(@__DIR__, "..", "data/aminoacids")
@@ -115,10 +116,10 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
         R, t = kabsch(backbone_coords2, backbone_coords)
         coords2 = hcat(tmp_sys.coords...)' * R .+ t'u"nm"
         
-        # Create map for interactions and add atoms of the side-chains
+        # Create map for interactions and add atoms
         sidechain_A = []
-        map_AA = Dict()
         count = isempty(map_AA) ? maximum(values(map))+1 : maximum(values(map_AA))+1
+        map_AA = Dict()
         for (i,(a,d,c)) in enumerate(zip(tmp_sys.atoms, tmp_sys.atoms_data, eachrow(coords2)))
             if d.res_name=="ACE" && d.atom_name=="C"
                 map_AA[i] = backbone_map["C*"]
@@ -134,6 +135,11 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
                     push!(Coords, SVector{length(c)}(c))
                     map_AA[i] = count
                     push!(sidechain_A, i)
+                    if !haskey(addition_groups, AA)
+                        addition_groups[AA]  = [count]
+                    else
+                        addition_groups[AA] = push!(addition_groups[AA], count)
+                    end
                     count += 1
                 end
             end
@@ -177,10 +183,56 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
             end
         end
     end
-
-    # Merge all interaction lists
+    
     Interactions = Molly.merge(Interactions)
 
+    # Calculate matrix of pairs eligible for non-bonded interactions
+    n_atoms = length(Coords)
+    eligible = trues(n_atoms, n_atoms)
+    for i in 1:n_atoms
+        eligible[i, i] = false
+    end
+    for (i, j) in zip(Interactions[1].is, Interactions[1].js)
+        eligible[i, j] = false
+        eligible[j, i] = false
+    end
+    for (i, k) in zip(Interactions[2].is, Interactions[2].ks)
+        # Assume bonding is already specified
+        eligible[i, k] = false
+        eligible[k, i] = false
+    end
+    
+    keys_dict = [(k1, k2) for (k1, k2) in Iterators.product(keys(addition_groups), keys(addition_groups)) if k1 < k2]
+    for (k1, k2) in keys_dict
+        pairs = collect(Iterators.product(addition_groups[k1], addition_groups[k2]))
+        for (i, j) in pairs
+            # Assume bonding is already specified
+            eligible[i, j] = false
+            eligible[j, i] = false
+        end
+    end
+    
+    # Calculate matrix of pairs eligible for halved non-bonded interactions
+    # This applies to specified pairs in the topology file, usually 1-4 bonded
+    special = falses(n_atoms, n_atoms)
+    for (i, l) in zip(Interactions[3].is, Interactions[3].ls)
+        special[i, l] = true
+        special[l, i] = true
+    end
+    
+    cutoff = DistanceCutoff(T(1.2)u"nm")
+    if AT <:AbstractGPUArray
+        nf = GPUNeighborFinder(eligible=Molly.to_device(eligible, AT), dist_cutoff=T(1.2)u"nm", special=Molly.to_device(special, AT), n_steps_reorder=10)
+    else
+        nf = CellListMapNeighborFinder(eligible=Molly.to_device(eligible, AT), dist_cutoff=T(1.2)u"nm", special=Molly.to_device(special, AT), n_steps=10)
+    end
+    pairwise_inters = (
+                        LennardJonesSoftCoreGapsys(α=T(0.85), λ=nothing, use_neighbors=true, cutoff=cutoff, shortcut=Molly.lj_λ_one_shortcut),
+                        LennardJones(use_neighbors=true, cutoff=cutoff, shortcut=Molly.lj_λ_less_one_shortcut),
+                        Coulomb(use_neighbors=true, cutoff=cutoff, shortcut=Molly.coul_λ_less_one_shortcut, coulomb_const=T(coulomb_const)),
+                        CoulombSoftCoreGapsys(α=T(0.3), λ=nothing, σQ=T(1.0)u"nm", use_neighbors=true, cutoff=cutoff, shortcut=Molly.coul_λ_one_shortcut, coulomb_const=T(coulomb_const)),
+                        )
+    
     # Ensure all arrays have correct typing
     Atoms = Vector{typeof(Atoms[1])}(Atoms)
     Coords = Vector{typeof(Coords[1])}(Coords)
@@ -196,8 +248,9 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
         atoms_data=Data,
         boundary=Boundary,
         velocities=Molly.to_device(vels_gpu, AT),
-        pairwise_inters=(),
+        pairwise_inters=pairwise_inters,
         specific_inter_lists=Molly.to_device.(specific_inter_lists,AT),
+        neighbor_finder=nf,
         general_inters=(),
     )
 
