@@ -18,7 +18,7 @@ original system and λ-mediated atoms.
 """
 
 
-function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u"K")
+function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp = T(298.0)u"K")
     # initialize data groups for new system
     Atoms = []
     Data = []
@@ -37,12 +37,16 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
     # Make map of backbone to map interactions on later for added side-chains
     map = Dict()
     residue = Dict()
+    CAs = []
     for r in res_num
-        residue[r] = Dict("backbone_map" => Dict(), "backbone_coords" => zeros(T,4,3)u"nm")
+        residue[r] = Dict("backbone_map" => Dict(), "backbone_coords" => zeros(T,3,3)u"nm")
     end
-    backbone_idx = Dict("N"=>1,"CA"=>2,"C"=>3,"O"=>4)
+    backbone_idx = Dict("HA"=>1,"CA"=>2,"CB"=>3, "HA2"=>1, "HA3"=>3)
     count = 1
     for (i,(a,d,c)) in enumerate(zip(sys.atoms, sys.atoms_data, sys.coords))
+        if (d.res_number in res_num) && d.atom_name in ["HA","CA","CB","HA2","HA3"]
+            residue[d.res_number]["backbone_coords"][backbone_idx[d.atom_name],:] = c
+        end
         if any((r-d.res_number)==1 for r in res_num) && d.atom_name=="C"
             residue[d.res_number+1]["backbone_map"][d.atom_name*"*"] = count
         elseif any((d.res_number-r)==1 for r in res_num) && d.atom_name=="N"
@@ -66,9 +70,8 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
                 residue[d.res_number]["backbone_map"]["HA2"] = count
             elseif d.atom_name=="HA2"
                 residue[d.res_number]["backbone_map"]["HA"] = count
-            end
-            if d.atom_name in ["N","CA","C","O"]
-                residue[d.res_number]["backbone_coords"][backbone_idx[d.atom_name],:] = c
+            elseif d.atom_name=="CA"
+                push!(CAs, count)
             end
             count += 1
         end
@@ -76,28 +79,45 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
     
     # Add all the in the interactions except the ones part of the side-chain that has been removed
     for interaction in sys.specific_inter_lists
-        interaction_type = typeof(interaction)
+        IT = typeof(interaction)
         field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
         tmp = [[] for _ in field_names[1:end-1]]
         name = ""
-        for field_tuple in zip(field_names[1:end-1]...)
-            n_fields = length(field_tuple)
-            name = typeof(field_tuple[end-1]).name.name
-            if all(haskey(map, field_tuple[i]) for i in 1:n_fields-2)
-                for i in 1:n_fields-2
-                    tmp[i] = push!(tmp[i], map[field_tuple[i]])
+        if typeof(field_names[end-2][1]).name.name==:CMAPTorsion
+            index = 0
+            maps = []
+            CMAP = typeof(field_names[end-2][1])
+            for field_tuple in zip(field_names[1:end-1]...)
+                n_fields = length(field_tuple)
+                if !any(field_tuple[i] in CAs for i in 1:n_fields-2)
+                    for i in 1:n_fields-2
+                        tmp[i] = push!(tmp[i], map[field_tuple[i]])
+                    end
+                    tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion(index, field_tuple[end-1].size))
+                    tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
+                    push!(maps, interaction.data[index+1:index+(4*field_tuple[end-1].size*field_tuple[end-1].size), :])
+                    index += 4*field_tuple[end-1].size*field_tuple[end-1].size
                 end
-                
-                tmp[n_fields-1] = push!(tmp[n_fields-1], field_tuple[end-1])
-                tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
             end
-        end
-        if name==:CMAPTorsion
-            continue
+            maps = vcat(maps...)
+            Interactions = push!(Interactions, InteractionList5Atoms{IT.types[1], Vector{CMAPTorsion{CMAP.types[1]}}, IT.types[end]}(tmp..., maps))
         else
-            Interactions = push!(Interactions, interaction_type(tmp..., nothing))
+            for field_tuple in zip(field_names[1:end-1]...)
+                n_fields = length(field_tuple)
+                name = typeof(field_tuple[end-1]).name.name
+                if all(haskey(map, field_tuple[i]) for i in 1:n_fields-2)
+                    for i in 1:n_fields-2
+                        tmp[i] = push!(tmp[i], map[field_tuple[i]])
+                    end
+                    
+                    tmp[n_fields-1] = push!(tmp[n_fields-1], field_tuple[end-1])
+                    tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
+                end
+            end
+            Interactions = push!(Interactions, IT(tmp..., nothing))
         end
     end
+    
 
     # Add new side-chains for selected residue
     map_AA = Dict()
@@ -110,14 +130,14 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
                      nonbonded_method=:cutoff, center_coords=false)
             
             # Superimpose residue onto backbone
-            backbone_coords2 = zeros(T,4,3)u"nm"
+            backbone_coords2 = zeros(T,3,3)u"nm"
             for (d,c) in zip(tmp_sys.atoms_data, tmp_sys.coords)
-                if d.atom_name in ["N","CA","C","O"] && (d.res_name!="ACE" && d.res_name!="NME") 
+                if d.atom_name in ["HA","CA","CB","HA2","HA3"] && (d.res_name!="ACE" && d.res_name!="NME") 
                     backbone_coords2[backbone_idx[d.atom_name],:] = c
                 end
             end
-            R, t = kabsch(backbone_coords2, residue[r]["backbone_coords"])
-            coords2 = hcat(tmp_sys.coords...)' * R .+ t'u"nm"
+            rot, t = kabsch(backbone_coords2, residue[r]["backbone_coords"])
+            coords2 = ((rot * hcat(tmp_sys.coords...)) .+ (t)u"nm")'
             
             # Create map for interactions and add atoms
             sidechain_A = []
@@ -165,7 +185,7 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
                             end
                             
                             tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion_L(field_tuple[end-1].index, field_tuple[end-1].size, T(aminos[AA])))
-                            tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
+                            tmp[n_fields] = push!(tmp[n_fields], field_tuple[end]*"λ")
                         end
                     end
                     Interactions = push!(Interactions, InteractionList5Atoms{IT.types[1], Vector{CMAPTorsion_L{CMAP.types[1], T}}, IT.types[end]}(tmp..., interaction.data))
@@ -256,6 +276,11 @@ function Hybrid_system(T, AT, ff, sys, res_num, aminos=nothing, temp = T(298.0)u
         specific_inter_lists=Molly.to_device.(specific_inter_lists,AT),
         neighbor_finder=nf,
         general_inters=(),
+        loggers=(
+            temp=TemperatureLogger(1000),
+            writer=TrajectoryWriter(1000, traj_file),
+            step_log=GeneralObservableLogger(step_logger, typeof(one(T)u"kJ * mol^-1"), 10_000),
+        ),
     )
 
     return sys_final

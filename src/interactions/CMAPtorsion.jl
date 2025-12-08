@@ -329,7 +329,6 @@ end
                             coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, atoms_m, energy_units,
                             velocities_i, velocities_j, velocities_k, velocities_l, velocities_m,
                             step_n, data)
-    
     # First angle
     v0a = vector(coords_j, coords_i, boundary)
     v1a = vector(coords_j, coords_k, boundary)

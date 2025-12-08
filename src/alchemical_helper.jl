@@ -3,7 +3,8 @@ export
     Atom_L,
     CMAPTorsion_L,
     print_interaction,
-    kabsch
+    kabsch,
+    step_logger
 
 function print_interaction(interaction)
     field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
@@ -14,27 +15,39 @@ function print_interaction(interaction)
     end
 end
 
-function kabsch(P,Q)
-    P = ustrip(P)
-    Q = ustrip(Q)
-    cP = mean(P, dims=1)
-    cQ = mean(Q, dims=1)
+function step_logger(sys, buffers, neighbors, step_n::Integer; n_threads::Integer,
+                                  current_potential_energy=nothing, kwargs...)
+    if isnothing(current_potential_energy)
+        energy = potential_energy(sys, neighbors; n_threads=n_threads)
+        println("Step "*string(step_n)*" : potential_energy = "*string(energy))
+        flush(stdout)
+        return energy
+    else
+        println("Step "*string(step_n)*" : potential_energy = "*string(current_potential_energy))
+        flush(stdout)
+        return current_potential_energy
+    end
+end
 
+
+function kabsch(P,Q)
+    P = ustrip(P')
+    Q = ustrip(Q')
+    cP = mean(P, dims=2)
+    cQ = mean(Q, dims=2)
+    
     P_centered = P .- cP
     Q_centered = Q .- cQ
-
-    H = P_centered' * Q_centered
-
-    U, S, Vt = svd(H)
-    R = Vt * U'
-
-    if det(R) < 0
-        Vt[:,3] *= -1
-        R = Vt * U'
-    end
-
-    t = vec(cQ' - R * cP')
-    return R, t
+    
+    cov = P_centered * Q_centered'
+    svd_res = svd(ustrip.(cov))
+    Ut = transpose(svd_res.U)
+    d = sign(det(svd_res.V * Ut))
+    dmat = [1 0 0; 0 1 0; 0 0 d]
+    rot = svd_res.V * dmat * Ut
+    
+    t = Q[:,1] - (rot * P)[:,1]
+    return rot, t
 end
 
 function lambda4(l1, l2, l3, l4)
@@ -45,48 +58,39 @@ function lambda4(l1, l2, l3, l4)
     end
 end
 
-function atom_type(string)
-    if occursin("H", string)
-        return "H"
-    elseif occursin("C", string)
-        return "C"
-    elseif occursin("O", string)
-        return "O"
-    elseif occursin("N", string)
-        return "N"
-    elseif occursin("S", string)
-        return "S"
-    end
-end
-
 function charmm_pdb_file(data_dir, filename, filename2)
     file_content = readlines(joinpath(data_dir,filename))
     final_lines = []
-    prev_res = 0
+    current_res = ""
+    current_idx = 0
+    index = 1
     for line in file_content
-        length(line)<14 && continue
         if occursin("REMARK", line)
             push!(final_lines, line)
-        elseif length(line)<14
+        elseif occursin("CRYST", line)
             push!(final_lines, line)
-        elseif occursin("Y", line[13:16])
-            AT = atom_type(line[13:16])
+        elseif occursin("END", line)
+            push!(final_lines, line)
+        elseif occursin("Y", line[13:17])
             len = 78-length(line)
-            prev_res = 1
-            push!(final_lines, line[1:17]*"ACE"*line[21:end]*lpad(AT,len))
-        elseif occursin("T", line[13:16])
-            AT = atom_type(line[13:16])
+            push!(final_lines, line[1:17]*"ACE"*line[21:22]*lpad(string(1), 4)*line[27:end])
+        elseif occursin("T", line[13:17])
             len = 78-length(line)
-            (prev_res - parse(Int, line[24:26]))==1 ? prev_res+=1 : prev_res
-            push!(final_lines, line[1:17]*"NME"*line[21:23]*lpad(string(prev_res), 3)*line[27:end]*lpad(AT,len))
+            if parse(Int, line[23:27])==current_idx
+                index += 1
+                current_idx -= 1
+            end
+            push!(final_lines, line[1:17]*"NME"*line[21:22]*lpad(string(index), 4)*line[27:end])
         elseif occursin("TER", line)
-            parse(Int, line[24:26])==prev_res ? prev_res+=1 : prev_res
-            push!(final_lines, line[1:17]*"NME"*line[21:23]*lpad(string(prev_res), 3))
+            push!(final_lines, line[1:22]*lpad(string(index), 4))
         else
-            AT = atom_type(line[13:16])
             len = 78-length(line)
-            parse(Int, line[24:26])==prev_res ? prev_res+=1 : prev_res
-            push!(final_lines, line[1:23]*lpad(string(prev_res), 3)*line[27:end]*lpad(AT,len))
+            if parse(Int, line[23:27])!=current_idx || line[18:20]!=current_res
+                index += 1
+                current_idx = parse(Int, line[23:27])
+                current_res = line[18:20]
+            end
+            push!(final_lines, line[1:22]*lpad(string(index), 4)*line[27:end])
         end
     end
     
@@ -128,6 +132,21 @@ end
 function Base.show(io::IO, a::Atom_L)
     print(io, "Atom with index=", a.index, ", atom_type=", a.atom_type, ", mass=", mass(a),
           ", charge=", charge(a), ", σ=", a.σ, ", ϵ=", a.ϵ, ", λ=", a.λ)
+end
+
+function inject_atom(at::Atom_L, at_data, params_dic)
+    key_prefix = "residue_$(at_data.res_num)_$(at_data.res_type)_"
+    Atom(
+        at.index,
+        at.atom_type,
+        at.mass,
+        at.charge, 
+        at.σ,
+        at.ϵ,
+        at.σ14,
+        at.ϵ14,
+        dict_get(params_dic, key_prefix * "λ", at.λ),
+    )
 end
 
 # Shortcuts
@@ -214,6 +233,15 @@ end
 end
 
 Base.zero(::CMAPTorsion_L) = CMAPTorsion_L(index=0, size=0, λ=0.0)
+
+function inject_interaction(inter::CMAPTorsion_L{I,L}, inter_type, params_dic) where {I,L}
+    key_prefix = "inter_CMAP_$(inter_type)_"
+    return CMAPTorsion_L{I,L}(
+        inter.index,
+        inter.size,
+        dict_get(params_dic, key_prefix * "λ", inter.λ[i]),
+    )
+end
 
 @inline function force(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
                             coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, 
