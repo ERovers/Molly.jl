@@ -26,11 +26,14 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
     Interactions = []
     Boundary = deepcopy(sys.boundary)
     if isnothing(aminos)
-        aminos = Dict("ARG"=>0.05,"HIS"=>0.05,"LYS"=>0.05,"ASP"=>0.05,
-                    "GLU"=>0.05,"SER"=>0.05,"THR"=>0.05,"ASN"=>0.05,
-                    "GLN"=>0.05,"CYS"=>0.05,"GLY"=>0.05,"ALA"=>0.05,
-                    "VAL"=>0.05,"ILE"=>0.05,"LEU"=>0.05,"MET"=>0.05,
-                    "PHE"=>0.05,"THR"=>0.05,"TRP"=>0.05)
+        aminos = Dict()
+        for r in res_num
+            aminos[r] = Dict("ARG"=>0.05,"HIS"=>0.05,"LYS"=>0.05,"ASP"=>0.05,
+                        "GLU"=>0.05,"SER"=>0.05,"THR"=>0.05,"ASN"=>0.05,
+                        "GLN"=>0.05,"CYS"=>0.05,"GLY"=>0.05,"ALA"=>0.05,
+                        "VAL"=>0.05,"ILE"=>0.05,"LEU"=>0.05,"MET"=>0.05,
+                        "PHE"=>0.05,"THR"=>0.05,"TRP"=>0.05)
+        end
     end
     
     # Remove all the atoms of selected residue except backbone and set λ to 1.0
@@ -76,6 +79,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
             count += 1
         end
     end
+    println(CAs)
     
     # Add all the in the interactions except the ones part of the side-chain that has been removed
     for interaction in sys.specific_inter_lists
@@ -100,7 +104,9 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
                 end
             end
             maps = vcat(maps...)
-            Interactions = push!(Interactions, InteractionList5Atoms{IT.types[1], Vector{CMAPTorsion{CMAP.types[1]}}, IT.types[end]}(tmp..., maps))
+            if length(tmp[1])>0
+                Interactions = push!(Interactions, InteractionList5Atoms{IT.types[1], Vector{CMAPTorsion{CMAP.types[1]}}, IT.types[end]}(tmp..., maps))
+            end
         else
             for field_tuple in zip(field_names[1:end-1]...)
                 n_fields = length(field_tuple)
@@ -123,7 +129,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
     map_AA = Dict()
     addition_groups = Dict()
     for r in res_num
-        for AA in keys(aminos)
+        for AA in keys(aminos[r])
             # Load residue system
             amino_dir = normpath(@__DIR__, "..", "data/aminoacids")
             tmp_sys = System(amino_dir*"/"*AA*".pdb", ff;
@@ -153,7 +159,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
                         map_AA[i] = residue[r]["backbone_map"][d.atom_name]
                     else
                         push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                        σ14=a.σ14, ϵ14=a.ϵ14, λ=T(aminos[AA])))
+                        σ14=a.σ14, ϵ14=a.ϵ14, λ=T(aminos[r][AA])))
                         push!(Data, AtomData(d.atom_type, d.atom_name, r, d.res_name, d.chain_id, d.element, d.hetero_atom))
                         push!(Coords, SVector{length(c)}(c))
                         map_AA[i] = count
@@ -184,7 +190,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
                                 tmp[i] = push!(tmp[i], map_AA[field_tuple[i]])
                             end
                             
-                            tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion_L(field_tuple[end-1].index, field_tuple[end-1].size, T(aminos[AA])))
+                            tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion_L(field_tuple[end-1].index, field_tuple[end-1].size, T(aminos[r][AA])))
                             tmp[n_fields] = push!(tmp[n_fields], field_tuple[end]*"λ")
                         end
                     end

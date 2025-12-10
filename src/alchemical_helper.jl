@@ -9,9 +9,9 @@ export
 function print_interaction(interaction)
     field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
 
-    for ft in zip(field_names[1:end-1]...)
+    for (i,ft) in enumerate(zip(field_names[1:end-1]...))
         n_fields = length(ft)
-        println([string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]))
+        println("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]))
     end
 end
 
