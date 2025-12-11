@@ -267,31 +267,31 @@ end
 function inject_interaction_list(inter::InteractionList1Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
                                 inter.types, (params_dic,)), AT)
-    InteractionList1Atoms(inter.is, inters_grad, inter.types, inters.data)
+    InteractionList1Atoms(inter.is, inters_grad, inter.types, inter.data)
 end
 
 function inject_interaction_list(inter::InteractionList2Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
                                 inter.types, (params_dic,)), AT)
-    InteractionList2Atoms(inter.is, inter.js, inters_grad, inter.types, inters.data)
+    InteractionList2Atoms(inter.is, inter.js, inters_grad, inter.types, inter.data)
 end
 
 function inject_interaction_list(inter::InteractionList3Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
                                 inter.types, (params_dic,)), AT)
-    InteractionList3Atoms(inter.is, inter.js, inter.ks, inters_grad, inter.types, inters.data)
+    InteractionList3Atoms(inter.is, inter.js, inter.ks, inters_grad, inter.types, inter.data)
 end
 
 function inject_interaction_list(inter::InteractionList4Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
                                 inter.types, (params_dic,)), AT)
-    InteractionList4Atoms(inter.is, inter.js, inter.ks, inter.ls, inters_grad, inter.types, inters.data)
+    InteractionList4Atoms(inter.is, inter.js, inter.ks, inter.ls, inters_grad, inter.types, inter.data)
 end
 
 function inject_interaction_list(inter::InteractionList5Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
                                 inter.types, (params_dic,)), AT)
-    InteractionList5Atoms(inter.is, inter.js, inter.ks, inter.ls, inter.ms, inters_grad, inter.types, inters.data)
+    InteractionList5Atoms(inter.is, inter.js, inter.ks, inter.ls, inter.ms, inters_grad, inter.types, inter.data)
 end
 
 """
@@ -338,16 +338,18 @@ end
 # get function errors with AD
 dict_get(dic, key, default) = (haskey(dic, key) ? dic[key] : default)
 
-function inject_atom(at, at_data, params_dic)
+function inject_atom(at::Atom, at_data, params_dic)
     key_prefix = "atom_$(at_data.atom_type)_"
-    Atom(
-        at.index,
-        at.atom_type,
-        dict_get(params_dic, key_prefix * "mass"  , at.mass),
-        at.charge, # Residue-specific
-        dict_get(params_dic, key_prefix * "σ"     , at.σ   ),
-        dict_get(params_dic, key_prefix * "ϵ"     , at.ϵ   ),
-    )
+    return Atom(
+                at.index,
+                at.atom_type,
+                dict_get(params_dic, key_prefix * "mass"  , at.mass),
+                at.charge, # Residue-specific
+                dict_get(params_dic, key_prefix * "σ"     , at.σ   ),
+                dict_get(params_dic, key_prefix * "ϵ"     , at.ϵ   ),
+                dict_get(params_dic, key_prefix * "σ14"     , at.σ14   ),
+                dict_get(params_dic, key_prefix * "ϵ14"     , at.ϵ14   ),
+            )
 end
 
 """

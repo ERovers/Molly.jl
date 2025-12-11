@@ -31,7 +31,7 @@ beyond the cutoff distance.
     shortcut::H = lj_zero_shortcut
     σ_mixing::S = lorentz_σ_mixing
     ϵ_mixing::E = geometric_ϵ_mixing
-    weight_special::W = 1
+    weight_special::W = 1.0
 end
 
 use_neighbors(inter::LennardJones) = inter.use_neighbors
@@ -118,7 +118,7 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
     end
-    
+
     σ = inter.σ_mixing(atom_i, atom_j, special)
     ϵ = inter.ϵ_mixing(atom_i, atom_j, special)
 
@@ -179,7 +179,7 @@ If ``\lambda`` is zero the interaction is turned off.
     shortcut::H = lj_zero_shortcut
     σ_mixing::S = lorentz_σ_mixing
     ϵ_mixing::E = geometric_ϵ_mixing
-    weight_special::W = 1
+    weight_special::W = 1.0
 end
 
 use_neighbors(inter::LennardJonesSoftCoreBeutler) = inter.use_neighbors
@@ -207,6 +207,20 @@ function Base.:+(l1::LennardJonesSoftCoreBeutler, l2::LennardJonesSoftCoreBeutle
         l1.σ_mixing,
         l1.ϵ_mixing,
         l1.weight_special + l2.weight_special,
+    )
+end
+
+function inject_interaction(inter::LennardJonesSoftCoreBeutler, params_dic)
+    key_prefix = "inter_LJ_B_"
+    return LennardJonesSoftCoreBeutler(
+        inter.cutoff,
+        dict_get(params_dic, key_prefix * "α", inter.α),
+        dict_get(params_dic, key_prefix * "λ", inter.λ),
+        inter.use_neighbors,
+        inter.shortcut,
+        inter.σ_mixing,
+        inter.ϵ_mixing,
+        dict_get(params_dic, key_prefix * "weight_14", inter.weight_special),
     )
 end
 
@@ -262,6 +276,7 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
     end
+    
     σ6 = inter.σ_mixing(atom_i, atom_j)^6
     ϵ = inter.ϵ_mixing(atom_i, atom_j)
 
@@ -338,7 +353,7 @@ If ``\lambda`` is zero the interaction is turned off.
     shortcut::H = lj_zero_shortcut
     σ_mixing::S = lorentz_σ_mixing
     ϵ_mixing::E = geometric_ϵ_mixing
-    weight_special::W = 1
+    weight_special::W = 1.0
 end
 
 use_neighbors(inter::LennardJonesSoftCoreGapsys) = inter.use_neighbors
@@ -369,6 +384,20 @@ function Base.:+(l1::LennardJonesSoftCoreGapsys, l2::LennardJonesSoftCoreGapsys)
     )
 end
 
+function inject_interaction(inter::LennardJonesSoftCoreGapsys, params_dic)
+    key_prefix = "inter_LJ_GAP_"
+    return LennardJonesSoftCoreGapsys(
+        inter.cutoff,
+        inter.α,
+        inter.λ,
+        inter.use_neighbors,
+        inter.shortcut,
+        inter.σ_mixing,
+        inter.ϵ_mixing,
+        inter.weight_special,
+    )
+end
+
 @inline function force(inter::LennardJonesSoftCoreGapsys,
                        dr,
                        atom_i,
@@ -379,8 +408,8 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip.(zero(dr)) * force_units
     end
-    σ6 = inter.σ_mixing(atom_i, atom_j)^6
-    ϵ = inter.ϵ_mixing(atom_i, atom_j)
+    σ6 = inter.σ_mixing(atom_i, atom_j, special)^6
+    ϵ = inter.ϵ_mixing(atom_i, atom_j, special)
     if inter.λ == nothing
         if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
             λ = minimum((atom_i.λ,atom_j.λ))
@@ -429,8 +458,9 @@ end
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
     end
-    σ6 = inter.σ_mixing(atom_i, atom_j)^6
-    ϵ = inter.ϵ_mixing(atom_i, atom_j)
+    
+    σ6 = inter.σ_mixing(atom_i, atom_j, special)^6
+    ϵ = inter.ϵ_mixing(atom_i, atom_j, special)
     if inter.λ == nothing
         if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
             λ = minimum((atom_i.λ, atom_j.λ))

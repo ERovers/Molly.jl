@@ -22,7 +22,7 @@ V(r_{ij}) = \frac{q_i q_j}{4 \pi \varepsilon_0 r_{ij}}
     cutoff::C = NoCutoff()
     use_neighbors::Bool = false
     shortcut::H = coul_zero_shortcut
-    weight_special::W = 1
+    weight_special::W = 1.0
     coulomb_const::T = coulomb_const
 end
 
@@ -47,6 +47,7 @@ function inject_interaction(inter::Coulomb, params_dic)
     return Coulomb(
         inter.cutoff,
         inter.use_neighbors,
+        inter.shortcut,
         dict_get(params_dic, key_prefix * "weight_14", inter.weight_special),
         dict_get(params_dic, key_prefix * "coulomb_const", inter.coulomb_const),
     )
@@ -155,7 +156,7 @@ If ``\lambda`` is zero the interaction is turned off.
     shortcut::H = coul_zero_shortcut
     σ_mixing::S = lorentz_σ_mixing
     ϵ_mixing::E = geometric_ϵ_mixing
-    weight_special::W = 1
+    weight_special::W = 1.0
     coulomb_const::T = coulomb_const
     sc_sigma::SC = 0.3u"nm^6"
 end
@@ -189,6 +190,22 @@ function Base.:+(c1::CoulombSoftCoreBeutler, c2::CoulombSoftCoreBeutler)
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
         c1.sc_sigma,
+    )
+end
+
+function inject_interaction(inter::CoulombSoftCoreBeutler, params_dic)
+    key_prefix = "inter_CO_B_"
+    return CoulombSoftCoreBeutler(
+        inter.cutoff,
+        dict_get(params_dic, key_prefix * "α", inter.α),
+        dict_get(params_dic, key_prefix * "λ", inter.λ),
+        inter.use_neighbors,
+        inter.shortcut,
+        inter.σ_mixing,
+        inter.ϵ_mixing,
+        dict_get(params_dic, key_prefix * "weight_14", inter.weight_special),
+        dict_get(params_dic, key_prefix * "coulomb_const", inter.coulomb_const),
+        dict_get(params_dic, key_prefix * "sc_sigma", inter.sc_sigma),
     )
 end
 
@@ -330,7 +347,7 @@ If ``\lambda`` is zero the interaction is turned off.
     σQ::Q = 1.0u"nm"
     use_neighbors::Bool = false
     shortcut::H = coul_zero_shortcut
-    weight_special::W = 1
+    weight_special::W = 1.0
     coulomb_const::T = coulomb_const
 end
 
@@ -359,6 +376,20 @@ function Base.:+(c1::CoulombSoftCoreGapsys, c2::CoulombSoftCoreGapsys)
         c1.shortcut,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
+    )
+end
+
+function inject_interaction(inter::CoulombSoftCoreGapsys, params_dic)
+    key_prefix = "inter_CO_GAP_"
+    return CoulombSoftCoreGapsys(
+        inter.cutoff,
+        inter.α,
+        inter.λ,
+        inter.σQ,
+        inter.use_neighbors,
+        inter.shortcut,
+        inter.weight_special,
+        inter.coulomb_const,
     )
 end
 
@@ -415,7 +446,7 @@ end
                                   special=false,
                                   args...)
     if inter.shortcut(atom_i, atom_j)
-        return ustrip(zero(dr[2])) * energy_units
+        return ustrip(zero(dr[1])) * energy_units
     end
 
     r = norm(dr)

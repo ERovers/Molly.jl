@@ -18,7 +18,7 @@ original system and λ-mediated atoms.
 """
 
 
-function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp = T(298.0)u"K")
+function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp = T(298.0)u"K", units=true)
     # initialize data groups for new system
     Atoms = []
     Data = []
@@ -42,7 +42,8 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
     residue = Dict()
     CAs = []
     for r in res_num
-        residue[r] = Dict("backbone_map" => Dict(), "backbone_coords" => zeros(T,3,3)u"nm")
+        tmp_dic = units ? Dict("backbone_map" => Dict(), "backbone_coords" => zeros(T,3,3)u"nm") : Dict("backbone_map" => Dict(), "backbone_coords" => zeros(T,3,3))
+        residue[r] = tmp_dic
     end
     backbone_idx = Dict("HA"=>1,"CA"=>2,"CB"=>3, "HA2"=>1, "HA3"=>3)
     count = 1
@@ -65,7 +66,8 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
         elseif (d.res_number in res_num) && d.atom_name in ["N","CA","C","O","H","HA","HA2"]
             push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                     σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0)))
-            push!(Data, d)
+            push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
+                                        res_name="ALC", element=d.element))
             push!(Coords, c)
             map[i] = count
             residue[d.res_number]["backbone_map"][d.atom_name] = count
@@ -79,7 +81,6 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
             count += 1
         end
     end
-    println(CAs)
     
     # Add all the in the interactions except the ones part of the side-chain that has been removed
     for interaction in sys.specific_inter_lists
@@ -98,6 +99,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
                         tmp[i] = push!(tmp[i], map[field_tuple[i]])
                     end
                     tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion(index, field_tuple[end-1].size))
+                    at_data = Data[field_tuple[3]]
                     tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
                     push!(maps, interaction.data[index+1:index+(4*field_tuple[end-1].size*field_tuple[end-1].size), :])
                     index += 4*field_tuple[end-1].size*field_tuple[end-1].size
@@ -133,17 +135,18 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
             # Load residue system
             amino_dir = normpath(@__DIR__, "..", "data/aminoacids")
             tmp_sys = System(amino_dir*"/"*AA*".pdb", ff;
-                     nonbonded_method=:cutoff, center_coords=false)
+                     nonbonded_method=:cutoff, center_coords=false, units=units)
             
             # Superimpose residue onto backbone
-            backbone_coords2 = zeros(T,3,3)u"nm"
+            backbone_coords2 = units ? zeros(T,3,3)u"nm" : zeros(T,3,3)
             for (d,c) in zip(tmp_sys.atoms_data, tmp_sys.coords)
                 if d.atom_name in ["HA","CA","CB","HA2","HA3"] && (d.res_name!="ACE" && d.res_name!="NME") 
                     backbone_coords2[backbone_idx[d.atom_name],:] = c
                 end
             end
             rot, t = kabsch(backbone_coords2, residue[r]["backbone_coords"])
-            coords2 = ((rot * hcat(tmp_sys.coords...)) .+ (t)u"nm")'
+            t = units ? (t)u"nm" : t
+            coords2 = ((rot * hcat(tmp_sys.coords...)) .+ t)'
             
             # Create map for interactions and add atoms
             sidechain_A = []
@@ -191,7 +194,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
                             end
                             
                             tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion_L(field_tuple[end-1].index, field_tuple[end-1].size, T(aminos[r][AA])))
-                            tmp[n_fields] = push!(tmp[n_fields], field_tuple[end]*"λ")
+                            tmp[n_fields] = push!(tmp[n_fields], "residue_$(r)_$(AA)_λ")
                         end
                     end
                     Interactions = push!(Interactions, InteractionList5Atoms{IT.types[1], Vector{CMAPTorsion_L{CMAP.types[1], T}}, IT.types[end]}(tmp..., interaction.data))
@@ -249,18 +252,21 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
         special[i, l] = true
         special[l, i] = true
     end
-    
-    cutoff = DistanceCutoff(T(1.2)u"nm")
+
+    cut = units ? T(1.2)u"nm" : T(1.2)
+    cou_const = units ? T(coulomb_const) : ustrip(T(coulomb_const))
     if AT <:AbstractGPUArray
-        nf = GPUNeighborFinder(eligible=Molly.to_device(eligible, AT), dist_cutoff=T(1.2)u"nm", special=Molly.to_device(special, AT), n_steps_reorder=10)
+        nf = GPUNeighborFinder(eligible=Molly.to_device(eligible, AT), dist_cutoff=cut, special=Molly.to_device(special, AT), n_steps_reorder=10)
     else
-        nf = CellListMapNeighborFinder(eligible=Molly.to_device(eligible, AT), dist_cutoff=T(1.2)u"nm", special=Molly.to_device(special, AT), n_steps=10)
+        nf = CellListMapNeighborFinder(eligible=Molly.to_device(eligible, AT), dist_cutoff=cut, special=Molly.to_device(special, AT), n_steps=10)
     end
+    σQ= units ? T(1.0)u"nm" : T(1.0)
+    cutoff = DistanceCutoff(cut)
     pairwise_inters = (
-                        LennardJonesSoftCoreGapsys(α=T(0.85), λ=nothing, use_neighbors=true, cutoff=cutoff, shortcut=Molly.lj_λ_one_shortcut),
-                        LennardJones(use_neighbors=true, cutoff=cutoff, shortcut=Molly.lj_λ_less_one_shortcut),
-                        Coulomb(use_neighbors=true, cutoff=cutoff, shortcut=Molly.coul_λ_less_one_shortcut, coulomb_const=T(coulomb_const)),
-                        CoulombSoftCoreGapsys(α=T(0.3), λ=nothing, σQ=T(1.0)u"nm", use_neighbors=true, cutoff=cutoff, shortcut=Molly.coul_λ_one_shortcut, coulomb_const=T(coulomb_const)),
+                        LennardJones(use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_less_one_shortcut,weight_special=T(1.0)),
+                        LennardJonesSoftCoreGapsys(α=T(0.85), λ=nothing, use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_one_shortcut, weight_special=T(1.0)),
+                        Coulomb(use_neighbors=true, cutoff=cutoff, shortcut=coul_λ_less_one_shortcut, coulomb_const=cou_const, weight_special=T(1.0)),
+                        CoulombSoftCoreGapsys(α=T(0.3), λ=nothing, σQ=σQ, use_neighbors=true, cutoff=cutoff, shortcut=coul_λ_one_shortcut, coulomb_const=cou_const, weight_special=T(1.0)),
                         )
     
     # Ensure all arrays have correct typing
@@ -271,7 +277,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
 
     # Set-up final system
     vels_gpu = [random_velocity(a.mass, temp) for a in Atoms]
-
+    
     sys_final = System(
         atoms=Molly.to_device(Atoms, AT),
         coords=Molly.to_device(Coords, AT),
@@ -287,6 +293,8 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
             writer=TrajectoryWriter(1000, traj_file),
             step_log=GeneralObservableLogger(step_logger, typeof(one(T)u"kJ * mol^-1"), 10_000),
         ),
+        force_units=(units ? u"kJ * mol^-1 * nm^-1" : NoUnits),
+        energy_units=(units ? u"kJ * mol^-1" : NoUnits),
     )
 
     return sys_final

@@ -962,7 +962,7 @@ function System(coord_file::AbstractString,
         push!(cmaps_il.types, atom_types_to_string(key...))
         push!(cmaps_il.inters, CMAPTorsion(index, cmap.size))
         index += 4*cmap.size*cmap.size
-        push!(maps, calc_coefficients(cmap.size,cmap.energy))
+        push!(maps, calc_coefficients(cmap.size,cmap.energy, units))
     end
     maps = vcat(maps...)
 
