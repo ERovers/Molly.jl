@@ -48,8 +48,8 @@ function inject_interaction(inter::Coulomb, params_dic)
         inter.cutoff,
         inter.use_neighbors,
         inter.shortcut,
-        dict_get(params_dic, key_prefix * "weight_14", inter.weight_special),
-        dict_get(params_dic, key_prefix * "coulomb_const", inter.coulomb_const),
+        inter.weight_special,
+        inter.coulomb_const,
     )
 end
 
@@ -340,28 +340,28 @@ the atom is fully turned on.
 If ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
-@kwdef struct CoulombSoftCoreGapsys{C, H, FT, L, Q, W, T} <: PairwiseInteraction
+@kwdef struct CoulombSoftCoreGapsys{C, H, L, Q, T} <: PairwiseInteraction
     cutoff::C = NoCutoff()
-    α::FT = 1.0
+    α::T = 1.0
     λ::L = nothing
     σQ::Q = 1.0u"nm"
     use_neighbors::Bool = false
     shortcut::H = coul_zero_shortcut
-    weight_special::W = 1.0
+    weight_special::T = 1.0
     coulomb_const::T = coulomb_const
 end
 
 use_neighbors(inter::CoulombSoftCoreGapsys) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreGapsys{C, H, FT, L, Q, W, T}) where {C, H, FT, L, Q, W, T}
+function Base.zero(coul::CoulombSoftCoreGapsys{C, H, L, Q, T}) where {C, H, L, Q, T}
     return CoulombSoftCoreGapsys(
         coul.cutoff,
-        zero(FT),
+        zero(T),
         zero(L),
         zero(Q),
         coul.use_neighbors,
         coul.shortcut,
-        zero(W),
+        zero(T),
         zero(T),
     )
 end
@@ -454,16 +454,12 @@ end
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
     if inter.λ == nothing
-        if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
-            λ = minimum((atom_i.λ, atom_j.λ))
-        else
-            λ = lorentz_λ_mixing(atom_i, atom_j)
-        end
+        λ = lambda_mix(atom_i, atom_j)
     else
         λ = inter.λ
-    end
-    σ6_fac = inter.α * sqrt(cbrt(1-λ))
-    params = (ke, qi, qj, inter.σQ, σ6_fac, λ)
+    end    
+
+    params = (ke, qi, qj, inter.σQ, inter.α, λ)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
@@ -473,9 +469,12 @@ end
     end
 end
 
-function pairwise_pe(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac, λ))
+
+function pairwise_pe(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, α, λ))
     qij = qi * qj
-    R = σ6_fac*(oneunit(r)+(σQ*abs(qij)))
+    σ6_fac = α * sqrt(cbrt(1-λ))
+    R = σ6_fac*(oneunit(r)+(σQ*abs(qij))) 
+
     if r >= R
         return λ * (ke * (qij/r))
     else

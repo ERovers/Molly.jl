@@ -1530,7 +1530,7 @@ function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
             to_device(cmaps.ms, AT),
             to_device(cmaps_pad, AT),
             cmaps.types,
-            maps,
+            to_device(maps,AT),
         ))
     end
     specific_inter_lists = tuple(specific_inter_array...)

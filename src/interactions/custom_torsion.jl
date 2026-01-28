@@ -19,8 +19,8 @@ Base.zero(::CustomTorsion{K, D}) where {K, D} = CustomTorsion(k=zero(K), θ0=zer
 function inject_interaction(inter::CustomTorsion, inter_type, params_dic)
     key_prefix = "inter_CUS_$(inter_type)_"
     return CustomTorsion(
-        dict_get(params_dic, key_prefix * "k" , inter.k ),
-        dict_get(params_dic, key_prefix * "θ0", inter.θ0),
+        inter.k,
+        inter.θ0,
     )
 end
 

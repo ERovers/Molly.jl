@@ -59,12 +59,15 @@ function inject_interaction(inter::PeriodicTorsion{N, T, E}, inter_type, params_
     else
         key_prefix = "inter_IT_$(inter_type)_"
     end
-    return PeriodicTorsion{N, T, E}(
-        inter.periodicities,
-        ntuple(i -> dict_get(params_dic, key_prefix * "phase_$i", inter.phases[i]), N),
-        ntuple(i -> dict_get(params_dic, key_prefix * "k_$i"    , inter.ks[i]    ), N),
-        inter.proper,
-    )
+    # return PeriodicTorsion{N, T, E}(
+    #     inter.periodicities,
+    #     # ntuple(i -> dict_get(params_dic, key_prefix * "phase_$i", inter.phases[i]), N),
+    #     # ntuple(i -> dict_get(params_dic, key_prefix * "k_$i"    , inter.ks[i]    ), N),
+    #     ntuple(i -> inter.phases[i], N),
+    #     ntuple(i -> inter.ks[i], N),
+    #     inter.proper,
+    # )
+    return inter
 end
 
 function extract_parameters!(params_dic,
@@ -114,8 +117,7 @@ end
 # The summation gives different errors with Enzyme on CPU and GPU
 #   so there are two similar implementations
 @inline function force(d::PeriodicTorsion, coords_i, coords_j, coords_k,
-                       coords_l, boundary, atom_i::Atom, atom_j::Atom, 
-                                atom_k::Atom, atom_l::Atom, args...)
+                       coords_l, boundary, atom_i::Atom, atom_j::Atom, atom_k::Atom, atom_l::Atom, args...)
     ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ = periodic_torsion_vectors(
                                         coords_i, coords_j, coords_k, coords_l, boundary)
     fs = sum(zip(d.periodicities, d.phases, d.ks)) do (periodicity, phase, k)
@@ -127,8 +129,7 @@ end
 end
 
 @inline function force_gpu(d::PeriodicTorsion{N}, coords_i, coords_j, coords_k,
-                           coords_l, boundary, atom_i::Atom, atom_j::Atom, 
-                                atom_k::Atom, atom_l::Atom, args...) where N
+                           coords_l, boundary, atom_i::Atom, atom_j::Atom, atom_k::Atom, atom_l::Atom, args...) where N
     ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ = periodic_torsion_vectors(
                                         coords_i, coords_j, coords_k, coords_l, boundary)
     fi_sum, fj_sum, fk_sum, fl_sum = periodic_torsion_force(d.periodicities[1], d.phases[1],
@@ -145,8 +146,7 @@ end
 end
 
 @inline function potential_energy(d::PeriodicTorsion{N}, coords_i, coords_j, coords_k,
-                                  coords_l, boundary, atom_i::Atom, atom_j::Atom, 
-                                atom_k::Atom, atom_l::Atom, args...) where N
+                                  coords_l, boundary, atom_i::Atom, atom_j::Atom, atom_k::Atom, atom_l::Atom, args...) where N
     θ = torsion_angle(coords_i, coords_j, coords_k, coords_l, boundary)
     k1 = d.ks[1]
     E = k1 + k1 * cos((d.periodicities[1] * θ) - d.phases[1])

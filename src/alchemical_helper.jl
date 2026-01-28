@@ -1,3 +1,8 @@
+# Alchemical helper functions for protein design
+# Project Molly v0.23.0
+# ENZYME version: v"0.13.116"
+# Julia version: 1.11
+
 export
     lambda4,
     Atom_L,
@@ -41,7 +46,6 @@ function step_logger(sys, buffers, neighbors, step_n::Integer; n_threads::Intege
     end
 end
 
-
 function kabsch(P,Q)
     P = ustrip(P')
     Q = ustrip(Q')
@@ -62,12 +66,20 @@ function kabsch(P,Q)
     return rot, t
 end
 
-function lambda4(l1, l2, l3, l4)
-    if l1 == l2 == l3 == l4
-        return one(l1)
-    else
-        return minimum((l1, l2, l3, l4))
+@inline function lambda4(l1, l2, l3, l4)
+    minλ = min(min(l1, l2), min(l3, l4))
+    all_equal = (l1 == l2) & (l2 == l3) & (l3 == l4)
+    return ifelse(all_equal, one(l1), minλ)
+end
+
+function lambda_mix(atom_i, atom_j)
+    if atom_i.λ == 1.0
+        return atom_j.λ
+    elseif atom_j.λ == 1.0
+        return atom_i.λ
     end
+
+    return lorentz_λ_mixing(atom_i, atom_j)
 end
 
 function charmm_pdb_file(data_dir, filename, filename2)
@@ -76,6 +88,7 @@ function charmm_pdb_file(data_dir, filename, filename2)
     current_res = ""
     current_idx = 0
     index = 1
+    NME_flag = false
     for line in file_content
         if occursin("REMARK", line)
             push!(final_lines, line)
@@ -87,6 +100,7 @@ function charmm_pdb_file(data_dir, filename, filename2)
             len = 78-length(line)
             push!(final_lines, line[1:17]*"ACE"*line[21:22]*lpad(string(1), 4)*line[27:end])
         elseif occursin("T", line[13:17])
+            NME_flag = true
             len = 78-length(line)
             if parse(Int, line[23:27])==current_idx
                 index += 1
@@ -95,14 +109,27 @@ function charmm_pdb_file(data_dir, filename, filename2)
             push!(final_lines, line[1:17]*"NME"*line[21:22]*lpad(string(index), 4)*line[27:end])
         elseif occursin("TER", line)
             push!(final_lines, line[1:22]*lpad(string(index), 4))
-        else
+        elseif occursin("HOH", line)
+            NME_flag = false
             len = 78-length(line)
-            if parse(Int, line[23:27])!=current_idx || line[18:20]!=current_res
+            if (parse(Int, line[23:27])!=current_idx || line[18:20]!=current_res)
                 index += 1
                 current_idx = parse(Int, line[23:27])
                 current_res = line[18:20]
             end
             push!(final_lines, line[1:22]*lpad(string(index), 4)*line[27:end])
+        else
+            len = 78-length(line)
+            if (parse(Int, line[23:27])!=current_idx || line[18:20]!=current_res) && !NME_flag
+                index += 1
+                current_idx = parse(Int, line[23:27])
+                current_res = line[18:20]
+            end
+            if !NME_flag
+                push!(final_lines, line[1:22]*lpad(string(index), 4)*line[27:end])
+            else
+                push!(final_lines, line[1:17]*"NME"*line[21:22]*lpad(string(index), 4)*line[27:end])
+            end
         end
     end
     
@@ -146,8 +173,16 @@ function Base.show(io::IO, a::Atom_L)
           ", charge=", charge(a), ", σ=", a.σ, ", ϵ=", a.ϵ, ", λ=", a.λ)
 end
 
+function dict_get(dic, key, atom, at_data, default)
+    if haskey(dic, key)
+        return dic[key][at_data.res_id]
+    else
+        return default
+    end
+end
+
 function inject_atom(at::Atom_L, at_data, params_dic)
-    key_prefix = "residue_$(at_data.res_number)_$(at_data.res_name)_"
+    key_prefix = "residue_" * string(at_data.res_number) * "_λ"
     return Atom_L(
                 at.index,
                 at.atom_type,
@@ -157,8 +192,36 @@ function inject_atom(at::Atom_L, at_data, params_dic)
                 at.ϵ,
                 at.σ14,
                 at.ϵ14,
-                dict_get(params_dic, key_prefix * "λ", at.λ),
+                dict_get(params_dic, key_prefix, at, at_data, at.λ),
             )
+end
+
+"""
+    AtomData_L(; atom_type="?", atom_name="?", res_number=1, res_name="???", res_id=1,
+             chain_id="A", element="?", hetero_atom=false)
+
+Data associated with an atom.
+
+Storing this separately allows the [`Atom`](@ref) types to be bits types and hence
+work on the GPU.
+"""
+@kwdef struct AtomData_L
+    atom_type::String = "?"
+    atom_name::String = "?"
+    res_number::Int = 1
+    res_name::String = "???"
+    res_id::Int = 1
+    chain_id::String = "A"
+    element::String = "?"
+    hetero_atom::Bool = false
+end
+
+function BioStructures.AtomRecord(at_data::AtomData_L, i, coord)
+    return BioStructures.AtomRecord(
+        at_data.hetero_atom, i, at_data.atom_name, ' ', at_data.res_name,
+        at_data.chain_id, at_data.res_number, ' ', coord, 1.0, 0.0,
+        at_data.element == "?" ? "  " : at_data.element, "  "
+    )
 end
 
 # Shortcuts
@@ -188,51 +251,50 @@ function coul_λ_one_shortcut(atom_i, atom_j)
            ( (atom_i.λ==1) && (atom_j.λ==1) )
 end
 
-
 # Torsion functions
-@inline function force(inter::PeriodicTorsion, coords_i, coords_j, coords_k,
+@inline function force(d::PeriodicTorsion, coords_i, coords_j, coords_k,
                        coords_l, boundary, atom_i::Atom_L, atom_j::Atom_L, 
-                        atom_k::Atom_L, atom_l::Atom_L, args...)
+                       atom_k::Atom_L, atom_l::Atom_L, args...)
     ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ = periodic_torsion_vectors(
                                         coords_i, coords_j, coords_k, coords_l, boundary)
-    fs = sum(zip(inter.periodicities, inter.phases, inter.ks)) do (periodicity, phase, k)
+    fs = sum(zip(d.periodicities, d.phases, d.ks)) do (periodicity, phase, k)
         fi, fj, fk, fl = periodic_torsion_force(periodicity, phase, k, ab, bc, cd, cross_ab_bc,
                                                 cross_bc_cd, bc_norm, θ)
         l = lambda4(atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)
-        return SpecificForce4Atoms(l * fi, l * fj, l * fk, l * fl)
+        return SpecificForce4Atoms(l*fi, l*fj, l*fk, l*fl)
     end
     return fs
 end
 
-@inline function force_gpu(inter::PeriodicTorsion{N}, coords_i, coords_j, coords_k,
-                           coords_l, boundary, atom_i::Atom_L, atom_j::Atom_L, 
-                        atom_k::Atom_L, atom_l::Atom_L, args...) where N
+@inline function force_gpu(d::PeriodicTorsion{N}, coords_i, coords_j, coords_k,
+                           coords_l, boundary, atom_i::Atom_L, atom_j::Atom_L, atom_k::Atom_L, 
+                           atom_l::Atom_L, args...) where N
     ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ = periodic_torsion_vectors(
                                         coords_i, coords_j, coords_k, coords_l, boundary)
-    fi_sum, fj_sum, fk_sum, fl_sum = periodic_torsion_force(inter.periodicities[1], inter.phases[1],
-                                        inter.ks[1], ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
+    fi_sum, fj_sum, fk_sum, fl_sum = periodic_torsion_force(d.periodicities[1], d.phases[1],
+                                        d.ks[1], ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
     l = lambda4(atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)
     for i in 2:N
-        fi, fj, fk, fl = periodic_torsion_force(inter.periodicities[i], inter.phases[i], inter.ks[i], ab, bc,
+        fi, fj, fk, fl = periodic_torsion_force(d.periodicities[i], d.phases[i], d.ks[i], ab, bc,
                                                 cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
         fi_sum += fi
         fj_sum += fj
         fk_sum += fk
         fl_sum += fl
     end
-    return SpecificForce4Atoms(l * fi_sum, l * fj_sum, l * fk_sum, l * fl_sum)
+    return SpecificForce4Atoms(l*fi_sum,l*fj_sum, l*fk_sum, l*fl_sum)
 end
 
-@inline function potential_energy(inter::PeriodicTorsion{N}, coords_i, coords_j, coords_k,
-                                  coords_l, boundary, atom_i::Atom_L, atom_j::Atom_L, 
-                                atom_k::Atom_L, atom_l::Atom_L, args...) where N
+@inline function potential_energy(d::PeriodicTorsion{N}, coords_i, coords_j, coords_k,
+                                  coords_l, boundary, atom_i::Atom_L, atom_j::Atom_L,
+                                  atom_k::Atom_L, atom_l::Atom_L, args...) where N
     θ = torsion_angle(coords_i, coords_j, coords_k, coords_l, boundary)
-    k1 = inter.ks[1]
-    E = k1 + k1 * cos((inter.periodicities[1] * θ) - inter.phases[1])
+    k1 = d.ks[1]
+    E = k1 + k1 * cos((d.periodicities[1] * θ) - d.phases[1])
     l = lambda4(atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)
     for i in 2:N
-        k = inter.ks[i]
-        E += k + k * cos((inter.periodicities[i] * θ) - inter.phases[i])
+        k = d.ks[i]
+        E += k + k * cos((d.periodicities[i] * θ) - d.phases[i])
     end
     return l * E
 end
@@ -242,15 +304,28 @@ end
     index::I
     size::I
     λ::L
+    res_num::I
+    res_id::I
 end
 
-Base.zero(::CMAPTorsion_L) = CMAPTorsion_L(index=0, size=0, λ=0.0)
+Base.zero(::CMAPTorsion_L) = CMAPTorsion_L(index=0, size=0, λ=0.0, res_num=0, res_id=0)
+
+function dict_get(dic, key, inter::CMAPTorsion_L, default)
+    if haskey(dic, key)
+        return dic[key][inter.res_id]
+    else
+        return default
+    end
+end
 
 function inject_interaction(inter::CMAPTorsion_L{I,L}, inter_type, params_dic) where {I,L}
+    key_prefix = "residue_" * string(inter.res_num) * "_λ"
     return CMAPTorsion_L{I,L}(
         inter.index,
         inter.size,
-        dict_get(params_dic, inter_type, inter.λ),
+        dict_get(params_dic, key_prefix, inter, inter.λ),
+        inter.res_num,
+        inter.res_id,
     )
 end
 
@@ -424,153 +499,83 @@ end
 end
 
 # Energy
-function pairwise_pe_loop(atoms, coords, velocities, boundary, neighbors, energy_units,
-                          n_atoms, pairwise_inters_nonl, pairwise_inters_nl, ::Val{T},
-                          ::Val{1}, step_n=0) where T
+function myfindneighbors(atoms, coords, boundary, neighborfinder)
+     sys = System(
+        atoms=atoms,
+        coords=coords,
+        boundary=boundary,
+        pairwise_inters=(),
+        specific_inter_lists=(),
+        general_inters=(),
+        neighbor_finder=neighborfinder,
+        force_units=NoUnits,
+        energy_units=NoUnits,
+    )
+    return find_neighbors(sys)
+end
+
+@inline function potential_energy(coords, boundary, neighbors, n_neighbors, velocities, energy_units,
+                            atoms, b_g, a_g, p_g, i_g, c_g, 
+                            lj_g, co_g, lg_g, cg_g)
+    T = typeof(ustrip(zero(eltype(eltype(coords)))))
     pe = zero(T) * energy_units
-    @inbounds if length(pairwise_inters_nonl) > 0
-        n_atoms = length(coords)
-        for i in 1:n_atoms
-            for j in (i + 1):n_atoms
-                dr = vector(coords[i], coords[j], boundary)
-                pe_sum = potential_energy(pairwise_inters_nonl[1], dr, atoms[i], atoms[j],
-                                energy_units, false, coords[i], coords[j], boundary,
-                                velocities[i], velocities[j], step_n)
-                for inter in pairwise_inters_nonl[2:end]
-                    pe_sum += potential_energy(inter, dr, atoms[i], atoms[j], energy_units, false,
-                                coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-                end
-                check_energy_units(pe_sum, energy_units)
-                pe += pe_sum
-            end
-        end
+
+    # Pairwise interactions
+    for ni in 1:n_neighbors
+        i, j, special = neighbors[ni]
+        dr = vector(coords[i], coords[j], boundary)
+        pe += potential_energy(lj_g, dr, atoms[i], atoms[j], energy_units, special,
+                        coords[i], coords[j], boundary, velocities[i], velocities[j], 0)
+        pe += potential_energy(co_g, dr, atoms[i], atoms[j], energy_units, special,
+                        coords[i], coords[j], boundary, velocities[i], velocities[j], 0)
+        pe += potential_energy(lg_g, dr, atoms[i], atoms[j], energy_units, special,
+                        coords[i], coords[j], boundary, velocities[i], velocities[j], 0)
+        pe += potential_energy(cg_g, dr, atoms[i], atoms[j], energy_units, special,
+                        coords[i], coords[j], boundary, velocities[i], velocities[j], 0)
     end
 
-    if length(pairwise_inters_nl) > 0
-        if isnothing(neighbors)
-            error("an interaction uses the neighbor list but neighbors is nothing")
-        end
-        for ni in eachindex(neighbors)
-            i, j, special = neighbors[ni]
-            dr = vector(coords[i], coords[j], boundary)
-            pe_sum = potential_energy(pairwise_inters_nl[1], dr, atoms[i], atoms[j], energy_units, special,
-                            coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-            pe_sum += potential_energy(pairwise_inters_nl[3], dr, atoms[i], atoms[j], energy_units, special,
-                            coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-            check_energy_units(pe_sum, energy_units)
-            pe += pe_sum
-        end
-        for ni in eachindex(neighbors)
-            i, j, special = neighbors[ni]
-            dr = vector(coords[i], coords[j], boundary)
-            pe_sum = potential_energy(pairwise_inters_nl[2], dr, atoms[i], atoms[j], energy_units, special,
-                            coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-            pe_sum += potential_energy(pairwise_inters_nl[4], dr, atoms[i], atoms[j], energy_units, special,
-                        coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-            check_energy_units(pe_sum, energy_units)
-            pe += pe_sum
-        end
+    # Bonds
+    for (i, j, inter) in zip(b_g.is, b_g.js, b_g.inters)
+        pe +=  potential_energy(inter, coords[i], coords[j], boundary, atoms[i], atoms[j],
+                              energy_units, velocities[i], velocities[j], 0, b_g.data)
+    end
+
+    # Angles
+    for (i, j, k, inter) in zip(a_g.is, a_g.js, a_g.ks, a_g.inters)
+        pe += potential_energy(inter, coords[i], coords[j], coords[k], boundary, atoms[i],
+                              atoms[j], atoms[k], energy_units, velocities[i], velocities[j],
+                              velocities[k], 0, a_g.data)
+    end
+
+    # Periodic Torsions
+    for (i, j, k, l, inter) in zip(p_g.is, p_g.js, p_g.ks, p_g.ls,
+                                   p_g.inters)
+        pe += potential_energy(inter, coords[i], coords[j], coords[k], coords[l], boundary,
+                              atoms[i], atoms[j], atoms[k], atoms[l], energy_units,
+                              velocities[i], velocities[j], velocities[k], velocities[l],
+                              0, p_g.data)
+    end
+
+    # Custom Torsions
+    for (i, j, k, l, inter) in zip(i_g.is, i_g.js, i_g.ks, i_g.ls,
+                                   i_g.inters)
+        pe += potential_energy(inter, coords[i], coords[j], coords[k], coords[l], boundary,
+                              atoms[i], atoms[j], atoms[k], atoms[l], energy_units,
+                              velocities[i], velocities[j], velocities[k], velocities[l],
+                              0, i_g.data)
+    end
+
+    # CMAP Torsions
+    for (i, j, k, l, m, inter) in zip(c_g.is, c_g.js, c_g.ks, c_g.ls,
+                                   c_g.ms, c_g.inters)
+        pe += potential_energy(inter, coords[i], coords[j], coords[k], coords[l], coords[m], 
+                              boundary, atoms[i], atoms[j], atoms[k], atoms[l], atoms[m], energy_units,
+                              velocities[i], velocities[j], velocities[k], velocities[l], velocities[m],
+                              0, c_g.data)
     end
 
     return pe
 end
-
-function specific_pe(atoms, coords, velocities, boundary, energy_units, sils_1_atoms,
-                     sils_2_atoms, sils_3_atoms, sils_4_atoms, sils_5_atoms, ::Val{T}, step_n=0) where T
-    pe = zero(T) * energy_units
-    
-    if length(sils_2_atoms)>0
-        inter_list = sils_2_atoms[1]
-        for (i, j, inter) in zip(inter_list.is, inter_list.js, inter_list.inters)
-            pe_inter = potential_energy(inter, coords[i], coords[j], boundary, atoms[i], atoms[j],
-                                  energy_units, velocities[i], velocities[j], step_n, inter_list.data)
-            check_energy_units(pe_inter, energy_units)
-            pe += pe_inter
-        end
-    end
-
-    if length(sils_3_atoms)>0
-        inter_list = sils_3_atoms[1]
-        for (i, j, k, inter) in zip(inter_list.is, inter_list.js, inter_list.ks, inter_list.inters)
-            pe_inter = potential_energy(inter, coords[i], coords[j], coords[k], boundary, atoms[i],
-                                  atoms[j], atoms[k], energy_units, velocities[i], velocities[j],
-                                  velocities[k], step_n, inter_list.data)
-            check_energy_units(pe_inter, energy_units)
-            pe += pe_inter
-        end
-    end
-
-    if length(sils_4_atoms)==1
-        inter_list = sils_4_atoms[1]
-        for (i, j, k, l, inter) in zip(inter_list.is, inter_list.js, inter_list.ks, inter_list.ls,
-                                       inter_list.inters)
-            pe_inter = potential_energy(inter, coords[i], coords[j], coords[k], coords[l], boundary,
-                                  atoms[i], atoms[j], atoms[k], atoms[l], energy_units,
-                                  velocities[i], velocities[j], velocities[k], velocities[l],
-                                  step_n, inter_list.data)
-            check_energy_units(pe_inter, energy_units)
-            pe += pe_inter
-        end
-    elseif length(sils_4_atoms)==2
-        inter_list = sils_4_atoms[1]
-        for (i, j, k, l, inter) in zip(inter_list.is, inter_list.js, inter_list.ks, inter_list.ls,
-                                       inter_list.inters)
-            pe_inter = potential_energy(inter, coords[i], coords[j], coords[k], coords[l], boundary,
-                                  atoms[i], atoms[j], atoms[k], atoms[l], energy_units,
-                                  velocities[i], velocities[j], velocities[k], velocities[l],
-                                  step_n, inter_list.data)
-            check_energy_units(pe_inter, energy_units)
-            pe += pe_inter
-        end
-        inter_list = sils_4_atoms[2]
-        for (i, j, k, l, inter) in zip(inter_list.is, inter_list.js, inter_list.ks, inter_list.ls,
-                                       inter_list.inters)
-            pe_inter = potential_energy(inter, coords[i], coords[j], coords[k], coords[l], boundary,
-                                  atoms[i], atoms[j], atoms[k], atoms[l], energy_units,
-                                  velocities[i], velocities[j], velocities[k], velocities[l],
-                                  step_n, inter_list.data)
-            check_energy_units(pe_inter, energy_units)
-            pe += pe_inter
-        end
-    end
-
-    if length(sils_5_atoms)==1
-        inter_list = sils_5_atoms[1]
-        for (i, j, k, l, m, inter) in zip(inter_list.is, inter_list.js, inter_list.ks, inter_list.ls,
-                                       inter_list.ms, inter_list.inters)
-            pe_inter = potential_energy(inter, coords[i], coords[j], coords[k], coords[l], coords[m], 
-                                  boundary, atoms[i], atoms[j], atoms[k], atoms[l], atoms[m], energy_units,
-                                  velocities[i], velocities[j], velocities[k], velocities[l], velocities[m],
-                                  step_n, inter_list.data)
-            check_energy_units(pe_inter, energy_units)
-            pe += pe_inter
-        end
-    elseif length(sils_5_atoms)==2
-        inter_list = sils_5_atoms[1]
-        for (i, j, k, l, m, inter) in zip(inter_list.is, inter_list.js, inter_list.ks, inter_list.ls,
-                                       inter_list.ms, inter_list.inters)
-            pe_inter = potential_energy(inter, coords[i], coords[j], coords[k], coords[l], coords[m], 
-                                  boundary, atoms[i], atoms[j], atoms[k], atoms[l], atoms[m], energy_units,
-                                  velocities[i], velocities[j], velocities[k], velocities[l], velocities[m],
-                                  step_n, inter_list.data)
-            check_energy_units(pe_inter, energy_units)
-            pe += pe_inter
-        end
-        inter_list = sils_5_atoms[2]
-        for (i, j, k, l, m, inter) in zip(inter_list.is, inter_list.js, inter_list.ks, inter_list.ls,
-                                       inter_list.ms, inter_list.inters)
-            pe_inter = potential_energy(inter, coords[i], coords[j], coords[k], coords[l], coords[m], 
-                                  boundary, atoms[i], atoms[j], atoms[k], atoms[l], atoms[m], energy_units,
-                                  velocities[i], velocities[j], velocities[k], velocities[l], velocities[m],
-                                  step_n, inter_list.data)
-            check_energy_units(pe_inter, energy_units)
-            pe += pe_inter
-        end
-    end
-
-    return pe
-end
-
 
 # Interactions
 function merge(interactions)
@@ -636,7 +641,7 @@ function Base.append!(il1::InteractionList5Atoms{I, T, D}, il2::InteractionList5
     cmaptorsion = typeof(il1.inters[1])
     matrix = typeof(il1.data)
     for inter in il2.inters
-        push!(tmp_inters, cmaptorsion((4*tmp_inters[end].size*tmp_inters[end].size)+tmp_inters[end].index, inter.size, inter.λ))
+        push!(tmp_inters, cmaptorsion((4*tmp_inters[end].size*tmp_inters[end].size)+tmp_inters[end].index, inter.size, inter.λ, inter.res_num, inter.res_id))
     end
     # println(vcat(il1.data,il2.data))
     return InteractionList5Atoms{I, T, D}(
@@ -705,4 +710,3 @@ function to_device(il1::InteractionList5Atoms{I, T, D}, ::Type{AT}) where {I, T,
         to_device(il1.data,AT),
     )
 end
-    

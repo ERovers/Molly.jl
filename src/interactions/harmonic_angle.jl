@@ -24,8 +24,8 @@ Base.:+(a1::HarmonicAngle, a2::HarmonicAngle) = HarmonicAngle(k=(a1.k + a2.k), �
 function inject_interaction(inter::HarmonicAngle, inter_type, params_dic)
     key_prefix = "inter_HA_$(inter_type)_"
     return HarmonicAngle(
-        dict_get(params_dic, key_prefix * "k" , inter.k ),
-        dict_get(params_dic, key_prefix * "θ0", inter.θ0),
+        inter.k,
+        inter.θ0,
     )
 end
 

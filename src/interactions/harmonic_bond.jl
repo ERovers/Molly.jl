@@ -22,8 +22,8 @@ Base.:+(b1::HarmonicBond, b2::HarmonicBond) = HarmonicBond(k=(b1.k + b2.k), r0=(
 function inject_interaction(inter::HarmonicBond, inter_type, params_dic)
     key_prefix = "inter_HB_$(inter_type)_"
     return HarmonicBond(
-        dict_get(params_dic, key_prefix * "k" , inter.k ),
-        dict_get(params_dic, key_prefix * "r0", inter.r0),
+        inter.k,
+        inter.r0,
     )
 end
 

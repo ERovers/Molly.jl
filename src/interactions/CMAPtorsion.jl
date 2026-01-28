@@ -118,7 +118,7 @@ function calcMapDerivatives(size, energy::Vector{E}, units) where E
                 rhs[k+12] = e12[k]*delta*delta
             end
             for k in 1:16
-                sum = units ? zero(E)u"kJ * mol^-1" : zero(E)
+                sum = zero(E)
                 for m in 1:16
                     sum += wt[k+16*(m-1)]*rhs[m]
                 end

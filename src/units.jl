@@ -63,32 +63,33 @@ function check_system_units(masses, coords, velocities, energy_units, force_unit
 end
 
 function check_other_units(atoms_dev, boundary, sys_units::NamedTuple)
-    atoms = from_device(atoms_dev)
-    box_units = unit(length_type(boundary))
+    #### Problems with getproperty --> Enzyme + Multiprocessing/Threading ####
+    # atoms = from_device(atoms_dev)
+    # box_units = unit(length_type(boundary))
 
-    if !all(sys_units[:length] .== box_units)
-        throw(ArgumentError("simulation box constructed with $box_units but length unit " *
-                            "on coords was $(sys_units[:length])"))
-    end
+    # if !all(sys_units[:length] .== box_units)
+    #     throw(ArgumentError("simulation box constructed with $box_units but length unit " *
+    #                         "on coords was $(sys_units[:length])"))
+    # end
 
-    sigmas   = getproperty.(atoms[hasproperty.(atoms, :σ)], :σ)
-    epsilons = getproperty.(atoms[hasproperty.(atoms, :ϵ)], :ϵ)
+    # sigmas   = getproperty.(atoms[hasproperty.(atoms, :σ)], :σ)
+    # epsilons = getproperty.(atoms[hasproperty.(atoms, :ϵ)], :ϵ)
 
-    if !all(sigmas .== 0.0u"nm")
-        σ_units = unit.(sigmas)
-        if !all(sys_units[:length] .== σ_units)
-            throw(ArgumentError("Atom σ has $(σ_units[1]) units but length unit on coords " *
-                                "was $(sys_units[:length])"))
-        end
-    end
+    # if !all(sigmas .== 0.0u"nm")
+    #     σ_units = unit.(sigmas)
+    #     if !all(sys_units[:length] .== σ_units)
+    #         throw(ArgumentError("Atom σ has $(σ_units[1]) units but length unit on coords " *
+    #                             "was $(sys_units[:length])"))
+    #     end
+    # end
 
-    if !all(epsilons .== 0.0u"kJ * mol^-1")
-        ϵ_units = unit.(epsilons)
-        if !all(sys_units[:energy] .== ϵ_units)
-            throw(ArgumentError("Atom ϵ has $(ϵ_units[1]) units but system energy unit " *
-                                "was $(sys_units[:energy])"))
-        end
-    end
+    # if !all(epsilons .== 0.0u"kJ * mol^-1")
+    #     ϵ_units = unit.(epsilons)
+    #     if !all(sys_units[:energy] .== ϵ_units)
+    #         throw(ArgumentError("Atom ϵ has $(ϵ_units[1]) units but system energy unit " *
+    #                             "was $(sys_units[:energy])"))
+    #     end
+    # end
 end
 
 function validate_energy_units(energy_units)
@@ -137,23 +138,24 @@ function validate_coords(coords)
 end
 
 function validate_velocities(velocities)
-    velocity_units = map(from_device(velocities)) do vel
-        [unit(v) for v in vel]
-    end
+    #### Problems with map() --> Enzyme + Multiprocessing/Threading ####
+    # velocity_units = map(from_device(velocities)) do vel
+    #     [unit(v) for v in vel]
+    # end
 
-    if !allequal(velocity_units) || !allequal(velocity_units[1])
-        throw(ArgumentError("velocities have mixed units"))
-    end
+    # if !allequal(velocity_units) || !allequal(velocity_units[1])
+    #     throw(ArgumentError("velocities have mixed units"))
+    # end
 
-    valid_velocity_dimensions = [u"𝐋 * 𝐓^-1", NoDims]
+    # valid_velocity_dimensions = [u"𝐋 * 𝐓^-1", NoDims]
     velocity_dimension = (dimension ∘ eltype ∘ eltype)(velocities)
 
-    if velocity_dimension ∉ valid_velocity_dimensions
-        throw(ArgumentError("velocity units have dimension $velocity_dimension. Velocity units " *
-            "must be velocity or NoUnits, e.g. 1.0u\"m/s\" or 1.0."))
-    end
+    # if velocity_dimension ∉ valid_velocity_dimensions
+    #     throw(ArgumentError("velocity units have dimension $velocity_dimension. Velocity units " *
+    #         "must be velocity or NoUnits, e.g. 1.0u\"m/s\" or 1.0."))
+    # end
 
-    return velocity_dimension, velocity_units[1][1]
+    return velocity_dimension, type(velocities[1][1])
 end
 
 function default_k(energy_units)

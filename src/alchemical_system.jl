@@ -1,6 +1,15 @@
 export
     Hybrid_system
 
+const aminos_dic = Dict("ALA" => 1, "ARG" => 2, "ASN" => 3,
+                        "ASP" => 4, "CYS" => 5, "GLN" => 6,
+                        "GLU" => 7, "GLY" => 8, "HIS" => 9,
+                        "ILE" => 10, "LEU" => 11, "LYS" => 12, 
+                        "MET" => 13, "PHE" => 14, "SER" => 15,
+                        "THR" => 16, "TRP" => 17, "TYR" => 18,
+                        "VAL" => 19, "ACE" => 0, "ALC" => 0,
+                        "NME" => 0, "HOH" => 0)
+
 """
     Hybrid_system(T, AT, ff, sys, res_num, aminos)
 
@@ -12,29 +21,31 @@ original system and λ-mediated atoms.
 - `AT`: Array type, whether to run on CPU (Array) or GPU (CuArray)
 - `ff`: MolecularForceField struct that is used to parametrize the system.
 - `sys`: The system in which a residue is going to be mutated.
-- `res_num`: The residue number of the residue that we want to mutate.
-- `aminos = Nothing`: A dictionary of the substitutions and the λ-values. If nothing, the whole library (all AA, except PRO) will be added with λ=0.05.
+- `params_dic`: A dictionary of the substitutions and the λ-values
 - `temp = T(298.0)u"K"`: Temperature to generate random velocities for the system, standard is 298K.
 """
 
 
-function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp = T(298.0)u"K", units=true)
+function Hybrid_system(T, AT, ff, sys, traj_file, params_dic, temp = T(298.0)u"K", units=true)
     # initialize data groups for new system
     Atoms = []
     Data = []
     Coords = []
     Interactions = []
     Boundary = deepcopy(sys.boundary)
-    if isnothing(aminos)
-        aminos = Dict()
-        for r in res_num
-            aminos[r] = Dict("ARG"=>0.05,"HIS"=>0.05,"LYS"=>0.05,"ASP"=>0.05,
-                        "GLU"=>0.05,"SER"=>0.05,"THR"=>0.05,"ASN"=>0.05,
-                        "GLN"=>0.05,"CYS"=>0.05,"GLY"=>0.05,"ALA"=>0.05,
-                        "VAL"=>0.05,"ILE"=>0.05,"LEU"=>0.05,"MET"=>0.05,
-                        "PHE"=>0.05,"THR"=>0.05,"TRP"=>0.05)
+    aminos = Dict()
+    for (res, res_vec) in params_dic
+        res_n = parse(Int, match(r"\d+", res).match)
+        for (i,l) in enumerate(res_vec)
+            res_type = [key for (key,value) in aminos_dic if value==i][1]
+            if haskey(aminos, res_n)
+                aminos[res_n][res_type] = l
+            else
+                aminos[res_n] = Dict(res_type => l)
+            end
         end
     end
+    res_num = keys(aminos)
     
     # Remove all the atoms of selected residue except backbone and set λ to 1.0
     # Make map of backbone to map interactions on later for added side-chains
@@ -59,15 +70,17 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
         if !(d.res_number in res_num)
             push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                     σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0)))
-            push!(Data, d)
+            # push!(Data, d)
+            push!(Data, AtomData_L(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
+                                        res_name=d.res_name, res_id=aminos_dic[d.res_name], element=d.element))
             push!(Coords, c)
             map[i] = count
             count += 1
         elseif (d.res_number in res_num) && d.atom_name in ["N","CA","C","O","H","HA","HA2"]
             push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                     σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0)))
-            push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
-                                        res_name="ALC", element=d.element))
+            push!(Data, AtomData_L(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
+                                        res_name="ALC", res_id=aminos_dic[d.res_name], element=d.element))
             push!(Coords, c)
             map[i] = count
             residue[d.res_number]["backbone_map"][d.atom_name] = count
@@ -163,7 +176,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
                     else
                         push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                         σ14=a.σ14, ϵ14=a.ϵ14, λ=T(aminos[r][AA])))
-                        push!(Data, AtomData(d.atom_type, d.atom_name, r, d.res_name, d.chain_id, d.element, d.hetero_atom))
+                        push!(Data, AtomData_L(d.atom_type, d.atom_name, r, d.res_name, aminos_dic[d.res_name], d.chain_id, d.element, d.hetero_atom))
                         push!(Coords, SVector{length(c)}(c))
                         map_AA[i] = count
                         push!(sidechain_A, i)
@@ -193,8 +206,8 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
                                 tmp[i] = push!(tmp[i], map_AA[field_tuple[i]])
                             end
                             
-                            tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion_L(field_tuple[end-1].index, field_tuple[end-1].size, T(aminos[r][AA])))
-                            tmp[n_fields] = push!(tmp[n_fields], "residue_$(r)_$(AA)_λ")
+                            tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion_L(field_tuple[end-1].index, field_tuple[end-1].size, T(aminos[r][AA]), r, aminos_dic[AA]))
+                            tmp[n_fields] = push!(tmp[n_fields], "residue_$(r)_r$(aminos_dic[AA])_λ")
                         end
                     end
                     Interactions = push!(Interactions, InteractionList5Atoms{IT.types[1], Vector{CMAPTorsion_L{CMAP.types[1], T}}, IT.types[end]}(tmp..., interaction.data))
@@ -264,8 +277,8 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
     cutoff = DistanceCutoff(cut)
     pairwise_inters = (
                         LennardJones(use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_less_one_shortcut,weight_special=T(1.0)),
-                        LennardJonesSoftCoreGapsys(α=T(0.85), λ=nothing, use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_one_shortcut, weight_special=T(1.0)),
                         Coulomb(use_neighbors=true, cutoff=cutoff, shortcut=coul_λ_less_one_shortcut, coulomb_const=cou_const, weight_special=T(1.0)),
+                        LennardJonesSoftCoreGapsys(α=T(0.85), λ=nothing, use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_one_shortcut, weight_special=T(1.0)),
                         CoulombSoftCoreGapsys(α=T(0.3), λ=nothing, σQ=σQ, use_neighbors=true, cutoff=cutoff, shortcut=coul_λ_one_shortcut, coulomb_const=cou_const, weight_special=T(1.0)),
                         )
     
@@ -289,9 +302,8 @@ function Hybrid_system(T, AT, ff, sys, traj_file, res_num, aminos=nothing, temp 
         neighbor_finder=nf,
         general_inters=(),
         loggers=(
-            temp=TemperatureLogger(1000),
-            writer=TrajectoryWriter(1000, traj_file),
-            step_log=GeneralObservableLogger(step_logger, typeof(one(T)u"kJ * mol^-1"), 10_000),
+            writer=TrajectoryWriter(10_000, traj_file),
+            step_log=GeneralObservableLogger(step_logger, typeof(one(T)), 10_000),
         ),
         force_units=(units ? u"kJ * mol^-1 * nm^-1" : NoUnits),
         energy_units=(units ? u"kJ * mol^-1" : NoUnits),

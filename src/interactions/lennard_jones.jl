@@ -66,7 +66,7 @@ function inject_interaction(inter::LennardJones, params_dic)
         inter.shortcut,
         inter.σ_mixing,
         inter.ϵ_mixing,
-        dict_get(params_dic, key_prefix * "weight_14", inter.weight_special),
+        inter.weight_special,
     )
 end
 
@@ -462,14 +462,11 @@ end
     σ6 = inter.σ_mixing(atom_i, atom_j, special)^6
     ϵ = inter.ϵ_mixing(atom_i, atom_j, special)
     if inter.λ == nothing
-        if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
-            λ = minimum((atom_i.λ, atom_j.λ))
-        else
-            λ = lorentz_λ_mixing(atom_i, atom_j)
-        end
+        λ = lambda_mix(atom_i, atom_j)
     else
         λ = inter.λ
-    end
+    end  
+
     cutoff = inter.cutoff
     r = norm(dr)
     C6 = 4 * ϵ * σ6
@@ -483,12 +480,13 @@ end
     end
 end
 
-function pairwise_pe(inter::LennardJonesSoftCoreGapsys, r, (C12, C6, λ))
-    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-λ)/7)))
+function pairwise_pe(inter::LennardJonesSoftCoreGapsys, r::T, (C12, C6, λ)) where T
     r6 = r^6
+    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-λ)/7)))
     invR = inv(R)
     invR2 = invR^2
     invR6 = invR^6
+
     if r >= R
         return λ * ((C12/(r6*r6))-(C6/(r6)))
     else

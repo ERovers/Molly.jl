@@ -787,8 +787,9 @@ function System(;
     constraints = Tuple(setup_constraints!(ca, neighbor_finder, AT) for ca in constraints)
     CN = typeof(constraints)
 
-    check_units(atoms, coords, vels, energy_units, force_units, pairwise_inters,
-                specific_inter_lists, general_inters, boundary)
+    ### disabled for Enzyme calls with multiprocessing
+    # check_units(atoms, coords, vels, energy_units, force_units, pairwise_inters,
+                # specific_inter_lists, general_inters, boundary)
 
     return System{D, AT, T, A, C, B, V, AD, TO, PI, SI, GI, CN, NF, L, F, E, K, M, TM, DA}(
                     atoms, coords, boundary, vels, atoms_data, topology, pairwise_inters,
