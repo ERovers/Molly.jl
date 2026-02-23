@@ -11,12 +11,17 @@ export
     kabsch,
     step_logger
 
-function print_interaction(interaction)
+function print_interaction(interaction, start_idx=1, end_idx=1)
     field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
-
+    if end_idx==1
+        end_idx = length(field_names)
+    end
     for (i,ft) in enumerate(zip(field_names[1:end-1]...))
-        n_fields = length(ft)
-        println("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]))
+        if i>start_idx && i<end_idx
+            n_fields = length(ft)
+            println("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]))
+            println(ft[end-1])
+        end
     end
 end
 
@@ -72,15 +77,16 @@ end
     return ifelse(all_equal, one(l1), minλ)
 end
 
-function lambda_mix(atom_i, atom_j)
-    if atom_i.λ == 1.0
+function lambda_mix(inter, atom_i, atom_j)
+    if atom_i.λ == one(atom_i.λ)
         return atom_j.λ
-    elseif atom_j.λ == 1.0
+    elseif atom_j.λ == one(atom_j.λ)
         return atom_i.λ
     end
-
-    return lorentz_λ_mixing(atom_i, atom_j)
+    # return lorentz_λ_mixing(atom_i, atom_j)
+    return atom_i.λ * atom_j.λ
 end
+
 
 function charmm_pdb_file(data_dir, filename, filename2)
     file_content = readlines(joinpath(data_dir,filename))
@@ -166,16 +172,22 @@ Similar to Atom Type, but with λ scaling for alchemical transformations.
     σ14::S = 0.0u"nm"
     ϵ14::E = 0.0u"kJ * mol^-1"
     λ::L = 1.0
+    charge_type::T = 0
+    solvent::T = 0
 end
 
 function Base.show(io::IO, a::Atom_L)
     print(io, "Atom with index=", a.index, ", atom_type=", a.atom_type, ", mass=", mass(a),
-          ", charge=", charge(a), ", σ=", a.σ, ", ϵ=", a.ϵ, ", λ=", a.λ)
+          ", charge=", charge(a), ", σ=", a.σ, ", ϵ=", a.ϵ, ", λ=", a.λ, ", charge_type=", a.charge_type, ", solvent=", a.solvent)
 end
 
-function dict_get(dic, key, atom, at_data, default)
+function dict_get(dic, key, atom::Atom_L, at_data, default)
     if haskey(dic, key)
-        return dic[key][at_data.res_id]
+        if at_data.res_name!="ALC"
+            return dic[key][at_data.res_id]
+        else
+            return default
+        end
     else
         return default
     end
@@ -193,6 +205,8 @@ function inject_atom(at::Atom_L, at_data, params_dic)
                 at.σ14,
                 at.ϵ14,
                 dict_get(params_dic, key_prefix, at, at_data, at.λ),
+                at.charge_type,
+                at.solvent,
             )
 end
 
@@ -260,7 +274,13 @@ end
     fs = sum(zip(d.periodicities, d.phases, d.ks)) do (periodicity, phase, k)
         fi, fj, fk, fl = periodic_torsion_force(periodicity, phase, k, ab, bc, cd, cross_ab_bc,
                                                 cross_bc_cd, bc_norm, θ)
-        l = lambda4(atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)
+        
+        if atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ) && atom_k.λ<one(atom_k.λ) && atom_l.λ<one(atom_l.λ)
+            l = one(atom_i.λ)
+        else
+            l = minimum((atom_i.λ,atom_j.λ,atom_k.λ,atom_l.λ))
+        end
+    
         return SpecificForce4Atoms(l*fi, l*fj, l*fk, l*fl)
     end
     return fs
@@ -273,7 +293,13 @@ end
                                         coords_i, coords_j, coords_k, coords_l, boundary)
     fi_sum, fj_sum, fk_sum, fl_sum = periodic_torsion_force(d.periodicities[1], d.phases[1],
                                         d.ks[1], ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
-    l = lambda4(atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)
+    
+    if atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ) && atom_k.λ<one(atom_k.λ) && atom_l.λ<one(atom_l.λ)
+        l = one(atom_i.λ)
+    else
+        l = minimum((atom_i.λ,atom_j.λ,atom_k.λ,atom_l.λ))
+    end
+    
     for i in 2:N
         fi, fj, fk, fl = periodic_torsion_force(d.periodicities[i], d.phases[i], d.ks[i], ab, bc,
                                                 cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
@@ -291,7 +317,13 @@ end
     θ = torsion_angle(coords_i, coords_j, coords_k, coords_l, boundary)
     k1 = d.ks[1]
     E = k1 + k1 * cos((d.periodicities[1] * θ) - d.phases[1])
-    l = lambda4(atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)
+
+    if atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ) && atom_k.λ<one(atom_k.λ) && atom_l.λ<one(atom_l.λ)
+        l = one(atom_i.λ)
+    else
+        l = minimum((atom_i.λ,atom_j.λ,atom_k.λ,atom_l.λ))
+    end
+    
     for i in 2:N
         k = d.ks[i]
         E += k + k * cos((d.periodicities[i] * θ) - d.phases[i])
@@ -515,7 +547,7 @@ function myfindneighbors(atoms, coords, boundary, neighborfinder)
 end
 
 @inline function potential_energy(coords, boundary, neighbors, n_neighbors, velocities, energy_units,
-                            atoms, b_g, a_g, p_g, i_g, c_g, 
+                            atoms, b_g, a_g, p_g, i_g, c_g, cl_g, 
                             lj_g, co_g, lg_g, cg_g)
     T = typeof(ustrip(zero(eltype(eltype(coords)))))
     pe = zero(T) * energy_units
@@ -572,6 +604,15 @@ end
                               boundary, atoms[i], atoms[j], atoms[k], atoms[l], atoms[m], energy_units,
                               velocities[i], velocities[j], velocities[k], velocities[l], velocities[m],
                               0, c_g.data)
+    end
+
+    # CMAP Torsions lambda
+    for (i, j, k, l, m, inter) in zip(cl_g.is, cl_g.js, cl_g.ks, cl_g.ls,
+                                   cl_g.ms, cl_g.inters)
+        pe += potential_energy(inter, coords[i], coords[j], coords[k], coords[l], coords[m], 
+                              boundary, atoms[i], atoms[j], atoms[k], atoms[l], atoms[m], energy_units,
+                              velocities[i], velocities[j], velocities[k], velocities[l], velocities[m],
+                              0, cl_g.data)
     end
 
     return pe

@@ -59,15 +59,13 @@ function inject_interaction(inter::PeriodicTorsion{N, T, E}, inter_type, params_
     else
         key_prefix = "inter_IT_$(inter_type)_"
     end
-    # return PeriodicTorsion{N, T, E}(
-    #     inter.periodicities,
-    #     # ntuple(i -> dict_get(params_dic, key_prefix * "phase_$i", inter.phases[i]), N),
-    #     # ntuple(i -> dict_get(params_dic, key_prefix * "k_$i"    , inter.ks[i]    ), N),
-    #     ntuple(i -> inter.phases[i], N),
-    #     ntuple(i -> inter.ks[i], N),
-    #     inter.proper,
-    # )
-    return inter
+
+    return PeriodicTorsion{N, T, E}(
+        inter.periodicities,
+        ntuple(i -> dict_get(params_dic, key_prefix * "phase_$i", inter.phases[i]), N),
+        ntuple(i -> dict_get(params_dic, key_prefix * "k_$i"    , inter.ks[i]    ), N),
+        inter.proper,
+    )
 end
 
 function extract_parameters!(params_dic,

@@ -340,7 +340,7 @@ the atom is fully turned on.
 If ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
-@kwdef struct CoulombSoftCoreGapsys{C, H, L, Q, T} <: PairwiseInteraction
+@kwdef struct CoulombSoftCoreGapsys{C, H, L, Q, T, E} <: PairwiseInteraction
     cutoff::C = NoCutoff()
     α::T = 1.0
     λ::L = nothing
@@ -349,11 +349,12 @@ If ``\lambda`` is zero the interaction is turned off.
     shortcut::H = coul_zero_shortcut
     weight_special::T = 1.0
     coulomb_const::T = coulomb_const
+    epoch::E
 end
 
 use_neighbors(inter::CoulombSoftCoreGapsys) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreGapsys{C, H, L, Q, T}) where {C, H, L, Q, T}
+function Base.zero(coul::CoulombSoftCoreGapsys{C, H, L, Q, T, E}) where {C, H, L, Q, T, E}
     return CoulombSoftCoreGapsys(
         coul.cutoff,
         zero(T),
@@ -363,6 +364,7 @@ function Base.zero(coul::CoulombSoftCoreGapsys{C, H, L, Q, T}) where {C, H, L, Q
         coul.shortcut,
         zero(T),
         zero(T),
+        zero(Integer),
     )
 end
 
@@ -376,6 +378,7 @@ function Base.:+(c1::CoulombSoftCoreGapsys, c2::CoulombSoftCoreGapsys)
         c1.shortcut,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
+        c1.epoch,
     )
 end
 
@@ -390,41 +393,51 @@ function inject_interaction(inter::CoulombSoftCoreGapsys, params_dic)
         inter.shortcut,
         inter.weight_special,
         inter.coulomb_const,
+        inter.epoch,
     )
 end
 
-@inline function force(inter::CoulombSoftCoreGapsys,
+@inline function force(inter::CoulombSoftCoreGapsys{C, H, L, Q, T, E},
                        dr,
                        atom_i,
                        atom_j,
                        force_units=u"kJ * mol^-1 * nm^-1",
                        special=false,
-                       args...)
+                       args...) where {C, H, L, Q, T, E}
     if inter.shortcut(atom_i, atom_j)
         return ustrip.(zero(dr)) * force_units
     end
+
+    if atom_i.solvent==one(atom_i.solvent) || atom_j.solvent==one(atom_j.solvent)
+        α = T(0.6)
+    else
+        α = inter.α
+    end
+
+    if inter.epoch<10 && atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ)
+        A = T(inter.epoch/10)
+    else
+        A = T(1.0)
+    end
+    
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
     if inter.λ == nothing
-        if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
-            λ = minimum((atom_i.λ, atom_j.λ))
-        else
-            λ = lorentz_λ_mixing(atom_i, atom_j)
-        end
+        λ = lambda_mix(inter,atom_i, atom_j)
     else
         λ = inter.λ
-    end
+    end    
     σ6_fac = inter.α * sqrt(cbrt(1-λ))
     params = (ke, qi, qj, inter.σQ, σ6_fac, λ)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
     if special
-        return fdr * inter.weight_special
+        return A * fdr * inter.weight_special
     else
-        return fdr
+        return A * fdr
     end
 end
 
@@ -438,34 +451,47 @@ function pairwise_force(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac, �
     end
 end
 
-@inline function potential_energy(inter::CoulombSoftCoreGapsys,
+@inline function potential_energy(inter::CoulombSoftCoreGapsys{C, H, L, Q, T, E},
                                   dr,
                                   atom_i,
                                   atom_j,
                                   energy_units=u"kJ * mol^-1",
                                   special=false,
-                                  args...)
+                                  args...) where {C, H, L, Q, T, E}
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
+    end
+
+    if atom_i.solvent==one(atom_i.solvent) || atom_j.solvent==one(atom_j.solvent)
+        α = T(0.6)
+    else
+        α = inter.α
+    end
+
+    if inter.epoch<10 && atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ)
+        A = T(inter.epoch/10)
+    else
+        A = T(1.0)
     end
 
     r = norm(dr)
     cutoff = inter.cutoff
     ke = inter.coulomb_const
     qi, qj = atom_i.charge, atom_j.charge
+    
     if inter.λ == nothing
-        λ = lambda_mix(atom_i, atom_j)
+        λ = lambda_mix(inter,atom_i, atom_j)
     else
         λ = inter.λ
     end    
 
-    params = (ke, qi, qj, inter.σQ, inter.α, λ)
+    params = (ke, qi, qj, inter.σQ, α, λ)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
-        return pe * inter.weight_special
+        return A * pe * inter.weight_special
     else
-        return pe
+        return A * pe
     end
 end
 

@@ -336,7 +336,19 @@ function Base.:+(a1::Atom, a2::Atom)
 end
 
 # get function errors with AD
-dict_get(dic, key, default) = (haskey(dic, key) ? dic[key] : default)
+# dict_get(dic, key, default) = (haskey(dic, key) ? dic[key] : default)
+function dict_get(dic, key, default; idx::Int = 1)
+    if haskey(dic, key)
+        val = dic[key]
+        if val isa AbstractVector
+            return val[idx]
+        else
+            return val
+        end
+    else
+        return default
+    end
+end
 
 function inject_atom(at::Atom, at_data, params_dic)
     key_prefix = "atom_$(at_data.atom_type)_"

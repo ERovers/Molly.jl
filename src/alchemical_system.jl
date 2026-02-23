@@ -10,6 +10,24 @@ const aminos_dic = Dict("ALA" => 1, "ARG" => 2, "ASN" => 3,
                         "VAL" => 19, "ACE" => 0, "ALC" => 0,
                         "NME" => 0, "HOH" => 0)
 
+const charge_aminos_dic = Dict("ALA" => 0, "ARG" => 1, "ASN" => 0,
+                                "ASP" => -1, "CYS" => 0, "GLN" => 0,
+                                "GLU" => -1, "GLY" => 0, "HIS" => 1,
+                                "ILE" => 0, "LEU" => 0, "LYS" => 1, 
+                                "MET" => 0, "PHE" => 0, "SER" => 0,
+                                "THR" => 0, "TRP" => 0, "TYR" => 0,
+                                "VAL" => 0, "ACE" => 0, "ALC" => 0,
+                                "NME" => 0, "HOH" => 0)
+
+const solvent_aminos_dic = Dict("ALA" => 0, "ARG" => 0, "ASN" => 0,
+                                "ASP" => 0, "CYS" => 0, "GLN" => 0,
+                                "GLU" => 0, "GLY" => 0, "HIS" => 0,
+                                "ILE" => 0, "LEU" => 0, "LYS" => 0, 
+                                "MET" => 0, "PHE" => 0, "SER" => 0,
+                                "THR" => 0, "TRP" => 0, "TYR" => 0,
+                                "VAL" => 0, "ACE" => 0, "ALC" => 0,
+                                "NME" => 0, "HOH" => 1)
+
 """
     Hybrid_system(T, AT, ff, sys, res_num, aminos)
 
@@ -26,7 +44,7 @@ original system and λ-mediated atoms.
 """
 
 
-function Hybrid_system(T, AT, ff, sys, traj_file, params_dic, temp = T(298.0)u"K", units=true)
+function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, temp = T(298.0)u"K", units=true)
     # initialize data groups for new system
     Atoms = []
     Data = []
@@ -69,7 +87,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, params_dic, temp = T(298.0)u"K
         end
         if !(d.res_number in res_num)
             push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0)))
+                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0), charge_type=charge_aminos_dic[d.res_name], solvent=solvent_aminos_dic[d.res_name]))
             # push!(Data, d)
             push!(Data, AtomData_L(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                         res_name=d.res_name, res_id=aminos_dic[d.res_name], element=d.element))
@@ -78,7 +96,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, params_dic, temp = T(298.0)u"K
             count += 1
         elseif (d.res_number in res_num) && d.atom_name in ["N","CA","C","O","H","HA","HA2"]
             push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0)))
+                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0), charge_type=charge_aminos_dic[d.res_name], solvent=solvent_aminos_dic[d.res_name]))
             push!(Data, AtomData_L(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                         res_name="ALC", res_id=aminos_dic[d.res_name], element=d.element))
             push!(Coords, c)
@@ -175,7 +193,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, params_dic, temp = T(298.0)u"K
                         map_AA[i] = residue[r]["backbone_map"][d.atom_name]
                     else
                         push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                        σ14=a.σ14, ϵ14=a.ϵ14, λ=T(aminos[r][AA])))
+                        σ14=a.σ14, ϵ14=a.ϵ14, λ=T(aminos[r][AA]), charge_type=charge_aminos_dic[d.res_name], solvent=solvent_aminos_dic[d.res_name]))
                         push!(Data, AtomData_L(d.atom_type, d.atom_name, r, d.res_name, aminos_dic[d.res_name], d.chain_id, d.element, d.hetero_atom))
                         push!(Coords, SVector{length(c)}(c))
                         map_AA[i] = count
@@ -279,7 +297,7 @@ function Hybrid_system(T, AT, ff, sys, traj_file, params_dic, temp = T(298.0)u"K
                         LennardJones(use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_less_one_shortcut,weight_special=T(1.0)),
                         Coulomb(use_neighbors=true, cutoff=cutoff, shortcut=coul_λ_less_one_shortcut, coulomb_const=cou_const, weight_special=T(1.0)),
                         LennardJonesSoftCoreGapsys(α=T(0.85), λ=nothing, use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_one_shortcut, weight_special=T(1.0)),
-                        CoulombSoftCoreGapsys(α=T(0.3), λ=nothing, σQ=σQ, use_neighbors=true, cutoff=cutoff, shortcut=coul_λ_one_shortcut, coulomb_const=cou_const, weight_special=T(1.0)),
+                        CoulombSoftCoreGapsys(α=T(0.3), λ=nothing, σQ=σQ, use_neighbors=true, cutoff=cutoff, shortcut=coul_λ_one_shortcut, coulomb_const=cou_const, weight_special=T(1.0), epoch=epoch),
                         )
     
     # Ensure all arrays have correct typing

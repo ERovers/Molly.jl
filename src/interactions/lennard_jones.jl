@@ -398,32 +398,35 @@ function inject_interaction(inter::LennardJonesSoftCoreGapsys, params_dic)
     )
 end
 
-@inline function force(inter::LennardJonesSoftCoreGapsys,
+@inline function force(inter::LennardJonesSoftCoreGapsys{C, FT, L, H, S, E, W},
                        dr,
                        atom_i,
                        atom_j,
                        force_units=u"kJ * mol^-1 * nm^-1",
                        special=false,
-                       args...)
+                       args...) where {C, FT, L, H, S, E, W}
     if inter.shortcut(atom_i, atom_j)
         return ustrip.(zero(dr)) * force_units
     end
+
+    if atom_i.solvent==one(atom_i.solvent) || atom_j.solvent==one(atom_j.solvent)
+        α = FT(1.0)
+    else
+        α = inter.α
+    end
+    
     σ6 = inter.σ_mixing(atom_i, atom_j, special)^6
     ϵ = inter.ϵ_mixing(atom_i, atom_j, special)
     if inter.λ == nothing
-        if atom_i.λ==one(atom_i.λ) || atom_j.λ==one(atom_j.λ)
-            λ = minimum((atom_i.λ,atom_j.λ))
-        else
-            λ = lorentz_λ_mixing(atom_i, atom_j)
-        end
+        λ = lambda_mix(inter,atom_i, atom_j)
     else
         λ = inter.λ
-    end
+    end 
     
     cutoff = inter.cutoff
     r = norm(dr)
     C6 = 4 * ϵ * σ6
-    params = (C6 * σ6, C6, λ)
+    params = (C6 * σ6, C6, λ, α)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
@@ -434,8 +437,8 @@ end
     end
 end
 
-function pairwise_force(inter::LennardJonesSoftCoreGapsys, r, (C12, C6, λ))
-    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-λ)/7)))
+function pairwise_force(inter::LennardJonesSoftCoreGapsys, r, (C12, C6, λ, α))
+    R = α*sqrt(cbrt((26*(C12/C6)*(1-λ)/7)))
     r6 = r^6
     invR = inv(R)
     invR2 = invR^2
@@ -448,21 +451,27 @@ function pairwise_force(inter::LennardJonesSoftCoreGapsys, r, (C12, C6, λ))
     end
 end
 
-@inline function potential_energy(inter::LennardJonesSoftCoreGapsys,
+@inline function potential_energy(inter::LennardJonesSoftCoreGapsys{C, FT, L, H, S, E, W},
                                   dr,
                                   atom_i,
                                   atom_j,
                                   energy_units=u"kJ * mol^-1",
                                   special=false,
-                                  args...)
+                                  args...) where {C, FT, L, H, S, E, W}
     if inter.shortcut(atom_i, atom_j)
         return ustrip(zero(dr[1])) * energy_units
+    end
+
+    if atom_i.solvent==one(atom_i.solvent) || atom_j.solvent==one(atom_j.solvent)
+        α = FT(1.0)
+    else
+        α = inter.α
     end
     
     σ6 = inter.σ_mixing(atom_i, atom_j, special)^6
     ϵ = inter.ϵ_mixing(atom_i, atom_j, special)
     if inter.λ == nothing
-        λ = lambda_mix(atom_i, atom_j)
+        λ = lambda_mix(inter,atom_i, atom_j)
     else
         λ = inter.λ
     end  
@@ -470,7 +479,7 @@ end
     cutoff = inter.cutoff
     r = norm(dr)
     C6 = 4 * ϵ * σ6
-    params = (C6 * σ6, C6, λ)
+    params = (C6 * σ6, C6, λ, α)
 
     pe = pe_cutoff(cutoff, inter, r, params)
     if special
@@ -480,9 +489,9 @@ end
     end
 end
 
-function pairwise_pe(inter::LennardJonesSoftCoreGapsys, r::T, (C12, C6, λ)) where T
+function pairwise_pe(inter::LennardJonesSoftCoreGapsys, r::T, (C12, C6, λ, α)) where T
     r6 = r^6
-    R = inter.α*sqrt(cbrt((26*(C12/C6)*(1-λ)/7)))
+    R = α*sqrt(cbrt((26*(C12/C6)*(1-λ)/7)))
     invR = inv(R)
     invR2 = invR^2
     invR6 = invR^6
