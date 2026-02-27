@@ -14,9 +14,17 @@ end
 
 Base.zero(::CMAPTorsion) = CMAPTorsion(index=0, size=0)
 
+function inject_interaction(inter::CMAPTorsion{I}, inter_type, params_dic) where I
+    key_prefix = "inter_CMAP_$(inter_type)_"
+    return CMAPTorsion{I}(
+        inter.index,
+        inter.size,
+    )
+end
+
 # Setup functions (based on CMAPTorsionForceImpl.cpp in OpenMM)
-@inline function calc_coefficients(size, map::Vector{E}) where E
-    c = calcMapDerivatives(size, map)
+function calc_coefficients(size, map::Vector{E}, units) where E
+    c = calcMapDerivatives(size, map, units)
     coeffMatrix = Matrix{E}(undef, size*size*4, 4)
     
     for j in 1:(size*size)
@@ -28,7 +36,7 @@ Base.zero(::CMAPTorsion) = CMAPTorsion(index=0, size=0)
     return coeffMatrix
 end
 
-@inline function calcMapDerivatives(size, energy::Vector{E}) where E
+function calcMapDerivatives(size, energy::Vector{E}, units) where E
     tp = eltype(energy)
     x     = [(i * 2 * π / size) for i in 0:size]
     y     = zeros(tp, size+1)
@@ -110,7 +118,7 @@ end
                 rhs[k+12] = e12[k]*delta*delta
             end
             for k in 1:16
-                sum = 0.0u"kJ * mol^-1"
+                sum = zero(E)
                 for m in 1:16
                     sum += wt[k+16*(m-1)]*rhs[m]
                 end
@@ -121,7 +129,7 @@ end
     return c
 end
 
-@inline function createPeriodicSpline(x,y,deriv)
+function createPeriodicSpline(x,y,deriv)
     n = length(x)
     if length(y) != n
         # throw error
@@ -176,7 +184,7 @@ end
     return deriv
 end
     
-@inline function solveTridiagonalMatrix(a,b,c,rhs,deriv)
+function solveTridiagonalMatrix(a,b,c,rhs,deriv)
     n = length(a)
     gamma = zeros(n)
     
@@ -196,7 +204,7 @@ end
     return deriv
 end
 
-@inline function evaluateSplineDerivative(x, y, deriv, t)
+function evaluateSplineDerivative(x, y, deriv, t)
     n = length(x)
     if (t<x[1] || t > x[n])
         println("NO")
@@ -329,7 +337,6 @@ end
                             coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, atoms_m, energy_units,
                             velocities_i, velocities_j, velocities_k, velocities_l, velocities_m,
                             step_n, data)
-    
     # First angle
     v0a = vector(coords_j, coords_i, boundary)
     v1a = vector(coords_j, coords_k, boundary)
@@ -349,7 +356,7 @@ end
         angleA = acos(cosangle)
     end
     angleA = (ustrip(dot(v0a,cp1a))>=0) ? angleA : -angleA
-    angleA = mod(angleA + 2*pi, 2*pi)
+    angleA = mod(angleA + F(2*pi), F(2*pi))
     
     # Second angle
     v0b = vector(coords_k, coords_j, boundary)
@@ -369,10 +376,10 @@ end
         angleB = acos(ustrip(cosangle))
     end
     angleB = (ustrip(dot(v0b,cp1b))>=0) ? angleB : -angleB
-    angleB = mod(angleB + 2*pi, 2*pi)
+    angleB = mod(angleB + F(2*pi), F(2*pi))
 
     # Identify Patch
-    delta = 2*pi / inter.size
+    delta = F(2*pi) / inter.size
     s = Int(trunc(min(angleA/delta, inter.size-1)))
     t = Int(trunc(min(angleB/delta, inter.size-1)))
     idx = inter.index+(4*(s+inter.size*t))+1

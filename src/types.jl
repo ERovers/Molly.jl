@@ -112,7 +112,7 @@ end
     InteractionList5Atoms(is, js, ks, ls, ms, inters, types)
     InteractionList5Atoms(inter_type)
 
-A list of specific interactions that involve eight atoms such as cmap corrections.
+A list of specific interactions that involve 5 atoms such as cmap corrections.
 """
 struct InteractionList5Atoms{I, T, D} <: SpecificInteractionList{5}
     is::I
@@ -279,22 +279,19 @@ end
 function inject_interaction_list(inter::InteractionList3Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
                                 inter.types, (params_dic,)), AT)
-    InteractionList3Atoms(inter.is, inter.js, inter.ks, inters_grad, inter.types, 
-                            inter.data)
+    InteractionList3Atoms(inter.is, inter.js, inter.ks, inters_grad, inter.types, inter.data)
 end
 
 function inject_interaction_list(inter::InteractionList4Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
                                 inter.types, (params_dic,)), AT)
-    InteractionList4Atoms(inter.is, inter.js, inter.ks, inter.ls, inters_grad, 
-                            inter.types, inter.data)
+    InteractionList4Atoms(inter.is, inter.js, inter.ks, inter.ls, inters_grad, inter.types, inter.data)
 end
 
 function inject_interaction_list(inter::InteractionList5Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
                                 inter.types, (params_dic,)), AT)
-    InteractionList5Atoms(inter.is, inter.js, inter.ks, inter.ls, inter.ms, inters_grad, 
-                            inter.types, inter.data)
+    InteractionList5Atoms(inter.is, inter.js, inter.ks, inter.ls, inter.ms, inters_grad, inter.types, inter.data)
 end
 
 """
@@ -339,18 +336,32 @@ function Base.:+(a1::Atom, a2::Atom)
 end
 
 # get function errors with AD
-dict_get(dic, key, default) = (haskey(dic, key) ? dic[key] : default)
+# dict_get(dic, key, default) = (haskey(dic, key) ? dic[key] : default)
+function dict_get(dic, key, default; idx::Int = 1)
+    if haskey(dic, key)
+        val = dic[key]
+        if val isa AbstractVector
+            return val[idx]
+        else
+            return val
+        end
+    else
+        return default
+    end
+end
 
-function inject_atom(at, at_data, params_dic)
+function inject_atom(at::Atom, at_data, params_dic)
     key_prefix = "atom_$(at_data.atom_type)_"
-    Atom(
-        at.index,
-        at.atom_type,
-        dict_get(params_dic, key_prefix * "mass"  , at.mass),
-        at.charge, # Residue-specific
-        dict_get(params_dic, key_prefix * "σ"     , at.σ   ),
-        dict_get(params_dic, key_prefix * "ϵ"     , at.ϵ   ),
-    )
+    return Atom(
+                at.index,
+                at.atom_type,
+                dict_get(params_dic, key_prefix * "mass"  , at.mass),
+                at.charge, # Residue-specific
+                dict_get(params_dic, key_prefix * "σ"     , at.σ   ),
+                dict_get(params_dic, key_prefix * "ϵ"     , at.ϵ   ),
+                dict_get(params_dic, key_prefix * "σ14"     , at.σ14   ),
+                dict_get(params_dic, key_prefix * "ϵ14"     , at.ϵ14   ),
+            )
 end
 
 """

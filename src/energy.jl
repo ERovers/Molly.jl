@@ -398,13 +398,14 @@ function potential_energy(sys::System{<:Any, <:AbstractGPUArray, T}, neighbors,
     return pe
 end
 
-# Allow GPU-specific potential energy functions to be defined if required
-potential_energy_gpu(inter, dr, ai, aj, eu, sp, ci, cj, bnd, vi, vj, args...) = potential_energy(inter, dr, ai, aj, eu, sp, ci, cj, bnd, vi, vj, args...)
-potential_energy_gpu(inter, ci, bnd, ai, eu, vi, args...) = potential_energy(inter, ci, bnd, ai, eu, vi, args...)
-potential_energy_gpu(inter, ci, cj, bnd, ai, aj, eu, vi, vj, args...) = potential_energy(inter, ci, cj, bnd, ai, aj, eu, vi, vj, args...)
-potential_energy_gpu(inter, ci, cj, ck, bnd, ai, aj, ak, eu, vi, vj, vk, args...) = potential_energy(inter, ci, cj, ck, bnd, ai, aj, ak, eu, vi, vj, vk, args...)
-potential_energy_gpu(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, eu, vi, vj, vk, vl, args...) = potential_energy(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, eu, vi, vj, vk, vl, args...)
-potential_energy_gpu(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, eu, vi, vj, vk, vl, vm, args...) = potential_energy(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, eu, vi, vj, vk, vl, vm, args...)
+# Allow GPU-specific potential energy functions to be defined if required for specific interactions
+potential_energy_gpu(inter, dr, ai, aj, eu, sp, ci, cj, bnd, vi, vj, sn, data) = potential_energy(inter, dr, ai, aj, eu, sp, ci, cj, bnd, vi, vj, sn, data)
+potential_energy_gpu(inter, ci, bnd, ai, eu, vi, sn, data) = potential_energy(inter, ci, bnd, ai, eu, vi, sn, data)
+potential_energy_gpu(inter, ci, cj, bnd, ai, aj, eu, vi, vj, sn, data) = potential_energy(inter, ci, cj, bnd, ai, aj, eu, vi, vj, sn, data)
+potential_energy_gpu(inter, ci, cj, ck, bnd, ai, aj, ak, eu, vi, vj, vk, sn, data) = potential_energy(inter, ci, cj, ck, bnd, ai, aj, ak, eu, vi, vj, vk, sn, data)
+potential_energy_gpu(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, eu, vi, vj, vk, vl, sn, data) = potential_energy(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, eu, vi, vj, vk, vl, sn, data)
+potential_energy_gpu(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, eu, vi, vj, vk, vl, vm, sn, data) = potential_energy(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, eu, vi, vj, vk, vl, vm, sn, data)
+
 """
     pairwise_pe(inter, r, params)
 

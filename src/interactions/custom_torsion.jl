@@ -16,6 +16,14 @@ CustomTorsion(; k, θ0) = CustomTorsion{typeof(k),typeof(θ0)}(k, θ0)
 
 Base.zero(::CustomTorsion{K, D}) where {K, D} = CustomTorsion(k=zero(K), θ0=zero(D))
 
+function inject_interaction(inter::CustomTorsion, inter_type, params_dic)
+    key_prefix = "inter_CUS_$(inter_type)_"
+    return CustomTorsion(
+        inter.k,
+        inter.θ0,
+    )
+end
+
 @inline function force(d::CustomTorsion, coords_i, coords_j, coords_k, coords_l, boundary, args...)
     ab = vector(coords_i, coords_j, boundary)
     bc = vector(coords_j, coords_k, boundary)

@@ -112,8 +112,7 @@ function specific_forces_gpu!(fs_mat, virial, inter_list::InteractionList2Atoms,
     n_threads_gpu = gpu_threads_specific(length(inter_list))
     kernel! = specific_force_2_atoms_kernel!(backend, n_threads_gpu)
     kernel!(fs_mat, virial, coords, velocities, atoms, boundary, step_n, inter_list.is,
-            inter_list.js, inter_list.inters, inter_list.data, Val(needs_vir), Val(D), 
-            Val(force_units);
+            inter_list.js, inter_list.inters, inter_list.data, Val(needs_vir), Val(D), Val(force_units);
             ndrange=length(inter_list))
     return fs_mat
 end
@@ -139,8 +138,8 @@ function specific_forces_gpu!(fs_mat, virial, inter_list::InteractionList4Atoms,
     n_threads_gpu = gpu_threads_specific(length(inter_list))
     kernel! = specific_force_4_atoms_kernel!(backend, n_threads_gpu)
     kernel!(fs_mat, virial, coords, velocities, atoms, boundary, step_n, inter_list.is,
-            inter_list.js, inter_list.ks, inter_list.ls, inter_list.inters,
-            inter_list.data, Val(needs_vir), Val(D), Val(force_units); ndrange=length(inter_list))
+            inter_list.js, inter_list.ks, inter_list.ls, inter_list.inters, inter_list.data,
+            Val(needs_vir), Val(D), Val(force_units); ndrange=length(inter_list))
     return fs_mat
 end
 
@@ -226,8 +225,7 @@ end
     if inter_i <= length(is)
         i, j, k = is[inter_i], js[inter_i], ks[inter_i]
         fs = force_gpu(inters[inter_i], coords[i], coords[j], coords[k], boundary, atoms[i],
-                       atoms[j], atoms[k], F, velocities[i], velocities[j], velocities[k], step_n,
-                        data)
+                       atoms[j], atoms[k], F, velocities[i], velocities[j], velocities[k], step_n, data)
         if unit(fs.f1[1]) != F || unit(fs.f2[1]) != F || unit(fs.f3[1]) != F
             error("wrong force unit returned, was expecting $F")
         end
@@ -414,8 +412,8 @@ function specific_pe_gpu!(pe_vec_nounits, inter_list::InteractionList4Atoms, coo
     n_threads_gpu = gpu_threads_specific(length(inter_list))
     kernel! = specific_pe_4_atoms_kernel!(backend, n_threads_gpu)
     kernel!(pe_vec_nounits, coords, velocities, atoms, boundary, step_n, inter_list.is,
-            inter_list.js, inter_list.ks, inter_list.ls, inter_list.inters, inter_list.data, 
-            Val(energy_units); ndrange=length(inter_list))
+            inter_list.js, inter_list.ks, inter_list.ls, inter_list.inters, inter_list.data, Val(energy_units);
+            ndrange=length(inter_list))
     return pe_vec_nounits
 end
 
@@ -425,8 +423,8 @@ function specific_pe_gpu!(pe_vec_nounits, inter_list::InteractionList5Atoms, coo
     n_threads_gpu = gpu_threads_specific(length(inter_list))
     kernel! = specific_pe_5_atoms_kernel!(backend, n_threads_gpu)
     kernel!(pe_vec_nounits, coords, velocities, atoms, boundary, step_n, inter_list.is,
-            inter_list.js, inter_list.ks, inter_list.ls, inter_list.ms, inter_list.inters, inter_list.data, 
-            Val(energy_units); ndrange=length(inter_list))
+            inter_list.js, inter_list.ks, inter_list.ls, inter_list.ms, inter_list.inters, inter_list.data, Val(energy_units);
+            ndrange=length(inter_list))
     return pe_vec_nounits
 end
 

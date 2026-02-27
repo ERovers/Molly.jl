@@ -519,7 +519,6 @@ function System(coord_file::AbstractString,
     end
     
     canonical_system = canonicalize_system(top, resname_replacements, atomname_replacements)
-
     top_bonds = create_bonds(canonical_system, standard_bonds)
     if disulfide_bonds
         top_bonds = create_disulfide_bonds(coords, boundary_used, canonical_system, top_bonds)
@@ -962,7 +961,7 @@ function System(coord_file::AbstractString,
         push!(cmaps_il.types, atom_types_to_string(key...))
         push!(cmaps_il.inters, CMAPTorsion(index, cmap.size))
         index += 4*cmap.size*cmap.size
-        push!(maps, calc_coefficients(cmap.size,cmap.energy))
+        push!(maps, calc_coefficients(cmap.size,cmap.energy, units))
     end
     maps = vcat(maps...)
 
@@ -986,7 +985,7 @@ function System(coord_file::AbstractString,
 
     return System(T, AT, to_device([atoms_abst...], AT), coords, boundary_used, velocities, atoms_data,
                   loggers, data, bonds_il, angles_il, tors_il, imps_il, custom_il, cmaps_il, tors_pad, imps_pad,
-                  custom_pad, cmap_pad, maps, eligible, special, units, dist_cutoff, constraints, rigid_water, nonbonded_method,
+                  custom_pad, cmaps_pad, maps, eligible, special, units, dist_cutoff, constraints, rigid_water, nonbonded_method,
                   ewald_error_tol, approximate_pme, neighbor_finder_type, implicit_solvent, kappa,
                   grad_safe, dist_neighbors, weight_14_lj, weight_14_coulomb)
 end
@@ -1530,7 +1529,7 @@ function System(T, AT, atoms, coords, boundary_used, velocities, atoms_data,
             to_device(cmaps.ms, AT),
             to_device(cmaps_pad, AT),
             cmaps.types,
-            maps,
+            to_device(maps,AT),
         ))
     end
     specific_inter_lists = tuple(specific_inter_array...)
