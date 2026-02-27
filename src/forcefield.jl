@@ -477,7 +477,7 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
                 for torsion in eachelement(entry)
                     if torsion.name == "Improper"
                         proper        = torsion.name == "Proper"
-                        k = units ? parse(T, torsion["k"])u"kJ * mol^-1" : parse(T, ang["k"])
+                        k = units ? parse(T, torsion["k"])u"kJ * mol^-1" : parse(T, torsion["k"])
                         θ0 = parse(T, torsion["theta0"])
     
                         p1 = pattern_from_attrs(torsion, "type1","class1")
@@ -497,7 +497,8 @@ function MolecularForceField(T::Type, ff_files::AbstractString...; units::Bool=t
                 index0 = false
                 for cmap in eachelement(entry)
                     if cmap.name == "Map"
-                        push!(maps, parse.(T,split(cmap.content))u"kJ * mol^-1")
+                        tmp_map = units ? parse.(T,split(cmap.content))u"kJ * mol^-1" : parse.(T,split(cmap.content))
+                        push!(maps, tmp_map)
                     elseif cmap.name == "Torsion"
                         mapn = parse(Int,cmap["map"])
                         if mapn == 0 || index0

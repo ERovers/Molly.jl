@@ -50,7 +50,7 @@ function force end
 # Allow GPU-specific force functions to be defined if required
 force_gpu(inter, dr, ai, aj, fu, sp, ci, cj, bnd, vi, vj, sn, data) = force(inter, dr, ai, aj, fu, sp, ci, cj, bnd, vi, vj, sn, data)
 force_gpu(inter, ci, bnd, ai, fu, vi, sn, data) = force(inter, ci, bnd, ai, fu, vi, sn, data)
-force_gpu(inter, ci, cj, bnd, ai, aj, fu, vi, vj, sn, data) = force(inter, ci, cj, bnd, ai, aj, fu, vi, vj, sn, data)
+force_gpu(inter, ci, cj, bnd, ai, aj, fu, vi, vj, args...) = force(inter, ci, cj, bnd, ai, aj, fu, vi, vj, args...)
 force_gpu(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, sn, data) = force(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, sn, data)
 force_gpu(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, sn, data) = force(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, sn, data)
 force_gpu(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, sn, data) = force(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, sn, data)
