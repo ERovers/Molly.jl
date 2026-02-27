@@ -8,16 +8,8 @@ const aminos_dic = Dict("ALA" => 1, "ARG" => 2, "ASN" => 3,
                         "MET" => 13, "PHE" => 14, "SER" => 15,
                         "THR" => 16, "TRP" => 17, "TYR" => 18,
                         "VAL" => 19, "ACE" => 0, "ALC" => 0,
-                        "NME" => 0, "HOH" => 0)
-
-const charge_aminos_dic = Dict("ALA" => 0, "ARG" => 1, "ASN" => 0,
-                                "ASP" => -1, "CYS" => 0, "GLN" => 0,
-                                "GLU" => -1, "GLY" => 0, "HIS" => 1,
-                                "ILE" => 0, "LEU" => 0, "LYS" => 1, 
-                                "MET" => 0, "PHE" => 0, "SER" => 0,
-                                "THR" => 0, "TRP" => 0, "TYR" => 0,
-                                "VAL" => 0, "ACE" => 0, "ALC" => 0,
-                                "NME" => 0, "HOH" => 0)
+                        "NME" => 0, "HOH" => 0, "MG" => 0, 
+                        "CL" => 0, "NA" => 0)
 
 const solvent_aminos_dic = Dict("ALA" => 0, "ARG" => 0, "ASN" => 0,
                                 "ASP" => 0, "CYS" => 0, "GLN" => 0,
@@ -26,7 +18,18 @@ const solvent_aminos_dic = Dict("ALA" => 0, "ARG" => 0, "ASN" => 0,
                                 "MET" => 0, "PHE" => 0, "SER" => 0,
                                 "THR" => 0, "TRP" => 0, "TYR" => 0,
                                 "VAL" => 0, "ACE" => 0, "ALC" => 0,
-                                "NME" => 0, "HOH" => 1)
+                                "NME" => 0, "HOH" => 1, "MG" => 0, 
+                                "CL" => 0, "NA" => 0)
+
+const rotamer_dic = Dict("ARG" => [62,-177,-67,-62], "LYS" => [62,-177,-90,-67,-62],
+                            "MET" => [62,-177,-67,-65], "GLU" => [62, -177,-67,-65],
+                            "GLN" => [62,-70,-177,-65,-67], "ASP" => [62, -177,-70],
+                            "ASN" => [62,-174,-177,-65], "ILE" => [62, -177,-65,-57],
+                            "LEU" => [62,-177,-172,-85,-65], "HIS" => [62, -177,-65],
+                            "TRP" => [62,-177,-65], "TYR" => [62, -177,-65],
+                            "PHE" => [62,-177,-65], "THR" => [62, -175,-65],
+                            "VAL" => [63,175,-60], "SER" => [62, -177,-65],
+                            "CYS" => [62,-177,-65])
 
 """
     Hybrid_system(T, AT, ff, sys, res_num, aminos)
@@ -44,7 +47,7 @@ original system and λ-mediated atoms.
 """
 
 
-function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, temp = T(298.0)u"K", units=true)
+function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, direction=true, temp = T(298.0)u"K", units=true)
     # initialize data groups for new system
     Atoms = []
     Data = []
@@ -63,7 +66,7 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, temp = T(29
             end
         end
     end
-    res_num = keys(aminos)
+    res_num = sort(collect(keys(aminos)))
     
     # Remove all the atoms of selected residue except backbone and set λ to 1.0
     # Make map of backbone to map interactions on later for added side-chains
@@ -87,7 +90,7 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, temp = T(29
         end
         if !(d.res_number in res_num)
             push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0), charge_type=charge_aminos_dic[d.res_name], solvent=solvent_aminos_dic[d.res_name]))
+                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0), solvent=solvent_aminos_dic[d.res_name]))
             # push!(Data, d)
             push!(Data, AtomData_L(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                         res_name=d.res_name, res_id=aminos_dic[d.res_name], element=d.element))
@@ -96,7 +99,7 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, temp = T(29
             count += 1
         elseif (d.res_number in res_num) && d.atom_name in ["N","CA","C","O","H","HA","HA2"]
             push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0), charge_type=charge_aminos_dic[d.res_name], solvent=solvent_aminos_dic[d.res_name]))
+                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0), solvent=solvent_aminos_dic[d.res_name]))
             push!(Data, AtomData_L(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                         res_name="ALC", res_id=aminos_dic[d.res_name], element=d.element))
             push!(Coords, c)
@@ -156,13 +159,20 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, temp = T(29
             Interactions = push!(Interactions, IT(tmp..., nothing))
         end
     end
-    
 
     # Add new side-chains for selected residue
     map_AA = Dict()
     addition_groups = Dict()
+    rotamer_search = Dict()
+    rotamer_search["N_idx"] = zeros(Int64,maximum(res_num))
+    rotamer_search["CA_idx"] = zeros(Int64,maximum(res_num))
+    
     for r in res_num
+        rotamer_search[r] = Dict()
+        rotamer_search["N_idx"][r] = residue[r]["backbone_map"]["N"]
+        rotamer_search["CA_idx"][r] = residue[r]["backbone_map"]["CA"]
         for AA in keys(aminos[r])
+            rotamer_search[r][AA] = Dict()
             # Load residue system
             amino_dir = normpath(@__DIR__, "..", "data/aminoacids")
             tmp_sys = System(amino_dir*"/"*AA*".pdb", ff;
@@ -178,12 +188,14 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, temp = T(29
             rot, t = kabsch(backbone_coords2, residue[r]["backbone_coords"])
             t = units ? (t)u"nm" : t
             coords2 = ((rot * hcat(tmp_sys.coords...)) .+ t)'
+            coords2 = [SVector{length(c)}(c) for c in eachrow(coords2)]
             
             # Create map for interactions and add atoms
             sidechain_A = []
             count = isempty(map_AA) ? maximum(values(map))+1 : maximum(values(map_AA))+1
             map_AA = Dict()
-            for (i,(a,d,c)) in enumerate(zip(tmp_sys.atoms, tmp_sys.atoms_data, eachrow(coords2)))
+            rotamer_search[r][AA]["index"] = []
+            for (i,(a,d,c)) in enumerate(zip(tmp_sys.atoms, tmp_sys.atoms_data, coords2))
                 if d.res_name=="ACE" && d.atom_name=="C"
                     map_AA[i] = residue[r]["backbone_map"]["C*"]
                 elseif d.res_name=="NME" && d.atom_name=="N"
@@ -193,16 +205,22 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, temp = T(29
                         map_AA[i] = residue[r]["backbone_map"][d.atom_name]
                     else
                         push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                        σ14=a.σ14, ϵ14=a.ϵ14, λ=T(aminos[r][AA]), charge_type=charge_aminos_dic[d.res_name], solvent=solvent_aminos_dic[d.res_name]))
+                        σ14=a.σ14, ϵ14=a.ϵ14, λ=T(aminos[r][AA]), solvent=solvent_aminos_dic[d.res_name]))
                         push!(Data, AtomData_L(d.atom_type, d.atom_name, r, d.res_name, aminos_dic[d.res_name], d.chain_id, d.element, d.hetero_atom))
-                        push!(Coords, SVector{length(c)}(c))
+                        push!(Coords, c)
                         map_AA[i] = count
                         push!(sidechain_A, i)
-                        if !haskey(addition_groups, AA)
-                            addition_groups[AA]  = [count]
+                        if !haskey(addition_groups, r)
+                            addition_groups[r]  = [count]
                         else
-                            addition_groups[AA] = push!(addition_groups[AA], count)
+                            addition_groups[r] = push!(addition_groups[r], count)
                         end
+                        if d.atom_name in ["CG","CG1","OG1","OG","SG"]
+                            rotamer_search[r][AA]["G_idx"] = count
+                        elseif d.atom_name=="CB"
+                            rotamer_search[r][AA]["CB_idx"] = count
+                        end
+                        push!(rotamer_search[r][AA]["index"], count)
                         count += 1
                     end
                 end
@@ -249,6 +267,57 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, temp = T(29
     end
     
     Interactions = Molly.merge(Interactions)
+    specific_inter_lists = tuple(Interactions...)
+
+    # Rotamer search
+    if direction
+        rota_order = res_num
+    else
+        rota_order = reverse(res_num)
+    end
+
+    for r in rota_order
+        # println(r)
+        for AA in keys(aminos[r])
+            if AA in keys(rotamer_dic)
+                # println(AA)
+                N_idx = rotamer_search["N_idx"][r]
+                CA_idx = rotamer_search["CA_idx"][r]
+                CB_idx = rotamer_search[r][AA]["CB_idx"]
+                G_idx = rotamer_search[r][AA]["G_idx"]
+                indexes = rotamer_search[r][AA]["index"]
+                best_angle = 0
+                num_clashes = 10000
+                for χ1 in rotamer_dic[AA]
+                    # println("χ1:",χ1)
+                    θ = torsion_angle(Coords[N_idx], Coords[CA_idx], Coords[CB_idx], Coords[G_idx], Boundary)
+                    Δθ = deg2rad(χ1) - θ
+                    new_coords = rotate_side_chain(Coords, CA_idx, CB_idx, indexes, Δθ)
+                    result = filter(pair -> pair.first!=r, rotamer_search)
+                    result = filter(pair -> pair.first!="N_idx", result)
+                    result = filter(pair -> pair.first!="CA_idx", result)
+                    clash_idx = collect(i for (k1, v1) in result for (k2, v2) in v1 for i in v2["index"])
+                    clashes = count_clashes(new_coords[rotamer_search[r][AA]["index"]], new_coords[clash_idx])
+                    # println(clashes)
+                    if clashes<num_clashes
+                        best_angle = χ1
+                        num_clashes = clashes
+                    end
+                    if clashes==0
+                        best_angle = χ1
+                        num_clashes = clashes
+                        break
+                    end
+                end
+                # println("Best angle: ", best_angle, ", with ", num_clashes, " clashes")
+                θ = torsion_angle(Coords[N_idx], Coords[CA_idx], Coords[CB_idx], Coords[G_idx], Boundary)
+                Δθ = deg2rad(best_angle) - θ
+                Coords = rotate_side_chain(Coords, CA_idx, CB_idx, indexes, Δθ)
+                θ = torsion_angle(Coords[N_idx], Coords[CA_idx], Coords[CB_idx], Coords[G_idx], Boundary)
+                # println("Check best angle:", deg2rad(best_angle), ", calculated angle:", θ)
+            end
+        end
+    end
 
     # Calculate matrix of pairs eligible for non-bonded interactions
     n_atoms = length(Coords)
@@ -256,21 +325,19 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, temp = T(29
     for i in 1:n_atoms
         eligible[i, i] = false
     end
-    for (i, j) in zip(Interactions[1].is, Interactions[1].js)
+    for (i, j) in zip(specific_inter_lists[1].is, specific_inter_lists[1].js)
         eligible[i, j] = false
         eligible[j, i] = false
     end
-    for (i, k) in zip(Interactions[2].is, Interactions[2].ks)
+    for (i, k) in zip(specific_inter_lists[2].is, specific_inter_lists[2].ks)
         # Assume bonding is already specified
         eligible[i, k] = false
         eligible[k, i] = false
     end
-    
-    keys_dict = [(k1, k2) for (k1, k2) in Iterators.product(keys(addition_groups), keys(addition_groups)) if k1 < k2]
-    for (k1, k2) in keys_dict
-        pairs = collect(Iterators.product(addition_groups[k1], addition_groups[k2]))
+
+    for k in keys(addition_groups)
+        pairs = collect(Iterators.product(addition_groups[k], addition_groups[k]))
         for (i, j) in pairs
-            # Assume bonding is already specified
             eligible[i, j] = false
             eligible[j, i] = false
         end

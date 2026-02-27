@@ -414,8 +414,11 @@ end
         α = inter.α
     end
 
-    if inter.epoch<10 && atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ)
-        A = T(inter.epoch/10)
+    if inter.epoch<15 && atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ)
+        # A = T(1/(1+exp(-inter.epoch+8)))
+        A = T(1.0)
+    elseif atom_i.solvent==one(atom_i.solvent) || atom_j.solvent==one(atom_j.solvent)
+        A = T(1.0)
     else
         A = T(1.0)
     end
@@ -468,8 +471,12 @@ end
         α = inter.α
     end
 
-    if inter.epoch<10 && atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ)
-        A = T(inter.epoch/10)
+    
+    if inter.epoch<15 && atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ)
+        # A = T(1/(1+exp(-inter.epoch+8)))
+        A = T(1.0)
+    elseif atom_i.solvent==one(atom_i.solvent) || atom_j.solvent==one(atom_j.solvent)
+        A = T(1.0)
     else
         A = T(1.0)
     end

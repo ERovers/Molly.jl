@@ -238,6 +238,72 @@ function BioStructures.AtomRecord(at_data::AtomData_L, i, coord)
     )
 end
 
+# Rotamer search
+"""
+    rotate_side_chain(coords, p1_idx, p2_idx, moving_indices, theta)
+
+Rotates a set of atoms in `coords` around an axis defined by atoms at `p1_idx` and `p2_idx`.
+- `coords`: Matrix of size (3, N) or (N, 3). This code assumes (N, 3).
+- `theta`: Angle in radians.
+"""
+function rotate_side_chain(coords::Vector{Any}, p1_idx::Int, p2_idx::Int, moving_indices::Vector{Any}, theta::Float64)
+    # 1. Define the rotation axis
+    p1 = coords[p1_idx, :]
+    p2 = coords[p2_idx, :]
+    axis = p2 - p1
+    axis /= norm(axis)
+    
+    # Pre-calculate rotation components
+    cos_t = cos(theta)
+    sin_t = sin(theta)
+    one_minus_cos = 1.0 - cos_t
+    
+    # 2. Process each moving atom
+    for i in moving_indices
+        # Translate atom so p1 is at origin
+        v = coords[i, :] - p1
+        
+        # 3. Rodrigues' Rotation Formula
+        v_rot = v * cos_t + 
+                [cross(axis[1], v[1])] * sin_t + 
+                axis * dot(axis, v) * one_minus_cos
+        
+        # 4. Translate back and update
+        coords[i, :] = v_rot + p1
+    end
+    
+    return coords
+end
+
+"""
+    count_clashes(moving_coords, static_coords; cutoff=2.0)
+
+Returns the number of atom pairs that are closer than the `cutoff` distance.
+`moving_coords`: Matrix (M, 3) of the side chain being tested.
+`static_coords`: Matrix (N, 3) of the rest of the protein.
+"""
+function count_clashes(moving_coords::Vector{Any}, static_coords; cutoff::Float64=0.15)
+    clash_count = 0
+    
+    # Iterate through each atom in the side chain
+    for i in 1:size(moving_coords, 1)
+        m_atom = moving_coords[i, :]
+        
+        # Compare against every 'static' atom in the environment
+        for j in 1:size(static_coords, 1)
+            s_atom = static_coords[j, :]
+            
+            # Squared distance is faster (avoids sqrt)
+            dist_sq = sqrt(sum((m_atom .- s_atom)[1].^2))
+            
+            if dist_sq < cutoff
+                clash_count += 1
+            end
+        end
+    end
+    return clash_count
+end
+
 # Shortcuts
 function lj_λ_less_one_shortcut(atom_i, atom_j)
     return iszero_value(atom_i.ϵ) || iszero_value(atom_j.ϵ) ||
