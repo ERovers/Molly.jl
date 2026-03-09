@@ -108,6 +108,8 @@ sys.velocities
 sys.topology
 sys.pairwise_inters
 sys.constraints
+sys.virtual_sites
+sys.virtual_site_flags
 sys.neighbor_finder
 sys.loggers
 sys.total_mass
@@ -330,7 +332,6 @@ ff = MolecularForceField(
     T,
     joinpath(data_dir, "force_fields", "ff99SBildn.xml"),
     joinpath(data_dir, "force_fields", "tip3p_standard.xml"),
-    joinpath(data_dir, "force_fields", "his.xml"),
 )
 
 sys = System(
@@ -361,33 +362,21 @@ simulate!(sys, simulator, 5_000)
 The above 5 ps simulation looks something like this when you view it in PyMOL:
 ![MD simulation](https://github.com/JuliaMolSim/Molly.jl/raw/master/docs/src/images/sim_6mrr.gif)
 
-The system setup procedure is tested against OpenMM, following their template matching procedure
-to assign force field parameters to the structures read from the structure file. Some margin in 
-residue and atom naming is allowed, as the naming present in the structure files is queried against
-a renaming dictionary that contains common alternative names present in pdb files, which you can consult
-in `src/data/force_fields/pdbNames.xml`. You can extend this dictionary yourself, if you really want
-to use your own naming; or you can build a standalone renaming dictionary following the same structure
-as the one mentioned above, and pass it as a keyword argument `custom_renaming_scheme` when you build
-your [`MolecularForceField`](@ref).
-The bonding topology of the system is automatically inferred for standard residues (protein and nucleic
-acids, plus water). If your simulation contains other types of molecules, you must provide the topology 
-for them. You can do this either by using a structure file format with explicit bond definitions,
-such as `mol2` or `mmCIF`, by defining the appropriate `CONNECT` records in a `pdb` file, or by providing
-a custom topology template in a format equivalent to the one found in `/src/data/force_fields/residues.xml`. 
-Residue patches, virtual sites, file includes and any force types other than `HarmonicBondForce`/`HarmonicAngleForce`/`PeriodicTorsionForce`/`NonbondedForce` are currently ignored.
+The system setup procedure is tested against OpenMM, following their template matching procedure to assign force field parameters to the structures read from the structure file.
+Some margin in residue and atom naming is allowed, as the naming present in the structure files is queried against a renaming dictionary that contains common alternative names present in PDB files, which you can consult in [pdbNames.xml](https://github.com/JuliaMolSim/Molly.jl/blob/master/data/force_fields/pdbNames.xml).
+You can extend this dictionary yourself, if you really want to use your own naming; or you can build a standalone renaming dictionary following the same structure as the one mentioned above, and pass it as a keyword argument `custom_renaming_scheme` when you build your [`MolecularForceField`](@ref).
+The bonding topology of the system is automatically inferred for standard residues (protein and nucleic acids, plus water).
+If your simulation contains other types of molecules, you must provide the topology for them. You can do this either by using a structure file format with explicit bond definitions, such as Mol2 or mmCIF, by defining the appropriate `CONECT` records in a PDB file, or by providing a custom topology template in a format equivalent to the one found in [residues.xml](https://github.com/JuliaMolSim/Molly.jl/blob/master/data/force_fields/residues.xml).
 
 !!! tip "Obtaining compatible structure files"
 
     The following tips may help you to read in a file correctly and without errors:
 
     * Make sure there are no missing residues or heavy atoms. Tools such as [MODELLER](https://salilab.org/modeller) and [SCWRL4](http://dunbrack.fccc.edu/lab/scwrl) can fix these issues.
-    * Make sure that the naming in your structure file is either supported by your custom renaming convention, or does not use
-    names that deviate widely from the conventional residue namings.
-    * Make sure your structure file provides explicit chemical elements per particle or that at least the chemical element is
-    easily inferrable from the atom names, as a fundamental part of template matching for force field parameters assignement
-    revolves around comparing the molecular formulas of the residues and potential templates.
+    * Make sure that the naming in your structure file is either supported by your custom renaming convention, or does not use names that deviate widely from the conventional residue namings.
+    * Make sure your structure file provides explicit chemical elements per particle or that at least the chemical element is easily inferable from the atom names, as a fundamental part of template matching for force field parameter assignment involves comparing the molecular formulas of the residues and potential templates. For example, atom names "C" and "C2" will be guessed as carbon but "CA" would not due to ambiguity with calcium.
 
-    Some PDB files that read in fine can be found [here](https://github.com/greener-group/GB99dms/tree/main/structures/training/conf_1).
+    Some PDB files that read in fine can be found [here](https://github.com/JuliaMolSim/Molly.jl/tree/master/data/openmm_refs).
 
 To run on the GPU, set `array_type=GPUArrayType`, where `GPUArrayType` is the array type for your GPU backend (for example `CuArray` for NVIDIA or `ROCArray` for AMD).
 The nonbonded method can be selected using the `nonbonded_method` keyword argument to [`System`](@ref).
@@ -428,19 +417,48 @@ sys_res = add_position_restraints(
 )
 ```
 
+### Supported OpenMM force field XML tags
+
+See the [OpenMM documentation](https://docs.openmm.org/latest/userguide/application/06_creating_ffs.html#writing-the-xml-file) for the available tags.
+The following tags are supported:
+- `<AtomTypes>`: both atom types and atom classes are supported
+- `<Residues>`: `<VirtualSite>` tags are supported except for `type="localCoords"`
+- `<Patches>`: patches that apply to multiple residue templates and multiple patches acting on one residue template are not supported
+- `<HarmonicBondForce>`
+- `<HarmonicAngleForce>`
+- `<PeriodicTorsionForce>`: both `<Proper>` and `<Improper>` tags are supported
+- `<NonbondedForce>`: `<UseAttributeFromResidue>` tags other than `<UseAttributeFromResidue name="charge"/>` are not supported
+- `<LennardJonesForce>`: `<NBFixPair>` tags and `sigma14`/`epsilon14` attributes in `<Atom>` tags are supported
+- `<Include>`
+
+The following tags are not yet supported and in general will be ignored rather than throwing an error when reading in a [`MolecularForceField`](@ref):
+- `<AmoebaUreyBradleyForce>`
+- `<RBTorsionForce>`
+- `<CMAPTorsionForce>`
+- `<GBSAOBCForce>`
+- `<CustomBondForce>`
+- `<CustomAngleForce>`
+- `<CustomTorsionForce>`
+- `<CustomNonbondedForce>`
+- `<CustomGBForce>`
+- `<CustomHbondForce>`
+- `<CustomManyParticleForce>`
+- `<Script>`
+In general, custom forces should be implemented as described in [Forces and energies](@ref).
+
 ## Enhanced sampling
 
-Molly has the [`ReplicaSystem`](@ref) struct and simulators such as [`TemperatureREMD`](@ref) to carry out replica exchange molecular dynamics (REMD).
+Molly has the [`ReplicaSystem`](@ref) struct and simulators such as [`ReplicaExchangeMD`](@ref) to carry out replica exchange molecular dynamics (REMD).
 On CPU these are run in parallel by dividing up the number of available threads.
 For example, to run temperature REMD on a protein with 4 replicas and attempt exchanges every 1 ps:
 ```julia
+using Molly
 using Statistics
 
 data_dir = joinpath(dirname(pathof(Molly)), "..", "data")
 ff = MolecularForceField(
     joinpath(data_dir, "force_fields", "ff99SBildn.xml"),
     joinpath(data_dir, "force_fields", "tip3p_standard.xml"),
-    joinpath(data_dir, "force_fields", "his.xml"),
 )
 
 sys = System(joinpath(data_dir, "6mrr_equil.pdb"), ff)
@@ -448,46 +466,43 @@ sys = System(joinpath(data_dir, "6mrr_equil.pdb"), ff)
 minimizer = SteepestDescentMinimizer()
 simulate!(sys, minimizer)
 
-n_replicas = 4
+dt            = 0.0005u"ps"
+n_replicas    = 4
+temps         = [240.0u"K", 280.0u"K", 320.0u"K", 360.0u"K"]
+thermo_states = ThermoState[]
+
+for temp in temps
+        intg = Langevin(dt=dt, temperature=temp, friction=1.0u"ps^-1")
+        push!(thermo_states, ThermoState(sys, intg; temperature=temp))
+end
+
+replica_loggers = [(temp=TemperatureLogger(10), coords=CoordinatesLogger(10)) for i in 1:n_replicas]
 
 rep_sys = ReplicaSystem(
-    atoms=sys.atoms,
-    replica_coords=[copy(sys.coords) for _ in 1:n_replicas],
-    boundary=sys.boundary,
-    n_replicas=n_replicas,
-    atoms_data=sys.atoms_data,
-    pairwise_inters=sys.pairwise_inters,
-    specific_inter_lists=sys.specific_inter_lists,
-    general_inters=sys.general_inters,
-    neighbor_finder=sys.neighbor_finder,
-    replica_loggers=[(temp=TemperatureLogger(10),) for _ in 1:n_replicas],
+    thermo_states,
+    [copy(sys.coords) for _ in 1:n_replicas];
+    replica_loggers=replica_loggers,
 )
 
-temps = [240.0u"K", 280.0u"K", 320.0u"K", 360.0u"K"]
-dt = 0.0005u"ps"
-simulators = [Langevin(dt=dt, temperature=temp, friction=1.0u"ps^-1") for temp in temps]
-
-sim = TemperatureREMD(
-    dt=dt,
-    temperatures=temps,
-    simulators=simulators,
-    exchange_time=1.0u"ps",
-)
+sim = ReplicaExchangeMD(dt=dt, exchange_time=2.5u"ps")
 
 simulate!(rep_sys, sim, 40_000; assign_velocities=true)
 
 println(rep_sys.exchange_logger.n_attempts)
-# 30
+# 12
 
-for i in 1:n_replicas
-    final_temps = values(rep_sys.replicas[i].loggers.temp)[(end - 10):end]
-    println(mean(final_temps))
+for id in 1:n_replicas
+        mean_temp = mean(values(rep_sys.replica_loggers[id].temp)[(end - 10):end])
+        # Given physical coordinates swap thermal states, they should average out across the ladder bounds
+        println(mean_temp)
 end
-# 240.1691457033836 K
-# 281.3783250460198 K
-# 320.44985840482974 K
-# 357.710520769689 K
+# 242.68166672295013 K
+# 285.37217289488996 K
+# 314.0608014652237 K
+# 362.86427110336984 K
 ```
+
+The Accelerated Weight Histogram method ([`AWHState`](@ref), [`AWHSimulation`](@ref)) has also been implemented in Molly.jl, allowing to perform enhanced sampling and obtaining on-the-fly estimators of free energies along arbitrary collective variables and alchemical transformations. A more detailed overview of this can be found in the Free Energy section of the documentation.
 
 ## Monte Carlo sampling
 
@@ -535,6 +550,124 @@ visualize(sys.loggers.coords, boundary, "sim_montecarlo.gif")
 It should modify the coordinates as appropriate, accounting for any boundary conditions.
 [`random_uniform_translation!`](@ref) and [`random_normal_translation!`](@ref) are provided as common trial move functions.
 [`MonteCarloLogger`](@ref) records various properties throughout the simulation.
+
+## Biased simulation
+
+Molly allows users to bias simulations along one or several collective variables (CVs).
+A bias potential needs to be defined for every CV using the [`BiasPotential`](@ref) struct, which specifies the CV function and the functional form of the bias potential:
+```julia
+struct BiasPotential{C, B}
+    cv_type::C
+    bias_type::B
+end
+```
+
+[`BiasPotential`](@ref) is a general interaction in Molly, and the potential energy and forces that result from the bias are calculated with `AtomsCalculators.potential_energy` and `AtomsCalculators.forces!` methods that take the [`BiasPotential`](@ref) struct as input.
+In the force calculation, the gradient of the bias potential with respect to the CV and the gradient of the CV function with respect to the system coordinates are calculated in two separate steps.
+Either calculation can be performed with an explicitly defined gradient function or with automatic differentiation.
+
+A number of CV functions are available in Molly, including the distance between sets of atoms, the radius of gyration and the RMSD to a target structure.
+Currently, CV calculation is always done on the CPU.
+Other CV functions can be added by the user.
+Every CV type needs to have its own struct, an associated method of the [`calculate_cv`](@ref) function and potentially a method for the `cv_gradient` function.
+
+To define your own CV function, first define the `struct`:
+```julia
+struct MyCV
+    # Properties of the CV, e.g. indices of atoms over which the CV should be calculated
+    correction::Symbol # Set to :pbc to make molecules whole, or :wrap to not
+end
+```
+
+Next, you need to define a method for the [`calculate_cv`](@ref) function.
+The method should look as follows, taking properties of the system rather than the system itself as input:
+```julia
+function Molly.calculate_cv(cv::MyCV, coords, atoms, boundary, velocities; kwargs...)
+    # Function to calculate the CV value given a system configuration and properties of the CV
+end
+```
+
+The gradient of [`calculate_cv`](@ref) is by default calculated with automatic differentiation if Enzyme is imported.
+However, it is also possible to manually add a method to the `cv_gradient` function to calculate the gradient without using automatic differentiation:
+```julia
+function Molly.cv_gradient(cv_type::MyCV, coords, atoms, boundary, velocities; kwargs...)
+    # Function to calculate the gradient of the CV function with respect to the coordinates of the system
+end
+```
+
+The system can be biased along the chosen CV using different bias potentials.
+The bias potential is a function of the system's current CV value and the target CV value and maps e.g. the difference between these two values to a potential energy.
+Molly currently includes the bias potential types [`LinearBias`](@ref), [`SquareBias`](@ref) and [`FlatBottomSquareBias`](@ref).
+
+You can define your own type of bias potential by first defining a new `struct`:
+```julia
+struct MyBias
+    # Properties of the bias, including a force constant and the CV target value
+end
+```
+
+The functional form of the bias potential is then defined by adding a method to the [`potential_energy`](@ref) function.
+The method should take `cv_sim` (the output of [`calculate_cv`](@ref)) as input:
+```julia
+function potential_energy(bias_fn::bias_type, cv_sim; kwargs...)
+    pe = ... # Determined by the target value of the CV and cv_sim, the system's current CV value
+    return pe
+end
+```
+
+Finally, you need to add a method for `MyBias` to the `bias_gradient` function.
+The method must return the derivative of the [`potential_energy`](@ref) method for `MyBias` with respect to `cv_sim`:
+```julia
+function Molly.bias_gradient(bias_fn::bias_type, cv_sim;  kwargs...)
+    bias_grad = ... # Derivative of bias with respect to cv_sim, potentially calculated with autodiff
+    return bias_grad
+end
+```
+
+Once the CV and the bias function have been defined, a [`BiasPotential`](@ref) can be constructed and added as a general interaction in the system setup, e.g. `general_inters = (BiasPotential(cv_type, bias_type),)`.
+A system can be biased along multiple CVs simultaneously by adding several [`BiasPotential`](@ref)s to `general_inters`.
+
+Below, we show an example of how to set up a simulation in which the distance between two atoms is biased in a simulation of a Lennard-Jones fluid:
+```julia
+using Molly
+using Enzyme
+
+n_atoms = 100
+boundary = CubicBoundary(10.0u"nm")
+temp = 298.0u"K"
+atom_mass = 10.0u"g/mol"
+
+atoms = [Atom(mass=atom_mass, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1") for i in 1:n_atoms]
+coords = place_atoms(n_atoms, boundary; min_dist=0.3u"nm")
+velocities = [random_velocity(atom_mass, temp) for i in 1:n_atoms]
+
+pairwise_inters = (LennardJones(),)
+
+# Bias distance between atoms 1 and 2
+define_cv = CalcDist([1], [2])
+
+# Harmonic bias potential with a target distance of 1.5 nm
+define_bias = SquareBias(400u"kJ * mol^-1 * nm^-2", 1.5u"nm")
+
+general_inters = (BiasPotential(define_cv, define_bias),)
+
+simulator = VelocityVerlet(
+    dt=0.002u"ps",
+    coupling=AndersenThermostat(temp, 1.0u"ps"),
+)
+
+sys = System(
+    atoms=atoms,
+    coords=coords,
+    boundary=boundary,
+    velocities=velocities,
+    pairwise_inters=pairwise_inters,
+    general_inters=general_inters,
+)
+
+simulate!(sys, simulator, 100_000)
+```
+See also [this example](@ref "Protein bias potential").
 
 ## Units
 
@@ -621,10 +754,24 @@ For example, particle mesh Ewald summation uses the [`CoulombEwald`](@ref) pairw
 ### Pairwise interactions
 
 Some pairwise interactions define mixing functions which determine how the parameters from each atom are combined.
-For example, the default `σ_mixing` for [`LennardJones`](@ref) is `Molly.lorentz_σ_mixing`, which is defined as `(atom_i.σ + atom_j.σ) / 2`.
-Other mixing functions are available, such as `Molly.waldman_hagler_σ_mixing` and `Molly.fender_halsey_ϵ_mixing`.
-Custom mixing functions can be given instead and should take in the two atoms as arguments.
+For example, the default `σ_mixing` for [`LennardJones`](@ref) is `Molly.LorentzMixing()`, which calculates `(atom_i.σ + atom_j.σ) / 2`.
+Other mixing functions are available, such as `Molly.GeometricMixing()` and `Molly.WaldmanHaglerMixing()`.
+Custom mixing functions can be used instead by defining the struct and appropriate functions such as `Molly.σ_mixing` and `Molly.ϵ_mixing`.
+For example:
+```julia
+struct MyMixing end
+
+Molly.σ_mixing(m::MyMixing, atom_i, atom_j, special) = (atom_i.σ + atom_j.σ) / 2
+Molly.ϵ_mixing(m::MyMixing, atom_i, atom_j, special) = (atom_i.ϵ + atom_j.ϵ) / 2
+```
 The `atom_type` field of the atoms is available, allowing features like changing the weight of solute-solvent interactions.
+Shortcut functions are also available to skip the interaction entirely, with similar logic.
+Specific exceptions can be given for pairs of atom types by using `Molly.MixingException`:
+```julia
+d = Dict((1, 2) => 0.3u"nm") # Pairs of atom type 1 and 2 have a σ value of 0.3 nm
+exceptions = Molly.ExceptionList(d)
+σ_mix = Molly.MixingException(MyMixing(), exceptions) # Give as e.g. σ_mixing argument to LennardJones
+```
 
 To define your own pairwise interaction, first define the `struct`, which must be a subtype of [`PairwiseInteraction`](@ref):
 ```julia
@@ -972,8 +1119,7 @@ The available simulators are:
 - [`LangevinSplitting`](@ref)
 - [`OverdampedLangevin`](@ref)
 - [`NoseHoover`](@ref)
-- [`TemperatureREMD`](@ref)
-- [`HamiltonianREMD`](@ref)
+- [`ReplicaExchangeMD`](@ref)
 - [`MetropolisMonteCarlo`](@ref)
 
 Many of these require a time step `dt` as an argument.
@@ -1084,7 +1230,6 @@ You do not have to define different versions though: you may only intend to use 
 
 Some simulators can be modified by adding coupling methods to allow properties like temperature and pressure to be controlled during a simulation.
 The available couplers are:
-- [`NoCoupling`](@ref)
 - [`ImmediateThermostat`](@ref)
 - [`VelocityRescaleThermostat`](@ref)
 - [`AndersenThermostat`](@ref)
@@ -1092,7 +1237,7 @@ The available couplers are:
 - [`BerendsenBarostat`](@ref)
 - [`CRescaleBarostat`](@ref)
 - [`MonteCarloBarostat`](@ref)
-Currently the [`VelocityVerlet`](@ref), [`Verlet`](@ref), [`StormerVerlet`](@ref), [`Langevin`](@ref) and [`NoseHoover`](@ref) simulators support coupling methods, with the default being [`NoCoupling`](@ref).
+Currently the [`VelocityVerlet`](@ref), [`Verlet`](@ref), [`StormerVerlet`](@ref), [`Langevin`](@ref) and [`NoseHoover`](@ref) simulators support coupling methods, with the default being `nothing`.
 Couplers are given to the `coupling` keyword argument during simulator construction:
 ```julia
 temp = 300.0u"K"
@@ -1144,7 +1289,8 @@ Molly.needs_virial(c::MyCoupler) = Inf
 ```
 The use of the [`virial`](@ref) tensor allows for non-isotropic pressure control.
 Molly follows the [definition in LAMMPS](https://docs.lammps.org/compute_stress_atom.html), taking into account pairwise and specific interactions as well as the contribution of the [`Ewald`](@ref) and [`PME`](@ref) methods.
-Contributions from constraints and implicit solvent methods are ignored.
+Contributions from constraints, implicit solvent methods and bias potentials are ignored.
+The virial is compatible with virtual sites apart from [`OutOfPlaneSite`](@ref).
 As described previously, custom general interactions should implement virial calculation if required.
 
 ## Loggers
@@ -1417,6 +1563,63 @@ All velocity constraints and diatomic distance constraints are solved analytical
 The direct matrix inverse does not scale well beyond clusters with 3 constraints and is not implemented.
 Other methods can be used to solve larger constraint clusters, these are not yet supported by Molly.
 
+## Virtual sites
+
+Virtual sites are massless particles whose coordinates are defined by the coordinates of other atoms.
+One use case is to carry partial charge at a location separate from the atom centers, as seen in four-point water models like TIP4P.
+Molly allows virtual sites to be defined in the following ways:
+- [`OneParticleSite`](@ref): defined to have the same coordinates as another atom, can be useful in alchemical simulations when multiple versions of an atom are required.
+- [`TwoParticleAverageSite`](@ref): defined by the weighted average of the coordinates of two atoms.
+- [`ThreeParticleAverageSite`](@ref): defined by the weighted average of the coordinates of three atoms.
+- [`OutOfPlaneSite`](@ref): defined by the weighted average of the coordinates of three atoms and the cross product of their relative displacements.
+
+Virtual sites should have an entry in the atom, coordinate and velocity arrays.
+They can be involved in any interaction type, with the forces being distributed back to the parent atoms automatically after all forces have been calculated.
+[`forces`](@ref), [`accelerations`](@ref) and `sys.velocities` are zero for virtual site atoms since they are not integrated.
+They share all the non-bonded exclusions of, and are excluded from, their parent atoms.
+The parent atoms must not be virtual sites themselves.
+They cannot participate in constraints.
+Virtual sites apart from [`OutOfPlaneSite`](@ref) are compatible with virial calculation.
+
+A virtual site can be set up manually, for example for a molecule of TIP4P water:
+```julia
+using Molly
+
+coords = [
+    SVector(0.5558, 1.9020, 1.2139), # O
+    SVector(0.4860, 1.9198, 1.2769), # H1
+    SVector(0.5800, 1.9881, 1.1799), # H2
+    SVector(1.0   , 1.0   , 1.0   ), # Virtual site, initial coordinates not used
+] * u"nm"
+
+# Virtual sites should have zero mass
+atoms = [
+    Atom(mass=15.99943u"g/mol", charge=0.0      , σ=0.316555u"nm", ϵ=0.749279u"kJ * mol^-1"),
+    Atom(mass=1.007947u"g/mol", charge=0.525868 , σ=0.0u"nm"     , ϵ=0.0u"kJ * mol^-1"     ),
+    Atom(mass=1.007947u"g/mol", charge=0.525868 , σ=0.0u"nm"     , ϵ=0.0u"kJ * mol^-1"     ),
+    Atom(mass=0.0u"g/mol"     , charge=-1.051736, σ=0.0u"nm"     , ϵ=0.0u"kJ * mol^-1"     ),
+]
+
+boundary = CubicBoundary(3.0u"nm")
+
+virtual_sites = [
+    # Atom 4 is a virtual site defined by atoms 1/2/3
+    ThreeParticleAverageSite(4, 1, 2, 3, 0.820314, 0.089843, 0.089843),
+]
+
+sys = System(
+    atoms=atoms,
+    coords=coords,
+    boundary=boundary,
+    virtual_sites=virtual_sites,
+)
+
+sys.virtual_site_flags # [false, false, false, true]
+```
+
+Virtual sites are set up appropriately when reading in a structure file.
+The virtual site atoms need to be present in the structure file to assign the correct residue template, which should have the virtual sites defined by `<VirtualSite>` entries.
+
 ## Neighbor finders
 
 Neighbor finders find close atoms periodically throughout the simulation, saving on computation time by allowing the force calculation between distant atoms to be omitted.
@@ -1431,41 +1634,6 @@ The recommended neighbor finder is [`CellListMapNeighborFinder`](@ref) on CPU, [
 When using a neighbor finder you should in general also use an interaction cutoff (see [Cutoffs](@ref)) with a cutoff distance less than the neighbor finder distance.
 The difference between the two should be larger than an atom can move in the time of the `n_steps` defined by the neighbor finder.
 The exception is [`GPUNeighborFinder`](@ref), which uses the algorithm from [Eastman and Pande 2010](https://doi.org/10.1002/jcc.21413) to avoid calculating a neighbor list and should have `dist_cutoff` set to the interaction cutoff distance.
-
-To define your own neighbor finder, first define the `struct`:
-```julia
-struct MyNeighborFinder
-    eligible::BitArray{2}
-    special::BitArray{2}
-    n_steps::Int
-    # Any other properties, e.g. a distance cutoff
-end
-```
-Examples of three useful properties are given here: a matrix indicating atom pairs eligible for pairwise interactions, a matrix indicating atoms in a special arrangement such as 1-4 bonding, and a value determining how many time steps occur between each evaluation of the neighbor finder.
-Then, define the neighbor finding function that is called every step by the simulator:
-```julia
-function Molly.find_neighbors(sys,
-                              nf::MyNeighborFinder,
-                              current_neighbors=nothing,
-                              step_n::Integer=0,
-                              force_recompute::Bool=false;
-                              n_threads::Integer=Threads.nthreads())
-    if force_recompute || step_n % nf.n_steps == 0
-        if isnothing(current_neighbors)
-            neighbors = NeighborList()
-        else
-            neighbors = current_neighbors
-        end
-        empty!(neighbors)
-        # Add to neighbors, for example
-        push!(neighbors, (1, 2, false)) # atom i, atom j and whether they are in a special interaction
-        return neighbors
-    else
-        return current_neighbors
-    end
-end
-```
-To use your custom neighbor finder, give it as the `neighbor_finder` argument when creating the [`System`](@ref).
 
 ## Analysis
 

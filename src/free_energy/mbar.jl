@@ -1,5 +1,4 @@
 export
-    ThermoState,
     assemble_mbar_inputs,
     iterate_mbar,
     mbar_weights,
@@ -7,51 +6,6 @@ export
 
 const LOG_PREVFLOAT0 = log(nextfloat(0.0))    # ≈ -744
 const LOG_FLOATMAX   = log(floatmax(Float64)) # ≈ 709
-
-"""
-    ThermoState(name::AbstractString, β, p, system)
-    ThermoState(system::System, β, p; name::Union{Nothing, AbstractString}=nothing)
-
-Thermodynamic state wrapper carrying inverse temperature `β = 1/kBT`, pressure `p`,
-and the [`System`](@ref) used to evaluate energies.
-
-Fields:
-- `name::String` - label for the state.
-- `β` - inverse temperature with units compatible with `1/system.energy_units`.
-- `p` - pressure `Quantity` or `nothing`.
-- `system::System` - simulation system used to compute potential energy.
-
-The second constructor checks unit consistency for `β` and `p` and sets a default
-`name` when not provided.
-"""
-struct ThermoState{B, P, S}
-    name::String
-    β::B      # 1 / (energy unit)
-    p::P      # Pressure (Quantity) or nothing
-    system::S # How to evaluate U_i on given coords and boundary
-end
-
-function ThermoState(sys::System, beta, press; name::Union{Nothing, AbstractString}=nothing)
-    if sys.energy_units == NoUnits
-        @warn "No units provided for System in thermodynamic state, skipping some sanity checks, " *
-              "make sure that provided values have consistent units"
-    else
-        inv_ener = dimension(inv(sys.energy_units))
-        if dimension(beta) != inv_ener
-            throw(ArgumentError("β was not provided in appropriate dimension $inv_ener, " *
-                                "found $(dimension(beta))"))
-        end
-        if !isbar(press)
-            throw(ArgumentError("pressure was not provided in appropriate units"))
-        end
-    end
-    if isnothing(name)
-        name_used = "system_$(beta)_$pressure"
-    else
-        name_used = name
-    end
-    return ThermoState(name_used, beta, press, sys)
-end
 
 # Evaluate potential energy for a state i on a frame (coords, boundary)
 @inline function calc_energy!(sys::System, buffers, coords, boundary)
@@ -95,8 +49,8 @@ MBARInput with:
 function assemble_mbar_inputs(coords_k,
                               boundaries_k,
                               states::Vector{ThermoState};
-                              target_state::Union{Nothing, ThermoState{<:Any, <:Any, <:System{D, AT, T}}}=nothing,
-                              shift::Bool=false) where {D, AT, T}
+                              target_state::Union{Nothing, ThermoState}=nothing,
+                              shift::Bool=false)
     K = length(states)
     if length(coords_k) != K || length(boundaries_k) != K
         throw(ArgumentError("length of coordinates, boundaries and states do not match"))
@@ -151,7 +105,7 @@ function assemble_mbar_inputs(coords_k,
         βk = β[k]
         pk = p[k]
         # We initialize the buffers here to avoid copy overhead in GPU
-        if AT <: AbstractGPUArray
+        if !isnothing(target_state) && is_on_gpu(target_state.system)
             buffers = init_buffers!(sys, 1, true)
         else
             buffers = nothing
@@ -187,7 +141,7 @@ end
 
 # Assembles the reduced potentials vector for the target thermodynamic state
 function assemble_target_u(all_coords, all_boundaries, all_volumes,
-                           target::ThermoState{<:Any, <:Any, <:System{D, AT, T}}) where {D, AT, T}
+                           target::ThermoState{<:Any, <:Any, <:System{<:Any, AT}}) where AT
     N  = length(all_coords)
     βa = target.β
     pa = target.p
@@ -516,8 +470,8 @@ function mbar_weights(u::AbstractMatrix,
         throw(DomainError(w, "infinite value found in w_target"))
     end
 
-    any(iszero, W) && @warn "W_samp contains zeros, possible underflow"
-    any(iszero, w) && @warn "w_target contains zeros, possible underflow"
+    any(iszero_value, W) && @warn "W_samp contains zeros, possible underflow"
+    any(iszero_value, w) && @warn "w_target contains zeros, possible underflow"
 
     if check
         N, K = size(u)
@@ -719,7 +673,7 @@ function pmf_with_uncertainty(u::AbstractMatrix, u_target::AbstractVector,
     if !all(isfinite, W_na)
         throw(DomainError(W_na, "infinite value found in W_na"))
     end
-    any(iszero, W_na) && @warn "W_na contains zeros, possible underflow"
+    any(iszero_value, W_na) && @warn "W_na contains zeros, possible underflow"
 
     # Prepare outputs
     p       = zeros(Float64, nb) # Bin probabilities under target

@@ -31,6 +31,45 @@ periodic boundary conditions.
 """
 distances(coords, boundary) = norm.(displacements(coords, boundary))
 
+# Coordinates are superimposed by rotating and translating the first set
+#   of input coordinates and translating the second set of input coordinates
+# Assumes the coordinates do not cross the bounding box, i.e. all
+#   coordinates in each set correspond to the same periodic image
+function kabsch(coords_1::AbstractArray{SVector{D, T}},
+                coords_2::AbstractArray{SVector{D, T}}) where {D, T}
+    n_atoms = length(coords_1)
+    trans_1 = mean(coords_1)
+    trans_2 = mean(coords_2)
+
+    p = from_device(reshape(reinterpret(T, coords_1), D, n_atoms)) .-
+                                repeat(reinterpret(T, trans_1), 1, n_atoms)
+    q = from_device(reshape(reinterpret(T, coords_2), D, n_atoms)) .-
+                                repeat(reinterpret(T, trans_2), 1, n_atoms)
+
+    cov = p * transpose(q)
+    svd_res = svd(ustrip.(cov))
+    Ut = transpose(svd_res.U)
+    d = sign(det(svd_res.V * Ut))
+    dmat = [1 0 0; 0 1 0; 0 0 d]
+    rot = svd_res.V * dmat * Ut
+
+    p_rot = rot * p
+    p_rot_reshaped = SArray[SVector{D, T}(p_rot[i:(i+2)]) for i in 1:3:(length(p_rot)-2)]
+    q_reshaped = SArray[SVector{D, T}(q[i:(i+2)]) for i in 1:3:(length(q)-2)]
+
+    return p_rot_reshaped, q_reshaped
+end
+
+# Wrapper function to return only the translated and rotated coordinates of coords_1
+#   after superimposition of coords_1 and coords_2 by the Kabsch algorithm
+# Marked as non-differentiable, useful for CalcRMSD bias
+function kabsch_nograd(coords_1, coords_2)
+    p_rot, _ = kabsch(coords_1, coords_2)
+    return p_rot
+end
+
+sum_abs2(x) = sum(abs2, x)
+
 """
     rmsd(coords_1, coords_2)
 
@@ -41,26 +80,12 @@ Assumes the coordinates do not cross the bounding box, i.e. all
 coordinates in each set correspond to the same periodic image.
 """
 function rmsd(coords_1::AbstractArray{SVector{D, T}},
-                coords_2::AbstractArray{SVector{D, T}}) where {D, T}
-    n_atoms = length(coords_1)
-    trans_1 = mean(coords_1)
-    trans_2 = mean(coords_2)
-    p = from_device(reshape(reinterpret(T, coords_1), D, n_atoms)) .-
-                                repeat(reinterpret(T, trans_1), 1, n_atoms)
-    q = from_device(reshape(reinterpret(T, coords_2), D, n_atoms)) .-
-                                repeat(reinterpret(T, trans_2), 1, n_atoms)
-    cov = p * transpose(q)
-    svd_res = svd(ustrip.(cov))
-    Ut = transpose(svd_res.U)
-    d = sign(det(svd_res.V * Ut))
-    dmat = [1 0 0; 0 1 0; 0 0 d]
-    rot = svd_res.V * dmat * Ut
-    diffs = rot * p - q
-    msd = sum(abs2, diffs) / n_atoms
+              coords_2::AbstractArray{SVector{D, T}}) where {D, T}
+    p_rot, q = kabsch(coords_1, coords_2)
+    diffs = p_rot .- q
+    msd = mean(sum_abs2, diffs)
     return sqrt(msd)
 end
-
-sum_abs2(x) = sum(abs2, x)
 
 """
     radius_gyration(coords, atoms)

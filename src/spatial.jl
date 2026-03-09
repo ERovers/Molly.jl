@@ -39,6 +39,7 @@ Setting one or more values to `Inf` gives no boundary in that dimension.
 """
 struct CubicBoundary{D, T, C} <: AbstractBoundary{D, T, C}
     side_lengths::SVector{3, C}
+
     function CubicBoundary(side_lengths::SVector{3, C2}; check_positive::Bool=true) where C2
         if check_positive && any(l -> l <= zero(l), side_lengths)
             throw(DomainError("side lengths must be positive, got $side_lengths"))
@@ -51,6 +52,7 @@ end
 CubicBoundary(x, y, z; kwargs...) = CubicBoundary(SVector{3}(x, y, z); kwargs...)
 CubicBoundary(x::Number; kwargs...) = CubicBoundary(SVector{3}(x, x, x); kwargs...)
 CubicBoundary(m::SMatrix{3,3}; kwargs...) = CubicBoundary(SVector{3}(m[1,1], m[2,2], m[3,3]); kwargs...)
+CubicBoundary(m::Matrix; kwargs...) = CubicBoundary(SVector{3}(m[1,1], m[2,2], m[3,3]); kwargs...)
 
 function boxmatrix(b::CubicBoundary)
     return SMatrix{3, 3}(
@@ -92,6 +94,7 @@ Setting one or more values to `Inf` gives no boundary in that dimension.
 """
 struct RectangularBoundary{D, T, C} <: AbstractBoundary{D, T, C}
     side_lengths::SVector{2, C}
+
     function RectangularBoundary(side_lengths::SVector{2, C2}; check_positive::Bool=true) where C2
         if check_positive && any(l -> l <= zero(l), side_lengths)
             throw(DomainError("side lengths must be positive, got $side_lengths"))
@@ -221,10 +224,9 @@ function TriclinicBoundary(bv::Union{SVector{3,<:SVector{3}}, SMatrix{3,3}}; app
     tan_a_b = (abs(bx) ≤ tolL) ? NT(Inf) : NT(ustrip(bv[2][2] / bx))
 
     return TriclinicBoundary{3, NT, eltype(eltype(bv)), approx_images, eltype(reciprocal_size)}(
-                bv, α, β, γ, reciprocal_size,
-                tan_bprojyz_cprojyz, tan_c_cprojxy,
-                cos_a_cprojxy, sin_a_cprojxy, tan_a_b
-            )
+        bv, α, β, γ, reciprocal_size, tan_bprojyz_cprojyz, tan_c_cprojxy,
+        cos_a_cprojxy, sin_a_cprojxy, tan_a_b,
+    )
 end
 
 function TriclinicBoundary(bv_lengths, angles; kwargs...)
@@ -265,7 +267,7 @@ end
 TriclinicBoundary(v1, v2, v3; kwargs...) = TriclinicBoundary(SVector{3}(v1, v2, v3); kwargs...)
 TriclinicBoundary(arr; kwargs...)        = TriclinicBoundary(SVector{3}(arr); kwargs...)
 
-boxmatrix(b::TriclinicBoundary) = SMatrix{3,3}(hcat(b.basis_vectors...))
+boxmatrix(b::TriclinicBoundary) = SMatrix{3, 3}(hcat(b.basis_vectors...))
 
 Base.getindex(b::TriclinicBoundary, i::Integer) = b.basis_vectors[i]
 Base.firstindex(b::TriclinicBoundary) = 1
@@ -392,7 +394,7 @@ The density of a [`System`](@ref).
 Returns zero density for infinite boundaries.
 """
 function density(sys)
-    m = sum(mass, sys.atoms)
+    m = sys.total_mass
     if dimension(m) == u"𝐌 * 𝐍^-1"
         m_no_mol = m / Unitful.Na
     else
@@ -614,46 +616,50 @@ function wrap_coords(v, boundary::TriclinicBoundary)
     return v_wrap
 end
 
-function unwrap_global(coords::AbstractVector{<:SVector{D}},
-                       boundary, topology; neighbors=nothing) where {D}
-    # --- frac<->cart ---
+# Unwrap coordinates so that molecules are not split over the boundary
+# Returns coordinates on CPU
+unwrap_molecules(sys) = unwrap_molecules(sys.coords, sys.boundary, sys.topology)
+
+function unwrap_molecules(coords::AbstractVector{<:SVector{D}}, boundary, topology) where D
+    coords_cpu = from_device(coords)
+    if isnothing(topology)
+        return coords_cpu
+    end
+
+    # Fractional to Cartesian conversion
     if hasproperty(boundary, :basis_vectors)
-        @assert D == 3
-        Bm = reduce(hcat, boundary.basis_vectors)   # unitful
-        B  = SMatrix{3,3}(Bm)
-        to_frac = (r::SVector{3}) -> B \ r          # dimensionless
-        to_cart = (f::SVector{3}) -> B * f          # length units
+        if D != 3
+            error("Triclinic boundary only defined for 3-dimensions")
+        end
+        Bm = reduce(hcat, boundary.basis_vectors)
+        B  = SMatrix{3, 3}(Bm)
+        to_frac = (r::SVector{3}) -> B \ r # Dimensionless
+        to_cart = (f::SVector{3}) -> B * f # Length units
     else
-        sl = boundary.side_lengths                  # SVector{D} with length units
-        to_frac = (r::SVector{D}) -> r ./ sl        # dimensionless
-        to_cart = (f::SVector{D}) -> f .* sl        # length units
+        sl = boundary.side_lengths
+        to_frac = (r::SVector{D}) -> r ./ sl # Dimensionless
+        to_cart = (f::SVector{D}) -> f .* sl # Length units
     end
-    wrap01(v) = v .- floor.(v .+ eps(eltype(v)))     # keep in [0,1)
+    wrap01(v) = v .- floor.(v .+ eps(eltype(v))) # Keep in [0,1)
 
-    # --- wrapped fractional coords ---
-    N  = length(coords)
-    f1 = to_frac(coords[1])
-    f  = Vector{typeof(f1)}(undef, N)                # dimensionless
+    # Wrapped fractional coords
+    N  = length(coords_cpu)
+    f1 = to_frac(coords_cpu[1])
+    f  = Vector{typeof(f1)}(undef, N) # Dimensionless
     @inbounds for i in 1:N
-        f[i] = wrap01(to_frac(coords[i]))
+        f[i] = wrap01(to_frac(coords_cpu[i]))
     end
 
-    # --- global adjacency: bonds ∪ neighbor-list pairs ---
+    # Bond adjacency
     adj = [Int[] for _ in 1:N]
-    if topology !== nothing
-        @inbounds for (i32,j32) in topology.bonded_atoms
-            i = Int(i32); j = Int(j32); push!(adj[i], j); push!(adj[j], i)
-        end
-        if neighbors !== nothing
-            @inbounds for ni in eachindex(neighbors)
-                i, j = neighbors[ni][1], neighbors[ni][2]
-                push!(adj[i], j); push!(adj[j], i)
-            end
-        end
+    @inbounds for (i32, j32) in topology.bonded_atoms
+        i, j = Int(i32), Int(j32)
+        push!(adj[i], j)
+        push!(adj[j], i)
     end
 
-    # --- BFS over whole system (one lattice tiling) ---
-    u = similar(f)                                   # dimensionless
+    # BFS over whole system (one lattice tiling)
+    u = similar(f) # Dimensionless
     visited = falses(N)
     @inbounds for seed in 1:N
         visited[seed] && continue
@@ -661,11 +667,12 @@ function unwrap_global(coords::AbstractVector{<:SVector{D}},
         visited[seed] = true
         stack = Int[seed]
         while !isempty(stack)
-            i = pop!(stack); fi = f[i]; ui = u[i]
+            i = pop!(stack)
+            fi, ui = f[i], u[i]
             for j in adj[i]
                 visited[j] && continue
                 df = f[j] - fi
-                df -= round.(df)                     # shift to (-0.5,0.5]
+                df -= round.(df) # Shift to (-0.5,0.5]
                 u[j] = ui + df
                 visited[j] = true
                 push!(stack, j)
@@ -673,22 +680,18 @@ function unwrap_global(coords::AbstractVector{<:SVector{D}},
         end
     end
 
-    # --- back to Cartesian with units ---
-    out = Vector{typeof(coords[1])}(undef, N)
+    # Back to Cartesian with units
+    out = Vector{typeof(coords_cpu[1])}(undef, N)
     @inbounds for i in 1:N
         out[i] = to_cart(u[i])
     end
     return out
 end
 
-# Unwrap coordinates so that every bonded pair is placed using the minimum-image displacement
-# Molecule connectivity is preserved
-function unwrap_molecules(sys; neighbors=nothing)
-    return unwrap_global(from_device(sys.coords), sys.boundary, sys.topology; neighbors)
-end
-
-function unwrap_molecules(coords, boundary, topology)
-    return unwrap_global(from_device(coords), boundary, topology; neighbors=nothing)
+function check_correction_arg(correction)
+    if !(correction in (:pbc, :wrap))
+        throw(ArgumentError("correction argument must be :pbc or :wrap, found $correction"))
+    end
 end
 
 """
@@ -720,55 +723,65 @@ function random_velocity(atom_mass::Real, temp::Real,
     return SVector([maxwell_boltzmann(atom_mass, temp, k; rng=rng) for i in 1:dims]...)
 end
 
-function random_velocity_3D(atom_mass::Union{Unitful.Mass, MolarMass}, temp::Unitful.Temperature,
-                            rng=Random.default_rng())
-    return SVector(
+function random_velocity_3D(atom_mass::Union{Unitful.Mass, MolarMass}, virtual_site_flag,
+                            temp::Unitful.Temperature, rng=Random.default_rng())
+    v = SVector(
         maxwell_boltzmann(atom_mass, temp; rng=rng),
         maxwell_boltzmann(atom_mass, temp; rng=rng),
         maxwell_boltzmann(atom_mass, temp; rng=rng),
     )
+    return v * !virtual_site_flag
 end
 
-function random_velocity_3D(atom_mass::Union{Unitful.Mass, MolarMass}, temp::Unitful.Temperature,
+function random_velocity_3D(atom_mass::Union{Unitful.Mass, MolarMass}, virtual_site_flag,
+                            temp::Unitful.Temperature,
                             k::Union{BoltzmannConstUnits, MolarBoltzmannConstUnits},
                             rng=Random.default_rng())
-    return SVector(
+    v = SVector(
         maxwell_boltzmann(atom_mass, temp, k; rng=rng),
         maxwell_boltzmann(atom_mass, temp, k; rng=rng),
         maxwell_boltzmann(atom_mass, temp, k; rng=rng),
     )
+    return v * !virtual_site_flag
 end
 
-function random_velocity_3D(atom_mass::Real, temp::Real, k::Real, rng=Random.default_rng())
-    return SVector(
-        maxwell_boltzmann(atom_mass, temp, k; rng=rng),
-        maxwell_boltzmann(atom_mass, temp, k; rng=rng),
-        maxwell_boltzmann(atom_mass, temp, k; rng=rng),
-    )
-end
-
-function random_velocity_2D(atom_mass::Union{Unitful.Mass, MolarMass}, temp::Unitful.Temperature,
+function random_velocity_3D(atom_mass::Real, virtual_site_flag, temp::Real, k::Real,
                             rng=Random.default_rng())
-    return SVector(
+    v = SVector(
+        maxwell_boltzmann(atom_mass, temp, k; rng=rng),
+        maxwell_boltzmann(atom_mass, temp, k; rng=rng),
+        maxwell_boltzmann(atom_mass, temp, k; rng=rng),
+    )
+    return v * !virtual_site_flag
+end
+
+function random_velocity_2D(atom_mass::Union{Unitful.Mass, MolarMass}, virtual_site_flag,
+                            temp::Unitful.Temperature, rng=Random.default_rng())
+    v = SVector(
         maxwell_boltzmann(atom_mass, temp; rng=rng),
         maxwell_boltzmann(atom_mass, temp; rng=rng),
     )
+    return v * !virtual_site_flag
 end
 
-function random_velocity_2D(atom_mass::Union{Unitful.Mass, MolarMass}, temp::Unitful.Temperature,
+function random_velocity_2D(atom_mass::Union{Unitful.Mass, MolarMass}, virtual_site_flag,
+                            temp::Unitful.Temperature,
                             k::Union{BoltzmannConstUnits, MolarBoltzmannConstUnits},
                             rng=Random.default_rng())
-    return SVector(
+    v = SVector(
         maxwell_boltzmann(atom_mass, temp, k; rng=rng),
         maxwell_boltzmann(atom_mass, temp, k; rng=rng),
     )
+    return v * !virtual_site_flag
 end
 
-function random_velocity_2D(atom_mass::Real, temp::Real, k::Real, rng=Random.default_rng())
-    return SVector(
+function random_velocity_2D(atom_mass::Real, virtual_site_flag, temp::Real, k::Real,
+                            rng=Random.default_rng())
+    v = SVector(
         maxwell_boltzmann(atom_mass, temp, k; rng=rng),
         maxwell_boltzmann(atom_mass, temp, k; rng=rng),
     )
+    return v * !virtual_site_flag
 end
 
 """
@@ -813,23 +826,19 @@ end
 
 Generate random velocities from the Maxwell-Boltzmann distribution
 for a [`System`](@ref).
+
+Virtual sites are given a velocity of zero.
 """
-function random_velocities(sys::AtomsBase.AbstractSystem{3}, temp; rng=Random.default_rng())
-    return random_velocity_3D.(masses(sys), temp, sys.k, rng)
+function random_velocities(sys::System{3, AT}, temp; rng=Random.default_rng()) where AT
+    vels = random_velocity_3D.(from_device(masses(sys)), from_device(sys.virtual_site_flags),
+                               temp, sys.k, rng)
+    return to_device(vels, AT)
 end
 
-function random_velocities(sys::AtomsBase.AbstractSystem{2}, temp; rng=Random.default_rng())
-    return random_velocity_2D.(masses(sys), temp, sys.k, rng)
-end
-
-function random_velocities(sys::System{3, AT}, temp;
-                           rng=Random.default_rng()) where AT <: AbstractGPUArray
-    return to_device(random_velocity_3D.(from_device(masses(sys)), temp, sys.k, rng), AT)
-end
-
-function random_velocities(sys::System{2, AT}, temp;
-                           rng=Random.default_rng()) where AT <: AbstractGPUArray
-    return to_device(random_velocity_2D.(from_device(masses(sys)), temp, sys.k, rng), AT)
+function random_velocities(sys::System{2, AT}, temp; rng=Random.default_rng()) where AT
+    vels = random_velocity_2D.(from_device(masses(sys)), from_device(sys.virtual_site_flags),
+                               temp, sys.k, rng)
+    return to_device(vels, AT)
 end
 
 """
@@ -838,6 +847,8 @@ end
 
 Set the velocities of a [`System`](@ref), or a vector, to random velocities
 generated from the Maxwell-Boltzmann distribution.
+
+Virtual sites are given a velocity of zero.
 """
 function random_velocities!(sys, temp; rng=Random.default_rng())
     sys.velocities .= random_velocities(sys, temp; rng=rng)
@@ -911,14 +922,20 @@ function remove_CM_motion!(sys)
         cm_momentum += velocities_cpu[i] * masses_cpu[i]
     end
     cm_velocity = cm_momentum / sys.total_mass
-    sys.velocities .= sys.velocities .- (cm_velocity,)
+    for i in eachindex(sys)
+        if !sys.virtual_site_flags[i]
+            sys.velocities[i] -= cm_velocity
+        end
+    end
     return sys
 end
+
+update_vel(v, cm_v, vsf) = (vsf ? zero(v) : v - cm_v)
 
 function remove_CM_motion!(sys::System{<:Any, <:AbstractGPUArray})
     cm_momentum = mapreduce((v, m) -> v .* m, +, sys.velocities, masses(sys))
     cm_velocity = cm_momentum / sys.total_mass
-    sys.velocities .= sys.velocities .- (cm_velocity,)
+    sys.velocities .= update_vel.(sys.velocities, (cm_velocity,), sys.virtual_site_flags)
     return sys
 end
 
@@ -1007,7 +1024,7 @@ function molecule_centers(coords::AbstractArray{SVector{D,C}}, boundary, topolog
 
     is_triclinic = hasproperty(boundary, :basis_vectors)
     if is_triclinic && D != 3
-        error("Triclinic boundary only defined for D=3")
+        error("Triclinic boundary only defined for 3-dimensions")
     end
 
     # Build frac<->cart transforms
@@ -1066,7 +1083,7 @@ function molecule_centers(coords::AbstractArray{SVector{D,C}}, boundary, topolog
 
         # Search over each connected component within the molecule
         for seed in atoms
-            if visited[seed]; continue; end
+            visited[seed] && continue
             u[seed] = f[seed]
             visited[seed] = true
             stack = [seed]
@@ -1074,7 +1091,9 @@ function molecule_centers(coords::AbstractArray{SVector{D,C}}, boundary, topolog
                 i = pop!(stack)
                 @inbounds for j in nbrs[i]
                     # stay within molecule
-                    if atom_mol[j] != m || visited[j]; continue; end
+                    if atom_mol[j] != m || visited[j]
+                        continue
+                    end
                     Δ = f[j] - f[i] - round.(f[j] - f[i])
                     u[j] = u[i] + Δ
                     visited[j] = true
@@ -1129,12 +1148,14 @@ Rigid-molecular barostat update with optional rotation.
 - Velocities: v′ = μ⁻¹ * v  (applied when `scale_velocities=true`)
 """
 function scale_coords!(sys::System{<:Any, AT},
-                       μ::SMatrix{D,D};
-                       rotate::Bool           = true,
-                       ignore_molecules::Bool = false,
-                       scale_velocities::Bool = false) where {AT,D}
+                       μ::SMatrix{D, D};
+                       rotate::Bool=true,
+                       ignore_molecules::Bool=false,
+                       scale_velocities::Bool=false) where {AT, D}
+    # This function assumes that constrained atoms, and virtual sites and the atoms that
+    #   define them, are in the same molecule, meaning that they are scaled appropriately
     if has_infinite_boundary(sys.boundary)
-        throw(AssertionError("Infinite boundary not supported"))
+        throw(AssertionError("infinite boundary not supported"))
     end
 
     μinv = inv(μ)
@@ -1211,12 +1232,12 @@ function scale_coords!(sys::System{<:Any, AT},
         end
 
         # write back
-        sys.coords   .= to_device(coords .* coord_u, AT)
-        sys.boundary  = b_new_u
+        sys.coords .= to_device(coords .* coord_u, AT)
+        sys.boundary = b_new_u
 
         # velocities
         if scale_velocities
-            vels = from_device(sys.velocities)          # keep units
+            vels = from_device(sys.velocities)
             @inbounds for i in eachindex(vels)
                 vels[i] = μinv * vels[i]
             end

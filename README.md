@@ -35,6 +35,7 @@ Implemented features include:
 - Implicit solvent GBSA methods.
 - [Unitful.jl](https://github.com/PainterQubits/Unitful.jl) compatibility so numbers have physical meaning.
 - Set up crystal systems using [SimpleCrystals.jl](https://github.com/ejmeitz/SimpleCrystals.jl).
+- Flexible bias potentials and collective variables.
 - Automatic multithreading.
 - GPU acceleration on all backends supported by [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl), with better performance on CUDA-enabled devices.
 - Run with Float64, Float32 or other float types.
@@ -104,7 +105,6 @@ ff = MolecularForceField(
     T,
     joinpath(data_dir, "force_fields", "ff99SBildn.xml"),
     joinpath(data_dir, "force_fields", "tip3p_standard.xml"),
-    joinpath(data_dir, "force_fields", "his.xml"),
 )
 
 sys = System(

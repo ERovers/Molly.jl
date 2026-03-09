@@ -1,5 +1,31 @@
 # Molly.jl release notes
 
+## v0.23.3 - Feb 2026
+
+### New features
+- The `strictness` keyword argument can be given to various functions, for example force field loading and system setup, to determine behavior when encountering possible problems. The options are `:warn` to emit warnings (the default), `:nowarn` to suppress warnings or `:error` to error.
+- Specifying partial charges in the `<NonbondedForce>` entries of force field XML files is supported.
+- `<Include>` tags in force field XML files are supported.
+
+## v0.23.2 - Feb 2026
+
+### New features
+- Support for virtual sites is added. `OneParticleSite`, `TwoParticleAverageSite`, `ThreeParticleAverageSite` and `OutOfPlaneSite` are available. Virtual sites can be involved in any interaction type.
+- Elements are now inferred more generally from atom names in structure files, for example "C2" is inferred as carbon.
+- The old "from/to" bond syntax in OpenMM force field XML files is supported.
+
+## v0.23.1 - Jan 2026
+
+### New features
+- Force field loading from OpenMM XML format is made more flexible and is now closer to OpenMM's behaviour. In particular, residues are matched to templates according to their molecular graph, meaning that there is more variability allowed in residue and atom naming. The `rename_terminal_res` argument during setup is no longer used.
+- Support for residue patches in OpenMM XML force field files is added.
+- Common bias potentials and collective variables (CVs) are added via `BiasPotential`, `LinearBias`, `SquareBias`, `FlatBottomSquareBias`, `CalcDist`, `CalcRg` and `CalcRMSD`. Alternatives can be defined by the user. Enzyme is used by default to calculate the gradient of the CV to obtain the force.
+
+### Bug fixes
+- A bug in the Lennard-Jones and Coulomb soft core potentials is fixed.
+- A bug in PME when using non-default parameters is fixed.
+- A bug when taking gradients with `MonteCarloBarostat` is fixed.
+
 ## v0.23.0 - Nov 2025
 
 ### Breaking changes

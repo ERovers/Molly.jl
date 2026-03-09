@@ -140,7 +140,8 @@ end
     function loss(σ, r0, coords, velocities, boundary, pairwise_inters, general_inters,
                   neighbor_finder, simulator, n_steps, n_threads, n_atoms, atom_mass, bond_dists,
                   bond_is, bond_js, angles, torsions, rng, ::Val{T}, ::Val{AT}) where {T, AT}
-        atoms = [Atom(i, 1, atom_mass, (i % 2 == 0 ? T(-0.02) : T(0.02)), σ, T(0.2)) for i in 1:n_atoms]
+        atoms = [Atom(i, 1, atom_mass, (i % 2 == 0 ? T(-0.02) : T(0.02)), σ, T(0.2), T(1.0), Molly.CoreRole)
+                 for i in 1:n_atoms]
         bonds_inner = HarmonicBond{T, T}[]
         for i in 1:(n_atoms ÷ 2)
             push!(bonds_inner, HarmonicBond(T(100.0), bond_dists[i] * r0))
@@ -223,7 +224,7 @@ end
             imp_obc2 = ImplicitSolventOBC(
                 to_device(atoms_setup, AT),
                 [AtomData(element="O") for i in 1:n_atoms],
-                InteractionList2Atoms(bond_is, bond_js, nothing);
+                InteractionList2Atoms(bond_is, bond_js, fill(0, length(bond_is)));
                 kappa=T(0.7),
                 use_OBC2=true,
             )
@@ -232,7 +233,7 @@ end
             imp_gbn2 = ImplicitSolventGBN2(
                 to_device(atoms_setup, AT),
                 [AtomData(element="O") for i in 1:n_atoms],
-                InteractionList2Atoms(bond_is, bond_js, nothing);
+                InteractionList2Atoms(bond_is, bond_js, fill(0, length(bond_is)));
                 kappa=T(0.7),
             )
             general_inters = (imp_gbn2,)
@@ -256,21 +257,36 @@ end
         if forward
             grad_enzyme = (
                 autodiff(
-                    set_runtime_activity(Forward), loss, Duplicated,
-                    Duplicated(σ, one(T)), Const(r0), Duplicated(copy(coords), zero(coords)),
-                    Duplicated(copy(velocities), zero(velocities)), const_args...,
+                    set_runtime_activity(Forward),
+                    loss,
+                    Duplicated,
+                    Duplicated(σ, one(T)),
+                    Const(r0),
+                    Duplicated(copy(coords), zero(coords)),
+                    Duplicated(copy(velocities), zero(velocities)),
+                    const_args...,
                 )[1],
                 autodiff(
-                    set_runtime_activity(Forward), loss, Duplicated,
-                    Const(σ), Duplicated(r0, one(T)), Duplicated(copy(coords), zero(coords)),
-                    Duplicated(copy(velocities), zero(velocities)), const_args...,
+                    set_runtime_activity(Forward),
+                    loss,
+                    Duplicated,
+                    Const(σ),
+                    Duplicated(r0, one(T)),
+                    Duplicated(copy(coords), zero(coords)),
+                    Duplicated(copy(velocities), zero(velocities)),
+                    const_args...,
                 )[1],
             )
         else
             grad_enzyme = autodiff(
-                set_runtime_activity(Reverse), loss, Active,
-                Active(σ), Active(r0), Duplicated(copy(coords), zero(coords)),
-                Duplicated(copy(velocities), zero(velocities)), const_args...,
+                set_runtime_activity(Reverse),
+                loss,
+                Active,
+                Active(σ),
+                Active(r0),
+                Duplicated(copy(coords), zero(coords)),
+                Duplicated(copy(velocities), zero(velocities)),
+                const_args...,
             )[1][1:2]
         end
 
@@ -322,8 +338,6 @@ end
             kappa=0.7,
         )
     end
-
-    EnzymeRules.inactive(::typeof(create_sys), args...) = nothing
 
     function test_energy_grad(params_dic, sys_ref, coords, neighbor_finder, n_threads)
         atoms, pis, sis, gis = Molly.inject_gradients(sys_ref, params_dic)
@@ -492,8 +506,11 @@ end
             n_threads = (parallel ? Threads.nthreads() : 1)
             grads_enzyme = Dict(k => 0.0 for k in keys(params_dic))
             autodiff(
-                set_runtime_activity(Reverse), test_fn, Active,
-                Duplicated(params_dic, grads_enzyme), Const(sys_ref),
+                set_runtime_activity(Reverse),
+                test_fn,
+                Active,
+                Duplicated(params_dic, grads_enzyme),
+                Const(sys_ref),
                 Duplicated(copy(sys_ref.coords), zero(sys_ref.coords)),
                 Duplicated(sys_ref.neighbor_finder, sys_ref.neighbor_finder),
                 Const(n_threads),

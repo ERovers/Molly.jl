@@ -7,6 +7,7 @@ export
     log_property!,
     TemperatureLogger,
     CoordinatesLogger,
+    BoxLogger,
     VelocitiesLogger,
     TotalEnergyLogger,
     KineticEnergyLogger,
@@ -142,6 +143,30 @@ function Base.show(io::IO, cl::GeneralObservableLogger{T, typeof(coordinates_wra
     print(io, "CoordinatesLogger{", eltype(eltype(values(cl))), "} with n_steps ",
             cl.n_steps, ", ", length(values(cl)), " frames recorded for ",
             length(values(cl)) > 0 ? length(first(values(cl))) : "?", " atoms")
+end
+
+box_wrapper(sys, args...; kwargs...) = boxmatrix(sys.boundary)
+
+"""
+    BoxLogger(n_steps)
+    BoxLogger(T, n_steps)
+
+Log the boundary of a system throughout a simulation,
+represented as its box matrix.
+Useful for NPT simulations where the box dimensions fluctuate.
+"""
+function BoxLogger(T::Type, n_steps::Integer)
+    return GeneralObservableLogger(box_wrapper,
+        T, 
+        n_steps,
+    )
+end
+
+BoxLogger(n_steps::Integer; dims::Integer=3) = BoxLogger(typeof(Matrix{DefaultFloat}(undef, dims, dims)*u"nm"), n_steps)
+
+function Base.show(io::IO, bl::GeneralObservableLogger{T, typeof(box_wrapper)}) where T
+    print(io, "BoxLogger{", eltype(values(bl)), "} with n_steps ",
+            bl.n_steps, ", ", length(values(bl)), " boundaries recorded")
 end
 
 velocities_wrapper(sys, args...; kwargs...) = copy(sys.velocities)
@@ -302,7 +327,7 @@ function Base.show(io::IO, dl::GeneralObservableLogger{T, typeof(density_wrapper
 end
 
 function virial_wrapper(sys, buffers, neighbors, step_n; n_threads, kwargs...)
-    if all(iszero, buffers.virial)
+    if all(iszero_value, buffers.virial)
         return virial(sys, neighbors, step_n; n_threads=n_threads)
     else
         return copy(buffers.virial)
@@ -324,7 +349,7 @@ function Base.show(io::IO, vl::GeneralObservableLogger{T, typeof(virial_wrapper)
 end
 
 function scalar_virial_wrapper(sys, buffers, neighbors, step_n; n_threads, kwargs...)
-    if all(iszero, buffers.virial)
+    if all(iszero_value, buffers.virial)
         return scalar_virial(sys, neighbors, step_n; n_threads=n_threads)
     else
         return tr(buffers.virial)
@@ -346,7 +371,7 @@ function Base.show(io::IO, vl::GeneralObservableLogger{T, typeof(scalar_virial_w
 end
 
 function pressure_wrapper(sys, buffers, neighbors, step_n; n_threads, kwargs...)
-    if all(iszero, buffers.pres_tensor)
+    if all(iszero_value, buffers.pres_tensor)
         P = pressure(sys, neighbors, step_n, buffers; recompute=true, n_threads=n_threads)
         return copy(P)
     else
@@ -372,7 +397,7 @@ end
 
 function scalar_pressure_wrapper(sys::System{D}, buffers, neighbors, step_n; n_threads,
                                  kwargs...) where D
-    if all(iszero, buffers.pres_tensor)
+    if all(iszero_value, buffers.pres_tensor)
         return scalar_pressure(sys, neighbors, step_n, buffers; n_threads=n_threads)
     else
         return tr(buffers.pres_tensor) / D
@@ -478,7 +503,7 @@ function BioStructures.AtomRecord(at_data::AtomData, i, coord)
     return BioStructures.AtomRecord(
         at_data.hetero_atom, i, at_data.atom_name, ' ', at_data.res_name,
         at_data.chain_id, at_data.res_number, ' ', coord, 1.0, 0.0,
-        at_data.element == "?" ? "  " : at_data.element, "  "
+        (at_data.element == "?" ? "  " : at_data.element), "  "
     )
 end
 
@@ -627,9 +652,7 @@ The CRYST1 record is not written for infinite boundaries.
 function write_structure(filepath, sys; format::AbstractString="", correction::Symbol=:pbc,
                          atom_inds=Int[], excluded_res=(), write_velocities::Bool=false,
                          write_boundary=true)
-    if !(correction in (:pbc, :wrap))
-        throw(ArgumentError("correction argument must be :wrap or :pbc, found $correction"))
-    end
+    check_correction_arg(correction)
     if uppercase(format) == "PDB" || uppercase(splitext(filepath)[2]) == ".PDB"
         # Special case PDB so more residue information can be written
         open(filepath, "w") do output
@@ -698,8 +721,10 @@ function TrajectoryWriter(n_steps::Integer, filepath::AbstractString;
                           format::AbstractString="", correction::Symbol=:pbc, atom_inds=Int[],
                           excluded_res=String[], write_velocities::Bool=false,
                           write_boundary::Bool=true)
-    if !(correction in (:pbc, :wrap))
-        throw(ArgumentError("correction argument must be :wrap or :pbc, found $correction"))
+    check_correction_arg(correction)
+    if isfile(filepath)
+        @warn "TrajectoryWriter created with a file path ($filepath) that already exists, " *
+              "will try to append to this file"
     end
     topology = Chemfiles.Topology() # Added to later when sys is available
     if uppercase(format) == "PDB" || uppercase(splitext(filepath)[2]) == ".PDB"

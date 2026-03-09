@@ -357,7 +357,7 @@ struct ImplicitSolventOBC{T, D, V, K, S, F, I, DI} <: AbstractGBSA
     srjs::DI
 end
 
-function ImplicitSolventOBC(atoms::AbstractArray{Atom{TY, M, T, D, E}},
+function ImplicitSolventOBC(atoms::AbstractArray{Atom{TY, M, T, D, E, L}},
                             atoms_data,
                             bonds;
                             solvent_dielectric=gb_solvent_dielectric,
@@ -370,7 +370,7 @@ function ImplicitSolventOBC(atoms::AbstractArray{Atom{TY, M, T, D, E}},
                             use_ACE=true,
                             use_OBC2=false,
                             element_to_radius=mbondi2_element_to_radius,
-                            element_to_screen=obc_element_to_screen) where {TY, M, T, D, E}
+                            element_to_screen=obc_element_to_screen) where {TY, M, T, D, E, L}
     units = dimension(D) == u"𝐋"
     radii = mbondi2_radii(atoms_data, bonds; element_to_radius=element_to_radius)
 
@@ -467,7 +467,7 @@ struct ImplicitSolventGBN2{T, D, VT, VD, K, S, F, I, TD, TM, DI} <: AbstractGBSA
     srjs::DI
 end
 
-function ImplicitSolventGBN2(atoms::AbstractArray{Atom{TY, M, T, D, E}},
+function ImplicitSolventGBN2(atoms::AbstractArray{Atom{TY, M, T, D, E, L}},
                                 atoms_data,
                                 bonds;
                                 solvent_dielectric=gb_solvent_dielectric,
@@ -486,7 +486,7 @@ function ImplicitSolventGBN2(atoms::AbstractArray{Atom{TY, M, T, D, E}},
                                 atom_params=gbn2_atom_params,
                                 atom_params_nucleic=gbn2_atom_params_nucleic,
                                 data_d0=gbn2_data_d0,
-                                data_m0=gbn2_data_m0) where {TY, M, T, D, E}
+                                data_m0=gbn2_data_m0) where {TY, M, T, D, E, L}
     units = dimension(D) == u"𝐋"
     radii = mbondi3_radii(atoms_data, bonds; element_to_radius=element_to_radius)
     nucleic_acid_residues = ("A", "C", "G", "U", "DA", "DC", "DG", "DT")
@@ -799,7 +799,7 @@ end
         if i != j
             coord_i, coord_j = coords[i], coords[j]
             r = norm(vector(coord_i, coord_j, boundary))
-            if iszero(dist_cutoff) || r <= dist_cutoff
+            if iszero_value(dist_cutoff) || r <= dist_cutoff
                 I = zero(coord_i[1] / unit(dist_cutoff)^2)
                 I_grad = zero(coord_i[1] / unit(dist_cutoff)^3)
                 ori, orj = offset_radii[i], offset_radii[j]
@@ -993,14 +993,14 @@ end
         dr = vector(coords[i], coords[j], boundary)
         r2 = sum(abs2, dr)
 
-        if iszero(dist_cutoff) || r2 <= dist_cutoff^2
+        if iszero_value(dist_cutoff) || r2 <= dist_cutoff^2
             Bi, Bj = Bs[i], Bs[j]
             alpha2_ij = Bi * Bj
             D_term = r2 / (4 * alpha2_ij)
             exp_term = exp(-D_term)
             denominator2 = r2 + alpha2_ij * exp_term
             denominator = sqrt(denominator2)
-            if iszero(kappa)
+            if iszero_value(kappa)
                 pre_factor = factor_solute + factor_solvent
             else
                 pre_factor = factor_solute + exp(-kappa * denominator) * factor_solvent +
@@ -1045,7 +1045,7 @@ end
             dr = vector(coords[i], coords[j], boundary)
             r = norm(dr)
 
-            if iszero(dist_cutoff) || r <= dist_cutoff
+            if iszero_value(dist_cutoff) || r <= dist_cutoff
                 ori, srj = or[i], sor[j]
                 rsrj = r + srj
                 if ori < rsrj

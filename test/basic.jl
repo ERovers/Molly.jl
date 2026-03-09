@@ -239,36 +239,35 @@ end
     end
 end
 
-@testset "Different Formats" begin
-
+@testset "Structure file formats" begin
     ff = MolecularForceField(
-        joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml", "gaff.xml", "imatinib.xml", "imatinib_frcmod.xml"])...;
+        joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml", "gaff.xml", "imatinib.xml",
+                           "imatinib_frcmod.xml"])...;
         units=true,
     )
-
     ff_custom = MolecularForceField(
-        joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml", "gaff.xml", "imatinib.xml", "imatinib_frcmod.xml"])...;
+        joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml", "gaff.xml", "imatinib.xml",
+                           "imatinib_frcmod.xml"])...;
         units=true,
-        custom_residue_templates = joinpath(data_dir, "imatinib_topo.xml")
+        custom_residue_templates=joinpath(data_dir, "imatinib_topo.xml"),
     )
-
     boundary = CubicBoundary(Inf*u"nm")
-    sys_mol2         = System(joinpath(data_dir, "imatinib.mol2"), ff; boundary = boundary)
-    sys_pdb_connect  = System(joinpath(data_dir, "imatinib_conect.pdb"),  ff; boundary = boundary)
-    sys_pdb          = System(joinpath(data_dir, "imatinib.pdb"),  ff_custom; boundary = boundary)
 
-    @test sys_mol2.topology.bonded_atoms == sys_pdb_connect.topology.bonded_atoms
-    @test sys_mol2.topology.bonded_atoms == sys_pdb.topology.bonded_atoms
-    @test_throws ArgumentError System(joinpath(data_dir, "imatinib.pdb"),  ff; boundary = boundary)
+    # Suppress MOL2 invalid sybyl type warning
+    @suppress_err begin
+        sys_mol2        = System(joinpath(data_dir, "imatinib.mol2"), ff; boundary=boundary)
+        sys_pdb_connect = System(joinpath(data_dir, "imatinib_conect.pdb"), ff; boundary=boundary)
+        sys_pdb         = System(joinpath(data_dir, "imatinib.pdb"), ff_custom; boundary=boundary)
 
+        @test sys_mol2.topology.bonded_atoms == sys_pdb_connect.topology.bonded_atoms
+        @test sys_mol2.topology.bonded_atoms == sys_pdb.topology.bonded_atoms
+        @test_throws ArgumentError System(joinpath(data_dir, "imatinib.pdb"), ff; boundary=boundary)
+    end
 end
 
-@testset "System Setup" begin
-
+@testset "System setup" begin
     FT = Float64
     AT = Array
-
-    dat_dir = joinpath(data_dir, "OpenMM_Refs/")
 
     ff = MolecularForceField(
         FT,
@@ -276,56 +275,59 @@ end
         units=true,
     )
 
-    names = ("a-synuclein_1",
-             "barn_bar",
-             "bpti",
-             "cd2_cd58",
-             "cole7_im7",
-             "drkN_SH3_1",
-             "gb3",
-             "hewl",
-             "NTail_1",
-             "PaaA2_1",
-             "sgpb_omtky3",
-             "ubiquitin")
+    struc_names = [
+        "a-synuclein_1",
+        "barn_bar",
+        "bpti",
+        "cd2_cd58",
+        "cole7_im7",
+        "drkN_SH3_1",
+        "gb3",
+        "hewl",
+        "NTail_1",
+        "PaaA2_1",
+        "sgpb_omtky3",
+        "ubiquitin",
+    ]
 
-    for name in names
+    for struc_name in struc_names
+        dat_file = joinpath(data_dir, "openmm_refs", "$struc_name.dat")
+        pdb_file = joinpath(data_dir, "openmm_refs", "$struc_name.pdb")
 
-        dat_file = joinpath(dat_dir, "$(name).dat")
-        pdb_file = joinpath(dat_dir, "$(name).pdb")
+        sys = System(
+            pdb_file,
+            ff;
+            array_type=AT,
+            nonbonded_method=:pme,
+            approximate_pme=false,
+            disulfide_bonds=true,
+        )
 
-        sys = System(pdb_file, ff;
-             array_type = AT,
-             nonbonded_method = :pme,
-             approximate_pme  = false,
-             disulfide_bonds  = true)
-
-        if name == "sgpb_omtky3"
-
-            @test_throws ArgumentError System(pdb_file, ff;
-                                              array_type = AT,
-                                              nonbonded_method = :pme,
-                                              approximate_pme  = false,
-                                              disulfide_bonds  = false) # Catch if disulfide bonds are not added properly
-
+        if struc_name == "sgpb_omtky3"
+            # Catch if disulfide bonds are not added properly
+            @test_throws ArgumentError System(
+                pdb_file,
+                ff;
+                array_type = AT,
+                nonbonded_method=:pme,
+                approximate_pme=false,
+                disulfide_bonds=false,
+            )
         end
 
-        F_opeMM = SVector{3}[]
+        fs_openmm = SVector{3}[]
         open(dat_file, "r") do f
             for line in readlines(f)
-                fields = split(line, ",")
-                force = SVector{3}([parse(FT, split(val, " ")[1])*u"kJ * mol^-1 * nm^-1" for val in fields])
-                push!(F_opeMM, force)
+                cols = split(line, ",")
+                f = SVector{3}([parse(FT, split(val, " ")[1])*u"kJ * mol^-1 * nm^-1"
+                                for val in cols])
+                push!(fs_openmm, f)
             end
         end
 
-        F_Molly = forces(sys)
-
-        diff = mean(norm.(F_Molly .- F_opeMM))
+        diff = mean(norm.(forces(sys) .- fs_openmm))
         @test diff < FT(0.15)u"kJ * mol^-1 * nm^-1"
-
     end
-    
 end
 
 @testset "Neighbor lists" begin
@@ -451,28 +453,6 @@ end
     end
 end
 
-@testset "Analysis" begin
-    pdb_path = joinpath(data_dir, "1ssu.pdb")
-    struc = read(pdb_path, BioStructures.PDBFormat)
-    cm_1 = BioStructures.coordarray(struc[1], BioStructures.calphaselector)
-    cm_2 = BioStructures.coordarray(struc[2], BioStructures.calphaselector)
-    coords_1 = SVector{3, Float64}.(eachcol(cm_1)) / 10 * u"nm"
-    coords_2 = SVector{3, Float64}.(eachcol(cm_2)) / 10 * u"nm"
-    @test rmsd(coords_1, coords_2) ≈ 2.54859467758795u"Å"
-    for AT in array_list[2:end]
-        @test rmsd(to_device(coords_1, AT), to_device(coords_2, AT)) ≈ 2.54859467758795u"Å"
-    end
-
-    bb_atoms = BioStructures.collectatoms(struc[1], BioStructures.backboneselector)
-    coords = SVector{3, Float64}.(eachcol(BioStructures.coordarray(bb_atoms))) / 10 * u"nm"
-    bb_to_mass = Dict("C" => 12.011u"g/mol", "N" => 14.007u"g/mol", "O" => 15.999u"g/mol")
-    atoms = [Atom(mass=bb_to_mass[BioStructures.element(bb_atoms[i])]) for i in eachindex(bb_atoms)]
-    @test isapprox(radius_gyration(coords, atoms), 11.51225678195222u"Å"; atol=1e-6u"nm")
-    boundary = CubicBoundary(10.0u"nm")
-    coords_wrap = wrap_coords.(coords, (boundary,))
-    @test isapprox(hydrodynamic_radius(coords_wrap, boundary), 21.00006825680275u"Å"; atol=1e-6u"nm")
-end
-
 @testset "Replica System" begin
     n_atoms = 100
     boundary = CubicBoundary(2.0u"nm")
@@ -481,7 +461,6 @@ end
 
     atoms = [Atom(mass=atom_mass, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1") for i in 1:n_atoms]
     coords = place_atoms(n_atoms, boundary; min_dist=0.3u"nm")
-    replica_velocities = nothing
     pairwise_inters = (LennardJones(use_neighbors=true),)
     n_replicas = 4
 
@@ -497,42 +476,42 @@ end
         dist_cutoff=1.5u"nm",
     )
 
-    repsys = ReplicaSystem(
-        atoms=atoms,
-        replica_coords=[copy(coords) for _ in 1:n_replicas],
-        boundary=boundary,
-        n_replicas=n_replicas,
-        replica_velocities=replica_velocities,
-        pairwise_inters=pairwise_inters,
-        neighbor_finder=neighbor_finder,
-    )
-
+    # 1. Define the baseline system
     sys = System(
         atoms=atoms,
         coords=coords,
         boundary=boundary,
-        velocities=nothing,
         pairwise_inters=pairwise_inters,
         neighbor_finder=neighbor_finder,
     )
 
-    sys_fields = [getfield(sys, f) for f in fieldnames(System) if f != :neighbor_finder]
+    # 2. Build the array of ThermoStates required by the new ReplicaSystem constructor
+    # We use a dummy integrator since it's required by ThermoState
+    intg = VelocityVerlet(dt=0.002u"ps")
+    thermo_states = [ThermoState(sys, intg; temperature=temp) for _ in 1:n_replicas]
+
+    # Initialize repsys via the generalized constructor
+    repsys = ReplicaSystem(
+        thermo_states,
+        [copy(coords) for _ in 1:n_replicas]
+    )
+
+    # Since ReplicaSystem no longer stores full `System` objects in a `replicas` tuple,
+    # we test that the core unperturbed components were correctly absorbed by the AlchemicalPartition
+    # and the state interaction arrays.
+    @test repsys.partition.master_sys.atoms == sys.atoms
     for i in 1:n_replicas
-        repsys_fields = [getfield(repsys.replicas[i], f)
-                         for f in fieldnames(System) if f != :neighbor_finder]
-        @test all(repsys_fields .== sys_fields)
+        @test repsys.replica_boundaries[i] == sys.boundary
+        @test repsys.state_pairwise_inters[i] == sys.pairwise_inters
     end
 
+    # Test initialization with loggers and extra data
+    replica_loggers = [(temp=TemperatureLogger(10), coords=CoordinatesLogger(10)) for i in 1:n_replicas]
+
     repsys2 = ReplicaSystem(
-        atoms=atoms,
-        replica_coords=[copy(coords) for _ in 1:n_replicas],
-        boundary=boundary,
-        n_replicas=n_replicas,
-        replica_velocities=replica_velocities,
-        pairwise_inters=pairwise_inters,
-        neighbor_finder=neighbor_finder,
-        replica_loggers=[(temp=TemperatureLogger(10), coords=CoordinatesLogger(10))
-                         for i in 1:n_replicas],
+        thermo_states,
+        [copy(coords) for _ in 1:n_replicas];
+        replica_loggers=replica_loggers,
         data="test_data_repsys",
     )
 
@@ -540,7 +519,6 @@ end
         atoms=atoms,
         coords=coords,
         boundary=boundary,
-        velocities=nothing,
         pairwise_inters=pairwise_inters,
         neighbor_finder=neighbor_finder,
         loggers=(temp=TemperatureLogger(10), coords=CoordinatesLogger(10)),
@@ -552,12 +530,15 @@ end
 
     l2 = sys2.loggers
     nf2 = [getproperty(sys2.neighbor_finder, p) for p in propertynames(sys2.neighbor_finder)]
+    
+    # Loop over the isolated component arrays instead of repsys.replicas[i]
     for i in 1:n_replicas
-        l1 = repsys2.replicas[i].loggers
+        l1 = repsys2.replica_loggers[i]
         @test typeof(l1) == typeof(l2)
         @test propertynames(l1) == propertynames(l2)
-        nf1 = [getproperty(repsys2.replicas[i].neighbor_finder, p)
-               for p in propertynames(repsys2.replicas[i].neighbor_finder)]
+        
+        nf1 = [getproperty(repsys2.replica_neighbor_finders[i], p)
+               for p in propertynames(repsys2.replica_neighbor_finders[i])]
         @test all(nf1 .== nf2)
     end
 end
@@ -636,5 +617,123 @@ end
         # AtomsCalculators.AtomsCalculatorsTesting functions
         test_potential_energy(ab_sys, calc)
         test_forces(ab_sys, calc)
+    end
+end
+
+@testset "Virtual sites" begin
+    for AT in array_list
+        for units in (false, true)
+            if units
+                LU, MU, EU, FU = u"nm", u"g/mol", u"kJ * mol^-1", u"kJ * mol^-1 * nm^-1"
+                TU, AU = u"K", u"nm * ps^-2" 
+            else
+                LU, MU, EU, FU, TU, AU = NoUnits, NoUnits, NoUnits, NoUnits, NoUnits, NoUnits
+            end
+            vs_flags = to_device(BitVector([0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1]), AT)
+            atom_masses = map(x -> (x ? 0.0 : 10.0), vs_flags) .* MU
+            atoms = to_device([Atom(mass=m, σ=(0.1 * LU), ϵ=(0.2 * EU))
+                               for m in from_device(atom_masses)], AT)
+            coords = to_device([
+                SVector(2.0, 2.0, 2.0),
+                SVector(2.0, 2.0, 2.2),
+                SVector(1.0, 1.0, 1.0),
+                SVector(3.0, 3.0, 3.0),
+                SVector(3.0, 3.0, 3.2),
+                SVector(3.0, 3.2, 3.0),
+                SVector(1.0, 1.0, 1.0),
+                SVector(4.0, 4.0, 4.0),
+                SVector(4.0, 4.0, 4.2),
+                SVector(4.0, 4.2, 4.0),
+                SVector(1.0, 1.0, 1.0),
+                SVector(1.0, 1.0, 1.0),
+                SVector(1.0, 1.0, 1.0),
+            ] * LU, AT)
+            boundary = CubicBoundary(7.0 * LU)
+            virtual_sites = to_device([
+                TwoParticleAverageSite(3, 1, 2, 0.6, 0.4, 0.0 / LU),
+                ThreeParticleAverageSite(7, 4, 5, 6, 0.2, 0.3, 0.5, 0.0 / LU),
+                OutOfPlaneSite(11, 8, 9, 10, 0.4, 0.4, 0.2 / LU),
+                TwoParticleAverageSite(12, 10, 9, 0.7, 0.3, 0.0 / LU),
+                OneParticleSite(13, 1, 0.0 / LU),
+            ], AT)
+            pis = (LennardJones(use_neighbors=true),)
+            eligible = trues(length(atoms), length(atoms))
+            eligible[1, 13] = false # Exclude OneParticleSite interaction
+            eligible[13, 1] = false
+            neighbor_finder = DistanceNeighborFinder(
+                eligible=to_device(eligible, AT),
+                dist_cutoff=(Inf * LU),
+            )
+            sys = System(
+                atoms=atoms,
+                coords=coords,
+                boundary=boundary,
+                pairwise_inters=pis,
+                virtual_sites=virtual_sites,
+                neighbor_finder=neighbor_finder,
+                force_units=FU,
+                energy_units=EU,
+            )
+
+            @test Molly.setup_virtual_sites(virtual_sites, atom_masses, (), AT, 3) == vs_flags
+            place_virtual_sites!(sys)
+            coords_true = to_device([
+                SVector(2.0  , 2.0 , 2.0 ),
+                SVector(2.0  , 2.0 , 2.2 ),
+                SVector(2.0  , 2.0 , 2.08),
+                SVector(3.0  , 3.0 , 3.0 ),
+                SVector(3.0  , 3.0 , 3.2 ),
+                SVector(3.0  , 3.2 , 3.0 ),
+                SVector(3.0  , 3.1 , 3.06),
+                SVector(4.0  , 4.0 , 4.0 ),
+                SVector(4.0  , 4.0 , 4.2 ),
+                SVector(4.0  , 4.2 , 4.0 ),
+                SVector(3.992, 4.08, 4.08),
+                SVector(4.0  , 4.14, 4.06),
+                SVector(2.0  , 2.0 , 2.0 ),
+            ] * LU, AT)
+            @test maximum(norm, sys.coords .- coords_true) < (1e-10 * LU)
+
+            @test potential_energy(sys) ≈ 185.333147311272 * EU
+            fs = forces(sys)
+            fs_true = to_device([
+                SVector(4.611761937893023e-7, 4.906537782904418e-7, -1210.4977981858422),
+                SVector(3.5996188665978023e-7, 3.8229594592330597e-7, 1210.4977989810347),
+                SVector(0.0, 0.0, 0.0),
+                SVector(-6.445195615508081e-8, 3.123019089071148, 1.5599118330103774),
+                SVector(1.979742462338753e-7, 0.4272878566213397, -1.9871993654901958),
+                SVector(2.3186678157441692e-7, -3.550306641128726, 0.427287910775211),
+                SVector(0.0, 0.0, 0.0),
+                SVector(-3.776342791805831e-7, -6239.653288137336, 1866.7884395029387),
+                SVector(-3.6302617445471697e-7, -3179.267013548073, 1312.478572952326),
+                SVector(-4.4586704461835325e-7, 9418.920300507896, -3179.2670136287525),
+                SVector(0.0, 0.0, 0.0),
+                SVector(0.0, 0.0, 0.0),
+                SVector(0.0, 0.0, 0.0),
+            ] * FU, AT)
+            @test maximum(norm, fs .- fs_true) < (1e-9 * FU)
+            @test norm(sum(fs)) < (1e-10 * FU)
+
+            accels = Molly.calc_accels.(fs, atom_masses)
+            accels_true = to_device([
+                SVector(4.611761937893023e-8, 4.906537782904419e-8, -121.04977981858443),
+                SVector(3.599618866597804e-8, 3.822959459233061e-8, 121.04977989810368),
+                SVector(0.0, 0.0, 0.0),
+                SVector(-6.445195615508091e-9, 0.3123019089071146, 0.15599118330103764),
+                SVector(1.979742462338754e-8, 0.04272878566213397, -0.1987199365490195),
+                SVector(2.31866781574417e-8, -0.35503066411287243, 0.0427287910775211),
+                SVector(0.0, 0.0, 0.0),
+                SVector(-3.776338241001653e-8, -623.9653288137338, 186.67884395029404),
+                SVector(-3.6302640182839244e-8, -317.92670135480785, 131.24785729523273),
+                SVector(-4.4586704461835323e-8, 941.8920300507904, -317.9267013628754),
+                SVector(0.0, 0.0, 0.0),
+                SVector(0.0, 0.0, 0.0),
+                SVector(0.0, 0.0, 0.0),
+            ] * AU, AT)
+            @test maximum(norm, accels .- accels_true) < (1e-10 * AU)
+
+            random_velocities!(sys, 300.0 * TU)
+            @test all(map((v, f) -> (f ? iszero(v) : !iszero(v)), sys.velocities, vs_flags))
+        end
     end
 end

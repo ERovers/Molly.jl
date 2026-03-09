@@ -186,7 +186,7 @@ end
         @test length(neighbors.list) == length(neighbors_tree.list)
         @test all(nn in neighbors_tree.list for nn in neighbors.list)
 
-        @time simulate!(s, simulator, n_steps; n_threads=n_threads)
+        @time simulate!(s, simulator, n_steps; n_threads=n_threads, show_progress=true)
 
         show(devnull, s.loggers.temp)
         show(devnull, s.loggers.coords)
@@ -240,53 +240,51 @@ end
 
         coords_unc = [c .± (abs(randn()) / 100)u"nm"         for c in s.coords    ]
         vels_unc   = [v .± (abs(randn()) / 100)u"nm * ps^-1" for v in s.velocities]
-        @suppress_err begin
-            sys_unc = System(
-                atoms=[Atom(index=i, mass=atom_mass, charge=0.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1")
-                    for i in 1:n_atoms],
-                coords=coords_unc,
-                boundary=boundary,
-                velocities=vels_unc,
-                atoms_data=[AtomData(atom_name="AR", res_number=i, res_name="AR",
-                                    chain_id="B", element="Ar")
-                            for i in 1:n_atoms],
-                pairwise_inters=(LennardJones(use_neighbors=true),),
-                neighbor_finder=DistanceNeighborFinder(
-                    eligible=trues(n_atoms, n_atoms),
-                    n_steps=10,
-                    dist_cutoff=2.0u"nm",
-                ),
-                loggers=(
-                    temp=TemperatureLogger(100),
-                    coords=CoordinatesLogger(100),
-                    vels=VelocitiesLogger(100),
-                    energy=TotalEnergyLogger(100),
-                    ke=KineticEnergyLogger(100),
-                    pe=PotentialEnergyLogger(100),
-                    force=ForcesLogger(100),
-                    dcd_writer=TrajectoryWriter(100, temp_fp_dcd),
-                    trr_writer=TrajectoryWriter(100, temp_fp_trr; write_velocities=true),
-                    pdb_writer=TrajectoryWriter(100, temp_fp_pdb),
-                    potkin_correlation=TimeCorrelationLogger(pot_obs, kin_obs, TP, TP, 1, 100),
-                    velocity_autocorrelation=AutoCorrelationLogger(V, TV, n_atoms, 100),
-                ),
-            )
-            for n_threads in n_threads_list
-                @test typeof(potential_energy(sys_unc; n_threads=n_threads)) ==
-                                    typeof((1.0 ± 0.1)u"kJ * mol^-1")
-                @test abs(potential_energy(sys_unc; n_threads=n_threads) -
-                                    potential_energy(s; n_threads=n_threads)) < 0.1u"kJ * mol^-1"
-                @test typeof(kinetic_energy(sys_unc)) == typeof((1.0 ± 0.1)u"kJ * mol^-1")
-                @test typeof(temperature(sys_unc)) == typeof((1.0 ± 0.1)u"K")
-                @test abs(temperature(sys_unc) - temperature(s)) < 0.1u"K"
-                @test eltype(eltype(forces(sys_unc; n_threads=n_threads))) ==
-                                    typeof((1.0 ± 0.1)u"kJ * mol^-1 * nm^-1")
-            end
-            simulator_unc = VelocityVerlet(dt=0.002u"ps")
-            for n_threads in n_threads_list
-                simulate!(sys_unc, simulator_unc, 1; n_threads=n_threads,
-                          run_loggers=false)
-            end
+        sys_unc = System(
+            atoms=[Atom(index=i, mass=atom_mass, charge=0.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1")
+                   for i in 1:n_atoms],
+            coords=coords_unc,
+            boundary=boundary,
+            velocities=vels_unc,
+            atoms_data=[AtomData(atom_name="AR", res_number=i, res_name="AR",
+                                 chain_id="B", element="Ar")
+                        for i in 1:n_atoms],
+            pairwise_inters=(LennardJones(use_neighbors=true),),
+            neighbor_finder=DistanceNeighborFinder(
+                eligible=trues(n_atoms, n_atoms),
+                n_steps=10,
+                dist_cutoff=2.0u"nm",
+            ),
+            loggers=(
+                temp=TemperatureLogger(100),
+                coords=CoordinatesLogger(100),
+                vels=VelocitiesLogger(100),
+                energy=TotalEnergyLogger(100),
+                ke=KineticEnergyLogger(100),
+                pe=PotentialEnergyLogger(100),
+                force=ForcesLogger(100),
+                dcd_writer=TrajectoryWriter(100, temp_fp_dcd),
+                trr_writer=TrajectoryWriter(100, temp_fp_trr; write_velocities=true),
+                pdb_writer=TrajectoryWriter(100, temp_fp_pdb),
+                potkin_correlation=TimeCorrelationLogger(pot_obs, kin_obs, TP, TP, 1, 100),
+                velocity_autocorrelation=AutoCorrelationLogger(V, TV, n_atoms, 100),
+            ),
+            strictness=:nowarn
+        )
+        for n_threads in n_threads_list
+            @test typeof(potential_energy(sys_unc; n_threads=n_threads)) ==
+                                typeof((1.0 ± 0.1)u"kJ * mol^-1")
+            @test abs(potential_energy(sys_unc; n_threads=n_threads) -
+                                potential_energy(s; n_threads=n_threads)) < 0.1u"kJ * mol^-1"
+            @test typeof(kinetic_energy(sys_unc)) == typeof((1.0 ± 0.1)u"kJ * mol^-1")
+            @test typeof(temperature(sys_unc)) == typeof((1.0 ± 0.1)u"K")
+            @test abs(temperature(sys_unc) - temperature(s)) < 0.1u"K"
+            @test eltype(eltype(forces(sys_unc; n_threads=n_threads))) ==
+                                typeof((1.0 ± 0.1)u"kJ * mol^-1 * nm^-1")
+        end
+        simulator_unc = VelocityVerlet(dt=0.002u"ps")
+        for n_threads in n_threads_list
+            simulate!(sys_unc, simulator_unc, 1; n_threads=n_threads, run_loggers=false)
         end
     end
 end
@@ -401,7 +399,6 @@ end
             coords=CoordinatesLogger(100),
             disp=DisplacementsLogger(100, coords),
         ),
-
     )
 
     @test_throws ArgumentError DisplacementsLogger(100, coords; n_steps_update=17)
@@ -515,7 +512,7 @@ end
         Gravity(G=G, use_neighbors=true), Gravity(G=G, use_neighbors=false),
     )
 
-    @testset "$inter" for inter in pairwise_inter_types
+    for inter in pairwise_inter_types
         if use_neighbors(inter)
             neighbor_finder = DistanceNeighborFinder(eligible=trues(n_atoms, n_atoms), n_steps=10,
                                                         dist_cutoff=1.5u"nm")
@@ -820,18 +817,32 @@ end
         n_steps=10,
         dist_cutoff=1.5u"nm",
     )
+    
+    # Define the unperturbed base system
+    base_sys = System(
+        atoms=atoms, 
+        coords=coords, 
+        boundary=boundary, 
+        pairwise_inters=pairwise_inters, 
+        neighbor_finder=neighbor_finder
+    )
 
     n_replicas = 4
+    temp_vals = [120.0u"K", 180.0u"K", 240.0u"K", 300.0u"K"]
+    
+    # Construct the array of thermodynamic states
+    thermo_states = ThermoState[]
+    for temp in temp_vals
+        intg = Langevin(dt=0.005u"ps", temperature=temp, friction=0.1u"ps^-1")
+        push!(thermo_states, ThermoState(base_sys, intg; temperature=temp))
+    end
+
     replica_loggers = [(temp=TemperatureLogger(10), coords=CoordinatesLogger(10)) for i in 1:n_replicas]
 
+    # Initialize ReplicaSystem using the generalized constructor
     repsys = ReplicaSystem(
-        atoms=atoms,
-        replica_coords=[copy(coords) for _ in 1:n_replicas],
-        boundary=boundary,
-        n_replicas=n_replicas,
-        replica_velocities=nothing,
-        pairwise_inters=pairwise_inters,
-        neighbor_finder=neighbor_finder,
+        thermo_states,
+        [copy(coords) for _ in 1:n_replicas];
         replica_loggers=replica_loggers,
     )
 
@@ -849,21 +860,10 @@ end
     )
     show(devnull, repsys)
 
-    temp_vals = [120.0u"K", 180.0u"K", 240.0u"K", 300.0u"K"]
-    simulator = TemperatureREMD(
-        dt=0.005u"ps",
-        temperatures=temp_vals,
-        simulators=[
-            Langevin(
-                dt=0.005u"ps",
-                temperature=temp,
-                friction=0.1u"ps^-1",
-            )
-            for temp in temp_vals],
-        exchange_time=2.5u"ps",
-    )
+    # Use the unified simulator
+    simulator = ReplicaExchangeMD(dt=0.005u"ps", exchange_time=2.5u"ps")
 
-    @time simulate!(repsys, simulator, n_steps; assign_velocities=true )
+    @time simulate!(repsys, simulator, n_steps; assign_velocities=true)
     @time simulate!(repsys, simulator, n_steps; assign_velocities=false)
 
     efficiency = repsys.exchange_logger.n_exchanges / repsys.exchange_logger.n_attempts
@@ -871,9 +871,10 @@ end
     @test efficiency < 1.0 # Bad acceptance rate?
     @info "Exchange Efficiency: $efficiency"
 
-    for id in eachindex(repsys.replicas)
-        mean_temp = mean(values(repsys.replicas[id].loggers.temp))
-        @test (0.9 * temp_vals[id]) < mean_temp < (1.1 * temp_vals[id])
+    for id in 1:n_replicas
+        mean_temp = mean(values(repsys.replica_loggers[id].temp))
+        # Given physical coordinates swap thermal states, they should average out across the ladder bounds
+        @test (0.9 * temp_vals[1]) < mean_temp < (1.1 * temp_vals[end])
     end
 end
 
@@ -881,12 +882,9 @@ end
     n_atoms = 100
     n_steps = 10_000
     atom_mass = 10.0u"g/mol"
-    atoms = [Atom(mass=atom_mass, charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1") for i in 1:n_atoms]
     boundary = CubicBoundary(2.0u"nm")
     coords = place_atoms(n_atoms, boundary; min_dist=0.3u"nm")
-
     temp = 100.0u"K"
-    velocities = [random_velocity(10.0u"g/mol", temp) for i in 1:n_atoms]
 
     neighbor_finder = DistanceNeighborFinder(
         eligible=trues(n_atoms, n_atoms),
@@ -896,45 +894,49 @@ end
 
     n_replicas = 4
     λ_vals = [1.0, 0.9, 0.75, 0.6]
-    replica_pairwise_inters = [(LennardJonesSoftCoreBeutler(α=0.3, λ=λ_vals[i], use_neighbors=true),)
-                               for i in 1:n_replicas]
+    
+    thermo_states = ThermoState[]
+    for i in 1:n_replicas
+        # Embed the lambda values directly into the atoms for this thermodynamic state
+        atoms_λ = [Atom(mass=atom_mass, charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", 
+                        λ =λ_vals[i]) for _ in 1:n_atoms]
+        
+        sys = System(
+            atoms=atoms_λ,
+            coords=coords,
+            boundary=boundary,
+            # SoftCore no longer takes λ; it relies on the atom's λ properties
+            pairwise_inters=(LennardJonesSoftCoreBeutler(α=0.3, use_neighbors=true),),
+            neighbor_finder=neighbor_finder
+        )
+        # All states share the exact same temperature and integrator parameters
+        intg = Langevin(dt=0.005u"ps", temperature=temp, friction=0.1u"ps^-1")
+        push!(thermo_states, ThermoState(sys, intg; temperature=temp))
+    end
 
     replica_loggers = [(temp=TemperatureLogger(10), ) for i in 1:n_replicas]
 
+    # Initialize generalized ReplicaSystem
     repsys = ReplicaSystem(
-        atoms=atoms,
-        replica_coords=[copy(coords) for _ in 1:n_replicas],
-        boundary=boundary,
-        n_replicas=n_replicas,
-        replica_velocities=nothing,
-        replica_pairwise_inters=replica_pairwise_inters,
-        neighbor_finder=neighbor_finder,
+        thermo_states,
+        [copy(coords) for _ in 1:n_replicas];
         replica_loggers=replica_loggers,
     )
 
-    simulator = HamiltonianREMD(
-        dt=0.005u"ps",
-        temperature=temp,
-        simulators=[
-            Langevin(
-                dt=0.005u"ps",
-                temperature=temp,
-                friction=0.1u"ps^-1",
-            )
-            for _ in 1:n_replicas],
-        exchange_time=2.5u"ps",
-    )
+    # Use the unified simulator (implicitly handles Hamiltonian REMD based on the ThermoStates)
+    simulator = ReplicaExchangeMD(dt=0.005u"ps", exchange_time=2.5u"ps")
 
-    @time simulate!(repsys, simulator, n_steps; assign_velocities=true )
+    @time simulate!(repsys, simulator, n_steps; assign_velocities=true)
     @time simulate!(repsys, simulator, n_steps; assign_velocities=false)
 
     efficiency = repsys.exchange_logger.n_exchanges / repsys.exchange_logger.n_attempts
-    @test efficiency > 0.2 # This is a fairly arbitrary threshold, but it's a good tests for very bad cases
+    @test efficiency > 0.2 # This is a fairly arbitrary threshold, but it's a good test for very bad cases
     @test efficiency < 1.0 # Bad acceptance rate?
     @info "Exchange Efficiency: $efficiency"
 
-    for id in eachindex(repsys.replicas)
-        mean_temp = mean(values(repsys.replicas[id].loggers.temp))
+    for id in 1:n_replicas
+        mean_temp = mean(values(repsys.replica_loggers[id].temp))
+        # Since temperature is constant across the ladder, physical replicas should hover exactly around temp
         @test (0.9 * temp) < mean_temp < (1.1 * temp)
     end
 end
@@ -1198,4 +1200,73 @@ end
             @test E_diff < 5e-4u"kJ * mol^-1"
         end
     end
+end
+
+@testset "Accelerated Weight Histogram (AWH)" begin
+    n_atoms = 50
+    n_steps = 2_000
+    atom_mass = 10.0u"g/mol"
+    boundary = CubicBoundary(2.0u"nm")
+    coords = place_atoms(n_atoms, boundary; min_dist=0.3u"nm")
+    temp = 298.0u"K"
+
+    neighbor_finder = DistanceNeighborFinder(
+        eligible=trues(n_atoms, n_atoms),
+        n_steps=10,
+        dist_cutoff=1.5u"nm",
+    )
+
+    n_windows = 4
+    λ_vals = [1.0, 0.8, 0.6, 0.4]
+    
+    thermo_states = ThermoState[]
+    for i in 1:n_windows
+        # Embed the lambda values directly into the atoms
+        atoms_λ = [Atom(mass=atom_mass, charge=0.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", 
+                        λ = λ_vals[i]) for _ in 1:n_atoms]
+        
+        # Define the system at this specific lambda state
+        sys = System(
+            atoms=atoms_λ,
+            coords=coords,
+            boundary=boundary,
+            pairwise_inters=(LennardJonesSoftCoreBeutler(α=0.3, use_neighbors=true),),
+            neighbor_finder=neighbor_finder
+        )
+        intg = Langevin(dt=0.005u"ps", temperature=temp, friction=0.1u"ps^-1")
+        push!(thermo_states, ThermoState(sys, intg; temperature=temp))
+    end
+
+    # Initialize AWH state using the newly generalized array of ThermoStates
+    # n_bias is set low (10) to guarantee the initial stage is rapidly saturated 
+    # and weight updates trigger during a short 2000 step test
+    awh_state = AWHState(thermo_states; first_state=1, n_bias=10)
+
+    # Wrap in AWHSimulation
+    awh_sim = AWHSimulation(
+        awh_state;
+        num_md_steps=10,
+        update_freq=5,
+        well_tempered_factor=10.0,
+        coverage_threshold=1.0,
+        log_freq=10
+    )
+
+    initial_f = copy(awh_sim.state.f)
+
+    # Run the AWH simulation loop
+    @time simulate!(awh_sim, n_steps)
+
+    # Verification
+    # 1. Active index must remain strictly within the bounds of the lambda ladder
+    @test 1 <= awh_sim.state.active_idx <= n_windows
+    
+    # 2. Gibbs sampling should accumulate effective samples
+    @test awh_sim.state.N_eff > 0
+    
+    # 3. The free energy array must update from its initial state
+    @test awh_sim.state.f != initial_f
+    
+    # 4. AWH enforces a structural constraint where the first state acts as the reference (f = 0.0)
+    @test awh_sim.state.f[1] == 0.0
 end
