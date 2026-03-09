@@ -9,7 +9,8 @@ export
     CMAPTorsion_L,
     print_interaction,
     kabsch,
-    step_logger
+    step_logger,
+    lambda
 
 function print_interaction(interaction, start_idx=1, end_idx=1)
     field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
@@ -175,6 +176,8 @@ Similar to Atom Type, but with λ scaling for alchemical transformations.
     charge_type::T = 0
     solvent::T = 0
 end
+
+lambda(atom) = atom.λ
 
 function Base.show(io::IO, a::Atom_L)
     print(io, "Atom with index=", a.index, ", atom_type=", a.atom_type, ", mass=", mass(a),
@@ -614,7 +617,7 @@ end
 
 @inline function potential_energy(coords, boundary, neighbors, n_neighbors, velocities, energy_units,
                             atoms, b_g, a_g, p_g, i_g, c_g, cl_g, 
-                            lj_g, co_g, lg_g, cg_g)
+                            lj_g, lg_g, cg_g, pme_g)
     T = typeof(ustrip(zero(eltype(eltype(coords)))))
     pe = zero(T) * energy_units
 
@@ -624,13 +627,14 @@ end
         dr = vector(coords[i], coords[j], boundary)
         pe += potential_energy(lj_g, dr, atoms[i], atoms[j], energy_units, special,
                         coords[i], coords[j], boundary, velocities[i], velocities[j], 0)
-        pe += potential_energy(co_g, dr, atoms[i], atoms[j], energy_units, special,
-                        coords[i], coords[j], boundary, velocities[i], velocities[j], 0)
         pe += potential_energy(lg_g, dr, atoms[i], atoms[j], energy_units, special,
                         coords[i], coords[j], boundary, velocities[i], velocities[j], 0)
         pe += potential_energy(cg_g, dr, atoms[i], atoms[j], energy_units, special,
                         coords[i], coords[j], boundary, velocities[i], velocities[j], 0)
     end
+
+    # PME
+    pe += potential_energy(pme_g, atoms, coords, boundary, NoUnits)
 
     # Bonds
     for (i, j, inter) in zip(b_g.is, b_g.js, b_g.inters)
@@ -680,7 +684,7 @@ end
                               velocities[i], velocities[j], velocities[k], velocities[l], velocities[m],
                               0, cl_g.data)
     end
-
+    
     return pe
 end
 

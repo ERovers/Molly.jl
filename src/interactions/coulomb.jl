@@ -4,6 +4,7 @@ export
     CoulombSoftCoreGapsys,
     CoulombReactionField,
     CoulombEwald,
+    CoulombEwald_gapsys,
     Yukawa
 
 const coulomb_const = 138.93545764u"kJ * mol^-1 * nm" # 1 / 4πϵ0
@@ -450,7 +451,7 @@ function pairwise_force(::CoulombSoftCoreGapsys, r, (ke, qi, qj, σQ, σ6_fac, �
     if r >= R
         return λ * (ke * (qij/(r^2)))
     else
-        return λ * (ke * (-(((2*qij)/(R^3)) * r) + ((3*qij)/(R^2))))
+        return λ * (ke * (-(((2*qij)/(R^3)) * r) + ((3*qij)/(R^2)))) * r #Do we have to add r because of (f/r) *dr??
     end
 end
 
@@ -763,6 +764,160 @@ end
     exp_mαr2 = exp(-αr^2)
     erfc_αr = calc_erfc(αr, exp_mαr2, inter.approximate_erfc)
     pe = ke * qi * qj * inv_r
+    if special
+        return pe * inter.weight_special * (r <= inter.dist_cutoff)
+    else
+        return pe * erfc_αr * (r <= inter.dist_cutoff)
+    end
+end
+
+"""
+    CoulombEwald(; dist_cutoff, error_tol=0.0005, use_neighbors=false, weight_special=1,
+                 coulomb_const=coulomb_const, approximate_erfc=true)
+
+The short range Ewald electrostatic interaction between two atoms.
+
+Should be used alongside the [`Ewald`](@ref) or [`PME`](@ref) general interaction,
+which provide the long-range term.
+`dist_cutoff` and `error_tol` should match the general interaction.
+
+`dist_cutoff` is the cutoff distance for short range interactions.
+`approximate_erfc` determines whether to use a fast approximation to the erfc function.
+"""
+struct CoulombEwald_gapsys{T, D, W, C, A, G, Q} <: PairwiseInteraction
+    dist_cutoff::D
+    error_tol::T
+    use_neighbors::Bool
+    weight_special::W
+    coulomb_const::C
+    α::A
+    αg::G
+    σQ::Q
+    approximate_erfc::Bool
+end
+
+function CoulombEwald_gapsys(; dist_cutoff, error_tol=0.0005, use_neighbors=false,
+                      weight_special=1, coulomb_const=coulomb_const, approximate_erfc=true, αg=0.3, σQ=1.0)
+    α = inv(dist_cutoff) * sqrt(-log(2 * error_tol))
+    return CoulombEwald_gapsys(dist_cutoff, error_tol, use_neighbors, weight_special, coulomb_const,
+                        α, αg, σQ, approximate_erfc)
+end
+
+use_neighbors(inter::CoulombEwald_gapsys) = inter.use_neighbors
+
+function Base.zero(coul::CoulombEwald_gapsys{T, D, W, C, A, G, Q}) where {T, D, W, C, A, G, Q}
+    return CoulombEwald_gapsys(
+        zero(D),
+        zero(T),
+        coul.use_neighbors,
+        zero(W),
+        zero(C),
+        zero(A),
+        zero(A),
+        zero(Q),
+        coul.approximate_erfc,
+    )
+end
+
+function Base.:+(c1::CoulombEwald_gapsys, c2::CoulombEwald_gapsys)
+    return CoulombEwald_gapsys(
+        c1.dist_cutoff + c2.dist_cutoff,
+        c1.error_tol + c2.error_tol,
+        c1.use_neighbors,
+        c1.weight_special + c2.weight_special,
+        c1.coulomb_const + c2.coulomb_const,
+        c1.α + c2.α,
+        c1.αg,
+        c1.σQ,
+        c1.approximate_erfc,
+    )
+end
+
+function inject_interaction(inter::CoulombEwald_gapsys, params_dic)
+    key_prefix = "inter_CE_"
+    return CoulombEwald_gapsys(
+        dict_get(params_dic, key_prefix * "dist_cutoff", inter.dist_cutoff),
+        inter.error_tol,
+        inter.use_neighbors,
+        dict_get(params_dic, key_prefix * "weight_14", inter.weight_special),
+        dict_get(params_dic, key_prefix * "coulomb_const", inter.coulomb_const),
+        inter.α,
+        inter.αg,
+        inter.σQ,
+        inter.approximate_erfc,
+    )
+end
+
+function extract_parameters!(params_dic, inter::CoulombEwald_gapsys, ff)
+    key_prefix = "inter_CE_"
+    params_dic[key_prefix * "dist_cutoff"] = inter.dist_cutoff
+    params_dic[key_prefix * "weight_14"] = inter.weight_special
+    params_dic[key_prefix * "coulomb_const"] = inter.coulomb_const
+    return params_dic
+end
+
+@inline function force(inter::CoulombEwald_gapsys{T},
+                       dr,
+                       atom_i,
+                       atom_j,
+                       force_units=u"kJ * mol^-1 * nm^-1",
+                       special=false,
+                       args...) where T
+    r2 = sum(abs2, dr)
+    ke, α = inter.coulomb_const, inter.α
+    qi, qj = atom_i.charge, atom_j.charge
+    r = sqrt(r2)
+    inv_r = inv(r)
+    αr = α * r
+    exp_mαr2 = exp(-αr^2)
+    erfc_αr = calc_erfc(αr, exp_mαr2, inter.approximate_erfc)
+
+    λ = lambda_mix(inter, atom_i, atom_j)
+    qij = qi * qj
+    σ6_fac = inter.αg * sqrt(cbrt(1-λ))
+    R = σ6_fac*(oneunit(r)+(inter.σQ*abs(qij))) 
+
+    if r >= R
+        f = λ * (ke * (qij/(r^3)))
+    else
+        f = λ * (ke * (-(((2*qij)/(R^3)) * r) + ((3*qij)/(R^2))))
+    end
+
+    if special
+        # Special interactions excluded from reciprocal calculation
+        # so have a standard interaction
+        return f * dr * inter.weight_special * (r <= inter.dist_cutoff)
+    else
+        return f * dr * (erfc_αr + 2 * αr * exp_mαr2 / sqrt(T(π))) * (r <= inter.dist_cutoff)
+    end
+end
+
+@inline function potential_energy(inter::CoulombEwald_gapsys,
+                                  dr,
+                                  atom_i,
+                                  atom_j,
+                                  energy_units=u"kJ * mol^-1",
+                                  special=false,
+                                  args...)
+    r2 = sum(abs2, dr)
+    ke, α = inter.coulomb_const, inter.α
+    qi, qj = atom_i.charge, atom_j.charge
+    r = sqrt(r2)
+    inv_r = inv(r)
+    αr = α * r
+    exp_mαr2 = exp(-αr^2)
+    erfc_αr = calc_erfc(αr, exp_mαr2, inter.approximate_erfc)
+
+    λ = lambda_mix(inter, atom_i, atom_j)
+    qij = qi * qj
+    σ6_fac = inter.αg * sqrt(cbrt(1-λ))
+    R = σ6_fac*(oneunit(r)+(inter.σQ*abs(qij))) 
+    
+    if r >= R
+        pe = λ * (ke * (qij/r))
+    else
+        pe = λ * (ke * (((qij/(R^3))*(r^2))-(((3*qij)/(R^2))*r)+((3*qij)/R)))
+    end
     if special
         return pe * inter.weight_special * (r <= inter.dist_cutoff)
     else

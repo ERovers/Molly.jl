@@ -447,7 +447,7 @@ function pairwise_force(inter::LennardJonesSoftCoreGapsys, r, (C12, C6, λ, α))
         return λ * (((12*C12)/(r6*r6*r))-((6*C6)/(r6*r)))
     else
         return λ * (((-156*C12*(invR6*invR6*invR2)) + (42*C6*(invR2*invR6)))*r +
-                    (168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR)))
+                    (168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR))) * r #Do we have to add r because of (f/r) *dr??
     end
 end
 

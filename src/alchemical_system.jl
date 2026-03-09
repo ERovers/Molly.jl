@@ -319,20 +319,35 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, direction=t
         end
     end
 
+    # Ensure all arrays have correct typing
+    Atoms = Vector{typeof(Atoms[1])}(Atoms)
+    Coords = Vector{typeof(Coords[1])}(Coords)
+    Data = Vector{typeof(Data[1])}(Data)
+    specific_inter_lists = tuple(Interactions...)
+
     # Calculate matrix of pairs eligible for non-bonded interactions
     n_atoms = length(Coords)
     eligible = trues(n_atoms, n_atoms)
+    eligible_PME = trues(n_atoms, n_atoms)
     for i in 1:n_atoms
         eligible[i, i] = false
+        
+        eligible_PME[i, i] = false
     end
     for (i, j) in zip(specific_inter_lists[1].is, specific_inter_lists[1].js)
         eligible[i, j] = false
         eligible[j, i] = false
+
+        eligible_PME[i, j] = false
+        eligible_PME[j, i] = false
     end
     for (i, k) in zip(specific_inter_lists[2].is, specific_inter_lists[2].ks)
         # Assume bonding is already specified
         eligible[i, k] = false
         eligible[k, i] = false
+
+        eligible_PME[i, k] = false
+        eligible_PME[k, i] = false
     end
 
     for k in keys(addition_groups)
@@ -362,16 +377,17 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, direction=t
     cutoff = DistanceCutoff(cut)
     pairwise_inters = (
                         LennardJones(use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_less_one_shortcut,weight_special=T(1.0)),
-                        Coulomb(use_neighbors=true, cutoff=cutoff, shortcut=coul_λ_less_one_shortcut, coulomb_const=cou_const, weight_special=T(1.0)),
                         LennardJonesSoftCoreGapsys(α=T(0.85), λ=nothing, use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_one_shortcut, weight_special=T(1.0)),
-                        CoulombSoftCoreGapsys(α=T(0.3), λ=nothing, σQ=σQ, use_neighbors=true, cutoff=cutoff, shortcut=coul_λ_one_shortcut, coulomb_const=cou_const, weight_special=T(1.0), epoch=epoch),
+                        CoulombEwald_gapsys(dist_cutoff=(units ? T(1.0)u"nm" : T(1.0)), error_tol=T(0.0005), use_neighbors=true, weight_special=T(1.0),
+                                            coulomb_const=(units ? T(coulomb_const) : T(ustrip(coulomb_const))), approximate_erfc=true, αg=T(0.6), 
+                                            σQ=units ? T(1.0)u"nm" : T(1.0)),
                         )
+
     
-    # Ensure all arrays have correct typing
-    Atoms = Vector{typeof(Atoms[1])}(Atoms)
-    Coords = Vector{typeof(Coords[1])}(Coords)
-    Data = Vector{typeof(Data[1])}(Data)
-    specific_inter_lists = tuple(Interactions...)
+    general_inters = (
+                        PME((units ? T(1.0)u"nm" : T(1.0)), Molly.to_device(Atoms, AT), Boundary; error_tol=T(0.0005), eligible=Molly.to_device(eligible_PME, AT), 
+                            special=Molly.to_device(special, AT), grad_safe=true),
+                        )
 
     # Set-up final system
     vels_gpu = [random_velocity(a.mass, temp) for a in Atoms]
@@ -385,10 +401,12 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, direction=t
         pairwise_inters=pairwise_inters,
         specific_inter_lists=Molly.to_device.(specific_inter_lists,AT),
         neighbor_finder=nf,
-        general_inters=(),
+        general_inters=general_inters,
         loggers=(
             writer=TrajectoryWriter(10_000, traj_file),
             step_log=GeneralObservableLogger(step_logger, typeof(one(T)), 10_000),
+            # writer=TrajectoryWriter(1_000, traj_file),
+            # step_log=GeneralObservableLogger(step_logger, typeof(one(T)), 1_000),
         ),
         force_units=(units ? u"kJ * mol^-1 * nm^-1" : NoUnits),
         energy_units=(units ? u"kJ * mol^-1" : NoUnits),

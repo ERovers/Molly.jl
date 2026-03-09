@@ -66,7 +66,11 @@ function excluded_interactions_inner!(Fs, vir, atoms, coords, boundary, α, f, i
                             ::Val{T}, ::Val{calculate_forces}, ::Val{atomic},
                             ::Val{needs_vir}) where {T, calculate_forces, atomic, needs_vir}
     sqrt_π = sqrt(T(π))
-    charge_ij = charge(atoms[i]) * charge(atoms[j])
+    if eltype(atoms).name.wrapper == Atom_L
+        charge_ij = (charge(atoms[i]) * lambda(atoms[i])) * (charge(atoms[j]) * lambda(atoms[j]))
+    else
+        charge_ij = charge(atoms[i]) * charge(atoms[j])
+    end
     vec_ij = vector(coords[i], coords[j], boundary)
     r = norm(vec_ij)
     αr = α * r
@@ -107,7 +111,9 @@ function excluded_interactions!(Fs, vir, buffer_Fs, virial_buffer, buffer_Es, ex
                                 calculate_forces, ::Val{T},
                                 ::Val{needs_vir}) where {T, needs_vir}
     exclusion_E = zero(T) * energy_units
-    for (i, j) in excluded_pairs
+
+    for p in 1:length(excluded_pairs)
+        i,j = excluded_pairs[p]
         E = excluded_interactions_inner!(Fs, vir, atoms, coords, boundary, α, f,
                             i, j, Val(T), Val(calculate_forces), Val(false), Val(needs_vir))
         exclusion_E += E
@@ -379,7 +385,7 @@ is based on the smooth PME algorithm from
 
 Only compatible with 3D systems.
 """
-struct PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, F, B} <: AbstractEwald
+struct PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, F, B, L} <: AbstractEwald
     dist_cutoff::D
     error_tol::T
     order::Int
@@ -405,6 +411,8 @@ struct PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, F, B} <: AbstractEwal
     fft_plan::F
     bfft_plan::B
     grad_safe::Bool
+    eligible::L
+    special::L
 end
 
 function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5,
@@ -490,9 +498,16 @@ function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5,
     end
 
     if fixed_charges && !grad_safe
-        partial_charges = charge.(atoms)
-        pc_sum = sum(partial_charges)
-        pc_abs2_sum = sum(abs2, partial_charges)
+        if eltype(atoms).name.wrapper == Atom_L
+            partial_charges = charge.(atoms)
+            lambdas = sqrt.(lambda.(atoms))
+            pc_sum = sum(partial_charges.*lambdas)
+            pc_abs2_sum = sum(abs2, partial_charges.*lambdas)
+        else
+            partial_charges = charge.(atoms)
+            pc_sum = sum(partial_charges)
+            pc_abs2_sum = sum(abs2, partial_charges)
+        end
     else
         pc_sum, pc_abs2_sum = nothing, nothing
     end
@@ -507,7 +522,7 @@ function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5,
                grid_indices, grid_fractions, bsplines_θ, bsplines_dθ, bsm_x, bsm_y, bsm_z,
                charge_grid, charge_grid_buffer, excluded_buffer_Fs, excluded_buffer_Es,
                recip_conv_buffer, virial_buffer, pc_sum, pc_abs2_sum, fft_plan,
-               bfft_plan, grad_safe)
+               bfft_plan, grad_safe, eligible, special)
 end
 
 zero_or_nothing(x) = zero(x)
@@ -546,6 +561,8 @@ function Base.zero(pme::PME)
         pme.fft_plan,
         pme.bfft_plan,
         pme.grad_safe,
+        pme.eligible,
+        pme.special,
     )
 end
 
@@ -659,7 +676,11 @@ end
 
 @inline function spread_charge_inner!(charge_grid, grid_indices, bsplines_θ,
                               mesh_dims, order, atoms, i, ::Val{atomic}) where atomic
-    q = charge(atoms[i])
+    if eltype(atoms).name.wrapper == Atom_L
+        q = charge(atoms[i]) * lambda(atoms[i])
+    else
+        q = charge(atoms[i])
+    end
     @inbounds x0index, y0index, z0index = grid_indices[1, i], grid_indices[2, i], grid_indices[3, i]
     @inbounds for ix in 0:(order-1)
         xindex = (x0index + ix) % mesh_dims[1]
@@ -872,7 +893,11 @@ function interpolate_force_inner!(Fs, charge_grid, grid_indices, bsplines_θ,
     nx, ny, nz = mesh_dims
     fx, fy, fz = zero(T), zero(T), zero(T)
     @inbounds begin
-        q = charge(atoms[i])
+        if eltype(atoms).name.wrapper == Atom_L
+            q = charge(atoms[i]) * lambda(atoms[i])
+        else
+            q = charge(atoms[i])
+        end
         x0index, y0index, z0index = grid_indices[1, i], grid_indices[2, i], grid_indices[3, i]
         for ix in 0:(order-1)
             xindex = (x0index + ix) % mesh_dims[1]
@@ -946,10 +971,12 @@ function ewald_pe_forces!(Fs, vir, inter::PME{T}, atoms, coords, boundary, force
     V = volume(boundary)
     f = (energy_units == NoUnits ? ustrip(T(Molly.coulomb_const)) : T(Molly.coulomb_const))
 
+    #### Exclusion ####
     exclusion_E = excluded_interactions!(Fs, vir, inter.excluded_buffer_Fs, inter.virial_buffer,
                     inter.excluded_buffer_Es, inter.excluded_pairs, atoms, coords, boundary, α, f,
                     force_units, energy_units, calculate_forces, Val(T), Val(needs_vir))
 
+    #### Reciprocal Space ####
     recip_box = invert_box_vectors(boundary)
     grid_placement!(inter.grid_indices, inter.grid_fractions, coords, recip_box, mesh_dims)
     update_bsplines!(inter.bsplines_θ, inter.bsplines_dθ, inter.grid_fractions, order, n_thr)
@@ -967,15 +994,88 @@ function ewald_pe_forces!(Fs, vir, inter::PME{T}, atoms, coords, boundary, force
                            n_thr)
     end
 
+    #### Self ####
     if isnothing(inter.pc_sum) || inter.grad_safe
-        partial_charges = charge.(atoms)
-        pc_sum = sum(partial_charges)
-        pc_abs2_sum = sum(abs2, partial_charges)
+        if eltype(atoms).name.wrapper == Atom_L
+            partial_charges = charge.(atoms)
+            lambdas = sqrt.(lambda.(atoms))
+            pc_sum = sum(partial_charges.*lambdas)
+            pc_abs2_sum = sum(abs2, partial_charges.*lambdas)
+        else
+            partial_charges = charge.(atoms)
+            pc_sum = sum(partial_charges)
+            pc_abs2_sum = sum(abs2, partial_charges)
+        end
     else
         pc_sum, pc_abs2_sum = inter.pc_sum, inter.pc_abs2_sum
     end
+
     charge_E = -f * T(π) * pc_sum^2 / (2 * V * α^2)
     self_E = f * -pc_abs2_sum * α / sqrt(T(π)) + charge_E
     total_E = reciprocal_space_E + self_E + exclusion_E
     return total_E
+end
+
+@inline function potential_energy(inter::PME{T}, atoms, coords, boundary, energy_units) where T
+    order, ϵr, α, mesh_dims = inter.order, inter.ϵr, inter.α, inter.mesh_dims
+    V = volume(boundary)
+    f = (energy_units == NoUnits ? ustrip(T(Molly.coulomb_const)) : T(Molly.coulomb_const))
+    pe = zero(T) * energy_units
+
+    #### Exclusion ####
+    for p in 1:length(inter.excluded_pairs)
+        i,j = inter.excluded_pairs[p]
+        sqrt_π = sqrt(T(π))
+        if eltype(atoms).name.wrapper == Atom_L
+            charge_ij = (charge(atoms[i]) * lambda(atoms[i])) * (charge(atoms[j]) * lambda(atoms[j]))
+        else
+            charge_ij = charge(atoms[i]) * charge(atoms[j])
+        end
+        vec_ij = vector(coords[i], coords[j], boundary)
+        r = norm(vec_ij)
+        αr = α * r
+        erf_αr = erf(αr)
+        if erf_αr > T(1e-6)
+            inv_r = inv(r)
+            exclusion_E = -f * charge_ij * inv_r * erf_αr
+        else
+            exclusion_E = -α * 2 * f * charge_ij / sqrt_π
+        end
+        pe += exclusion_E
+    end
+
+    #### Self ####
+    if isnothing(inter.pc_sum) || inter.grad_safe
+        if eltype(atoms).name.wrapper == Atom_L
+            partial_charges = charge.(atoms)
+            lambdas = sqrt.(lambda.(atoms))
+            pc_sum = sum(partial_charges.*lambdas)
+            pc_abs2_sum = sum(abs2, partial_charges.*lambdas)
+        else
+            partial_charges = charge.(atoms)
+            pc_sum = sum(partial_charges)
+            pc_abs2_sum = sum(abs2, partial_charges)
+        end
+    else
+        pc_sum, pc_abs2_sum = inter.pc_sum, inter.pc_abs2_sum
+    end
+
+    charge_E = -f * T(π) * pc_sum^2 / (2 * V * α^2)
+    self_E = f * -pc_abs2_sum * α / sqrt(T(π)) + charge_E
+    pe += self_E
+
+    #### Reciprocal Space ####
+    recip_box = invert_box_vectors(boundary)
+    grid_placement!(inter.grid_indices, inter.grid_fractions, coords, recip_box, mesh_dims)
+    update_bsplines!(inter.bsplines_θ, inter.bsplines_dθ, inter.grid_fractions, order, 1)
+    spread_charge!(inter.charge_grid, inter.charge_grid_buffer, inter.grid_indices,
+                   inter.bsplines_θ, mesh_dims, order, atoms, Val(1))
+    grad_safe_fft!(inter.charge_grid, inter.fft_plan)
+    reciprocal_space_E = recip_conv!(nothing, inter.virial_buffer, inter.charge_grid,
+                    inter.recip_conv_buffer, inter.bsplines_moduli_x, inter.bsplines_moduli_y,
+                    inter.bsplines_moduli_z, recip_box, f / ϵr, α, mesh_dims, boundary,
+                    energy_units, Val(1), Val(false))
+    grad_safe_bfft!(inter.charge_grid, inter.bfft_plan)
+    pe += reciprocal_space_E
+    return pe
 end
