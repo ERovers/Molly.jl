@@ -53,7 +53,7 @@ function SHAKE_RATTLE(n_atoms,
                       angle_constraints=nothing,
                       gpu_block_size=128,
                       max_iters=25,
-                      strictness=:warn)
+                      strictness=default_strictness())
     ustrip(dist_tolerance) > 0 || throw(ArgumentError("dist_tolerance must be greater than zero"))
     ustrip(vel_tolerance ) > 0 || throw(ArgumentError("vel_tolerance must be greater than zero" ))
     check_strictness(strictness)
@@ -149,7 +149,6 @@ function setup_constraints!(sr::SHAKE_RATTLE, neighbor_finder, arr_type)
         sr = SHAKE_RATTLE(sr, clusters12_gpu, clusters23_gpu, clusters34_gpu, angle_clusters_gpu)
     end
 
-    # neighbor_finder also modified
     return sr
 end
 
@@ -899,4 +898,53 @@ function apply_velocity_constraints!(sys::System, ca::SHAKE_RATTLE; kwargs...)
     end
 
     KernelAbstractions.synchronize(backend)
+end
+
+function check_position_constraints(sys::System{<:Any, <:Any, FT}, ca::SHAKE_RATTLE) where FT
+    err_unit = unit(eltype(eltype(sys.coords)))
+    if err_unit != unit(ca.dist_tolerance)
+        throw(ArgumentError("distance tolerance units in SHAKE ($(unit(ca.dist_tolerance))) " *
+                            "are inconsistent with system coordinate units ($err_unit)"))
+    end
+
+    cluster_maxes = FT[]
+    backend = get_backend(sys.coords)
+    err_kernel = max_dist_error(backend, 128)
+
+    for cluster_type in cluster_keys(ca)
+        clusters = getproperty(ca, cluster_type)
+        if length(clusters) > 0
+            max_storage = allocate(backend, FT, length(clusters))
+            err_kernel(clusters, sys.coords, sys.boundary, max_storage; ndrange=length(clusters))
+            push!(cluster_maxes, reduce(max, Array(max_storage)))
+        end
+    end
+
+    KernelAbstractions.synchronize(backend)
+    return maximum(cluster_maxes) < ustrip(ca.dist_tolerance)
+end
+
+function check_velocity_constraints(sys::System{<:Any, <:Any, FT}, ca::SHAKE_RATTLE) where FT
+    err_unit = unit(eltype(eltype(sys.velocities))) * unit(eltype(eltype(sys.coords)))
+    if err_unit != unit(ca.vel_tolerance)
+        throw(ArgumentError("velocity tolerance units in RATTLE ($(unit(ca.vel_tolerance))) " *
+                    "are inconsistent with system velocity and coordinate units ($err_unit)"))
+    end
+
+    cluster_maxes = FT[]
+    backend = get_backend(sys.coords)
+    err_kernel = max_vel_error(backend, 128)
+
+    for cluster_type in cluster_keys(ca)
+        clusters = getproperty(ca, cluster_type)
+        if length(clusters) > 0
+            max_storage = allocate(backend, FT, length(clusters))
+            err_kernel(clusters, sys.coords, sys.velocities, sys.boundary, max_storage;
+                       ndrange=length(clusters))
+            push!(cluster_maxes, reduce(max, Array(max_storage)))
+        end
+    end
+
+    KernelAbstractions.synchronize(backend)
+    return maximum(cluster_maxes) < ustrip(ca.vel_tolerance)
 end

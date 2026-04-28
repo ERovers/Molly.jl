@@ -3,7 +3,7 @@
 This documentation will first introduce the main features of the package with some examples, then will give details on each component of a simulation.
 There are further examples in the [Molly examples](@ref) section.
 For more information on specific types or functions, see the [Molly API](@ref) section or call `?function_name` in Julia.
-The [Differentiable simulation with Molly](@ref) section describes taking gradients through simulations and the [Free energies with MBAR](@ref) section covers an approach to estimate free energies.
+The [Differentiable simulation with Molly](@ref) section describes taking gradients through simulations and the [Free energy calculation](@ref) section covers an approach to estimate free energies.
 
 The package takes a modular approach to molecular simulation.
 To run a simulation you create a [`System`](@ref) object and call [`simulate!`](@ref) on it.
@@ -200,6 +200,8 @@ There are two GPU code paths currently: a fast path specific to CUDA and a slowe
 The number of GPU threads used for the GPU kernels can be tuned with the environmental variables `MOLLY_GPUNTHREADS_PAIRWISE`, `MOLLY_GPUNTHREADS_SPECIFIC`, `MOLLY_GPUNTHREADS_DISTANCENF` and `MOLLY_GPUNTHREADS_IMPLICIT`.
 In general these should only be changed if GPU memory errors occur on smaller GPUs.
 
+For the CUDA fast path, users can explicitly call `Molly.optimize_cuda_launch_config!(sys)` prior to a simulation. This will benchmark various launch configurations and cache the optimal parameters, which are then used to accelerate subsequent pairwise force and energy kernels globally. Users can also manually override the kernel parameters by setting the environment variables `MOLLY_CUDA_FORCE_BLOCK_Y`, `MOLLY_CUDA_ENERGY_BLOCK_Y`, `MOLLY_CUDA_TILE_THREADS_X`, `MOLLY_CUDA_TILE_THREADS_Y`, and `MOLLY_CUDA_FORCE_MAXREGS`, or directly via the `set_cuda_launch_config!` function.
+
 ## Simulating diatomic molecules
 
 If we want to define specific interactions between atoms, for example bonds, we can do this as well.
@@ -278,7 +280,7 @@ visualize(
 )
 ```
 ![Diatomic simulation](images/sim_diatomic.gif)
-The neighbors can be found using `find_neighbors(sys)`, which returns a [`NeighborList`](@ref).
+The neighbors can be found using `find_neighbors(sys)`, which returns a [`NeighborList`](@ref) for the classical neighbor finders and `nothing` for [`GPUNeighborFinder`](@ref), whose CUDA kernels manage their tile list internally.
 
 ## Simulating gravity
 
@@ -364,7 +366,7 @@ The above 5 ps simulation looks something like this when you view it in PyMOL:
 
 The system setup procedure is tested against OpenMM, following their template matching procedure to assign force field parameters to the structures read from the structure file.
 Some margin in residue and atom naming is allowed, as the naming present in the structure files is queried against a renaming dictionary that contains common alternative names present in PDB files, which you can consult in [pdbNames.xml](https://github.com/JuliaMolSim/Molly.jl/blob/master/data/force_fields/pdbNames.xml).
-You can extend this dictionary yourself, if you really want to use your own naming; or you can build a standalone renaming dictionary following the same structure as the one mentioned above, and pass it as a keyword argument `custom_renaming_scheme` when you build your [`MolecularForceField`](@ref).
+You can extend this dictionary yourself, if you really want to use your own naming; or you can build an additional renaming dictionary following the same structure as the one mentioned above, and pass it as a keyword argument `custom_renaming_scheme` when you build your [`MolecularForceField`](@ref).
 The bonding topology of the system is automatically inferred for standard residues (protein and nucleic acids, plus water).
 If your simulation contains other types of molecules, you must provide the topology for them. You can do this either by using a structure file format with explicit bond definitions, such as Mol2 or mmCIF, by defining the appropriate `CONECT` records in a PDB file, or by providing a custom topology template in a format equivalent to the one found in [residues.xml](https://github.com/JuliaMolSim/Molly.jl/blob/master/data/force_fields/residues.xml).
 
@@ -382,10 +384,13 @@ To run on the GPU, set `array_type=GPUArrayType`, where `GPUArrayType` is the ar
 The nonbonded method can be selected using the `nonbonded_method` keyword argument to [`System`](@ref).
 The options are `:none` (short range only), `:cutoff` (reaction field method), `:pme` (particle mesh Ewald summation) and `:ewald` (Ewald summation, slow).
 To run with constraints, use the `constraints` (`:none`, `:hbonds`, `:allbonds` or `:hangles`) and `rigid_water` keyword arguments.
+Hydrogen mass repartitioning can be used by setting for example `hydrogen_mass=2`.
 
 You can use an implicit solvent method by giving the `implicit_solvent` keyword argument.
 The options are `:obc1`, `:obc2` and `:gbn2`, corresponding to the Onufriev-Bashford-Case GBSA model with parameter set I or II and the GB-Neck2 model.
 Other options detailed in the docstring for [`System`](@ref) include overriding the boundary dimensions in the file (`boundary`) and modifying the non-bonded interaction and neighbor list cutoff distances (`dist_cutoff` and `dist_buffer`).
+The `strictness` keyword argument determines behavior when encountering possible problems and can be set to `:error` or `:nowarn` rather than the default `:warn`.
+It can be set globally with the `MOLLY_STRICTNESS` environmental variable.
 
 Molly also has a rudimentary parser of [Gromacs](http://www.gromacs.org) topology and coordinate files, which should be considered experimental. For example:
 ```julia
@@ -427,24 +432,45 @@ The following tags are supported:
 - `<HarmonicBondForce>`
 - `<HarmonicAngleForce>`
 - `<PeriodicTorsionForce>`: both `<Proper>` and `<Improper>` tags are supported
-- `<NonbondedForce>`: `<UseAttributeFromResidue>` tags other than `<UseAttributeFromResidue name="charge"/>` are not supported
-- `<LennardJonesForce>`: `<NBFixPair>` tags and `sigma14`/`epsilon14` attributes in `<Atom>` tags are supported
+- `<CMAPTorsionForce>`
+- `<NonbondedForce>`: `<UseAttributeFromResidue>` tags other than `<UseAttributeFromResidue name="charge"/>` are not supported, `useDispersionCorrection` is supported and is `true` by default
+- `<LennardJonesForce>`: `<NBFixPair>` tags and `sigma14`/`epsilon14` attributes in `<Atom>` tags are supported, `useDispersionCorrection` is supported and is `true` by default
+- `<AmoebaUreyBradleyForce>`: note that this defines the bond-like part of a general Urey-Bradley interaction and is not specific to the AMOEBA force field
 - `<Include>`
 
 The following tags are not yet supported and in general will be ignored rather than throwing an error when reading in a [`MolecularForceField`](@ref):
-- `<AmoebaUreyBradleyForce>`
 - `<RBTorsionForce>`
-- `<CMAPTorsionForce>`
 - `<GBSAOBCForce>`
 - `<CustomBondForce>`
 - `<CustomAngleForce>`
-- `<CustomTorsionForce>`
+- `<CustomTorsionForce>`: the special case where `energy="k*(theta-theta0)^2"` is supported as it is used to define improper torsions in some force fields
 - `<CustomNonbondedForce>`
 - `<CustomGBForce>`
 - `<CustomHbondForce>`
 - `<CustomManyParticleForce>`
-- `<Script>`
+- `<Script>`: since this is not supported, XML files that do further setup with Python code in `<Script>` may not behave as expected
+- Any of the other polarisable force field tags, i.e. `<DrudeForce>`, `<HippoNonbondedForce>` and those starting with `Amoeba` other than `<AmoebaUreyBradleyForce>`.
 In general, custom forces should be implemented as described in [Forces and energies](@ref).
+
+### Structure file formats
+
+Coordinate files can be in any format where [Chemfiles.jl](https://chemfiles.org/chemfiles/latest/formats.html) can read the positions, atoms and bonds.
+Where Chemfiles.jl cannot read the residues, it is assumed that the whole file represents one residue.
+For example, water can be loaded from various formats:
+```julia
+using Molly, Test
+
+data_dir = joinpath(dirname(pathof(Molly)), "..", "data")
+ff = MolecularForceField(joinpath(data_dir, "force_fields", "tip3p_standard.xml"))
+
+water_pdb  = System(joinpath(data_dir, "water_formats", "water.pdb" ), ff)
+water_cif  = System(joinpath(data_dir, "water_formats", "water.cif" ), ff)
+water_mol2 = System(joinpath(data_dir, "water_formats", "water.mol2"), ff)
+water_sdf  = System(joinpath(data_dir, "water_formats", "water.sdf" ), ff) # Residue inferred for SDF
+
+@test potential_energy(water_pdb ) ≈ potential_energy(water_cif) ≈
+      potential_energy(water_mol2) ≈ potential_energy(water_sdf)
+```
 
 ## Enhanced sampling
 
@@ -502,54 +528,9 @@ end
 # 362.86427110336984 K
 ```
 
-The Accelerated Weight Histogram method ([`AWHState`](@ref), [`AWHSimulation`](@ref)) has also been implemented in Molly.jl, allowing to perform enhanced sampling and obtaining on-the-fly estimators of free energies along arbitrary collective variables and alchemical transformations. A more detailed overview of this can be found in the Free Energy section of the documentation.
+The accelerated weight histogram method ([`AWHState`](@ref) and [`AWHSimulation`](@ref)) has also been implemented in Molly.jl, allowing enhanced sampling and on-the-fly estimation of free energies along arbitrary collective variables and alchemical transformations. A more detailed overview of this can be found in the [Free energy calculation](@ref) section.
 
-## Monte Carlo sampling
-
-Molly has the [`MetropolisMonteCarlo`](@ref) simulator to carry out Monte Carlo sampling with Metropolis selection rates.
-For example, to perform simulated annealing on charged particles to form a crystal lattice:
-```julia
-n_atoms = 100
-atoms = [Atom(mass=10.0u"g/mol", charge=1.0) for i in 1:n_atoms]
-boundary = RectangularBoundary(4.0u"nm")
-
-coords = place_atoms(n_atoms, boundary; min_dist=0.2u"nm")
-pairwise_inters = (Coulomb(),)
-
-temperatures = [1198.0, 798.0, 398.0, 198.0, 98.0, 8.0]u"K"
-sys = System(
-    atoms=atoms,
-    coords=coords,
-    boundary=boundary,
-    pairwise_inters=pairwise_inters,
-    loggers=(
-        coords=CoordinatesLogger(n_atoms, dims=2),
-        montecarlo=MonteCarloLogger(),
-    ),
-)
-
-trial_args = Dict(:shift_size => 0.1u"nm")
-for t in temperatures
-    sim = MetropolisMonteCarlo(;
-        temperature=t,
-        trial_moves=random_uniform_translation!,
-        trial_args=trial_args,
-    )
-
-    simulate!(sys, sim, 10_000)
-end
-
-println(sys.loggers.montecarlo.n_accept)
-# 15234
-
-visualize(sys.loggers.coords, boundary, "sim_montecarlo.gif")
-```
-![Monte Carlo simulation](images/sim_montecarlo.gif)
-
-`trial_moves` should be a function that takes a [`System`](@ref) as its argument and optional keyword arguments `trial_args`.
-It should modify the coordinates as appropriate, accounting for any boundary conditions.
-[`random_uniform_translation!`](@ref) and [`random_normal_translation!`](@ref) are provided as common trial move functions.
-[`MonteCarloLogger`](@ref) records various properties throughout the simulation.
+As described in the next section, bias potentials can also be added to standard simulators for enhanced sampling.
 
 ## Biased simulation
 
@@ -669,6 +650,53 @@ simulate!(sys, simulator, 100_000)
 ```
 See also [this example](@ref "Protein bias potential").
 
+## Monte Carlo sampling
+
+Molly has the [`MetropolisMonteCarlo`](@ref) simulator to carry out Monte Carlo sampling with Metropolis selection rates.
+For example, to perform simulated annealing on charged particles to form a crystal lattice:
+```julia
+n_atoms = 100
+atoms = [Atom(mass=10.0u"g/mol", charge=1.0) for i in 1:n_atoms]
+boundary = RectangularBoundary(4.0u"nm")
+
+coords = place_atoms(n_atoms, boundary; min_dist=0.2u"nm")
+pairwise_inters = (Coulomb(),)
+
+temperatures = [1198.0, 798.0, 398.0, 198.0, 98.0, 8.0]u"K"
+sys = System(
+    atoms=atoms,
+    coords=coords,
+    boundary=boundary,
+    pairwise_inters=pairwise_inters,
+    loggers=(
+        coords=CoordinatesLogger(n_atoms, dims=2),
+        montecarlo=MonteCarloLogger(),
+    ),
+)
+
+trial_args = Dict(:shift_size => 0.1u"nm")
+for t in temperatures
+    sim = MetropolisMonteCarlo(;
+        temperature=t,
+        trial_moves=random_uniform_translation!,
+        trial_args=trial_args,
+    )
+
+    simulate!(sys, sim, 10_000)
+end
+
+println(sys.loggers.montecarlo.n_accept)
+# 15234
+
+visualize(sys.loggers.coords, boundary, "sim_montecarlo.gif")
+```
+![Monte Carlo simulation](images/sim_montecarlo.gif)
+
+`trial_moves` should be a function that takes a [`System`](@ref) as its argument and optional keyword arguments `trial_args`.
+It should modify the coordinates as appropriate, accounting for any boundary conditions.
+[`random_uniform_translation!`](@ref) and [`random_normal_translation!`](@ref) are provided as common trial move functions.
+[`MonteCarloLogger`](@ref) records various properties throughout the simulation.
+
 ## Units
 
 Molly is fairly opinionated about using [Unitful.jl](https://github.com/PainterQubits/Unitful.jl) units as shown above: you don't have to use them, but it is better if you do.
@@ -725,11 +753,15 @@ The available pairwise interactions are:
 - [`CoulombSoftCoreBeutler`](@ref)
 - [`CoulombSoftCoreGapsys`](@ref)
 - [`CoulombReactionField`](@ref)
+- [`CoulombSoftCoreBeutlerReactionField`](@ref)
+- [`CoulombSoftCoreGapsysReactionField`](@ref)
 - [`CoulombEwald`](@ref)
+- [`CoulombSoftCoreBeutlerEwald`](@ref)
+- [`CoulombSoftCoreGapsysEwald`](@ref)
 - [`Yukawa`](@ref)
 - [`Gravity`](@ref)
 
-The available specific interactions are:
+The available specific interactions (1-5 atoms) are:
 - [`HarmonicPositionRestraint`](@ref) - 1 atom
 - [`HarmonicBond`](@ref) - 2 atoms
 - [`MorseBond`](@ref) - 2 atoms
@@ -743,6 +775,7 @@ The available specific interactions are:
 The available general interactions are:
 - [`Ewald`](@ref)
 - [`PME`](@ref)
+- [`LJDispersionCorrection`](@ref)
 - [`ImplicitSolventOBC`](@ref)
 - [`ImplicitSolventGBN2`](@ref)
 - [`MullerBrown`](@ref)
@@ -830,13 +863,14 @@ You can use `args...` to indicate unused further arguments, e.g. `Molly.force(in
 Atom properties can be accessed, e.g. `atom_i.σ`.
 `force_units` can be useful for returning a zero force under certain conditions.
 `step_n` is the step number in the simulator, allowing time-dependent interactions.
-Beware that this step counter starts from 1 every time [`simulate!`](@ref) is called, and can also be 0 to calculate forces before the first step.
+Beware that this step counter starts from 1 every time [`simulate!`](@ref) is called unless you give the `init_step` argument, and can also be 0 to calculate forces before the first step.
 It also doesn't work with [`simulate_remd!`](@ref).
 
 Typically the force function is where most computation time is spent during the simulation, so consider optimising this function if you want high performance.
 One nice feature of Molly is that this function will work on both the CPU and the GPU.
 If you need a different version of the function on GPU, you can define `Molly.force_gpu` (and `Molly.potential_energy_gpu`).
 Virial computation is done automatically when required using the force function.
+The force function should not have side effects like updating atom properties to avoid race conditions; use a general interaction if you need this.
 
 The argument `special` is a `Bool` determining whether the atom pair interaction should be treated as special.
 This is specified during neighbor finder construction.
@@ -890,7 +924,7 @@ struct MySpecificInter
 end
 ```
 Next, you need to define a method for the [`force`](@ref) function.
-The form of this will depend on whether the interaction involves 1, 2, 3 or 4 atoms.
+The form of this will depend on whether the interaction involves 1, 2, 3, 4 or 5 atoms.
 For example in the 2 atom case:
 ```julia
 function Molly.force(inter::MySpecificInter,
@@ -1015,6 +1049,7 @@ The available cutoffs are:
 - [`ShiftedPotentialCutoff`](@ref)
 - [`ShiftedForceCutoff`](@ref)
 - [`CubicSplineCutoff`](@ref)
+- [`PolynomialCutoff`](@ref)
 
 The following built-in interactions can use a cutoff:
 - [`LennardJones`](@ref)
@@ -1113,6 +1148,7 @@ This could be anything from a simple energy minimization to complicated replica 
 The available simulators are:
 - [`SteepestDescentMinimizer`](@ref)
 - [`VelocityVerlet`](@ref)
+- [`DPDVelocityVerlet`](@ref)
 - [`Verlet`](@ref)
 - [`StormerVerlet`](@ref)
 - [`Langevin`](@ref)
@@ -1124,6 +1160,11 @@ The available simulators are:
 
 Many of these require a time step `dt` as an argument.
 Many also remove the center of mass motion every time step, which can be tuned with the `remove_CM_motion` argument (`false` or a number of steps).
+
+Common options when calling [`simulate!`](@ref) with these simulators include:
+- `show_progress` to decide whether to show a progress bar for the simulation. This is `true` by default in the REPL/IJulia/Pluto, otherwise `false`, and can be set globally with the environmental variable `MOLLY_SHOW_PROGRESS`.
+- `shortcut` to provide a struct that has a `Molly.shortcut_sim` method defined, checking at the end of each step when to stop the simulation early.
+- `init_step` to specify the step number before the first step is taken, useful for time-dependent potentials. Default `0`.
 
 The [`LangevinSplitting`](@ref) simulator can be used to define a variety of integrators such as velocity Verlet (splitting `"BAB"`), the Langevin implementation in [`Langevin`](@ref) (`"BAOA"`), and symplectic Euler integrators (`"AB"` and `"BA"`).
 
@@ -1256,6 +1297,7 @@ The appropriate coupling to use will depend on the situation.
 For example, the [`Langevin`](@ref) simulator controls temperature so does not require a thermostat.
 The [`MonteCarloBarostat`](@ref) for controlling pressure assumes a constant temperature but does not actively control the temperature.
 It should be used alongside a temperature coupling method such as the [`Langevin`](@ref) simulator or the [`AndersenThermostat`](@ref) coupling.
+In general, something should be implemented as a coupling method if it can be applied "on top of" a standard simulator, but should be its own simulator if it requires a change to the integration scheme or what is integrated (e.g. [`NoseHoover`](@ref)).
 
 To define your own coupling method, first define the `struct`:
 ```julia
@@ -1499,8 +1541,11 @@ The oscillatory behavior is due to the harmonic bond interactions.
 
 ## Constraints
 
-Molly implements SHAKE and its extension, RATTLE, to perform constrained molecular dynamics (see [`SHAKE_RATTLE`](@ref)).
+Molly implements SHAKE/RATTLE (see [`SHAKE_RATTLE`](@ref)) and LINCS (see [`LINCS`](@ref)) to perform constrained molecular dynamics.
 These methods are useful for maintaining bond lengths and angles during a simulation, often allowing the use of longer time steps and therefore more efficient use of computing resources.
+
+### SHAKE/RATTLE
+
 The constraints satisfied by SHAKE are solely on the atomic coordinates:
 ```math
 \begin{aligned}
@@ -1515,6 +1560,17 @@ whereas RATTLE also constrains the velocities:
 ```
 Here $\vec{r}_{ij}$ is the vector between atoms i and j in a constraint, $d_{ij}$ is the bond length to be maintained and $\vec{v}_{ij}$ is the difference in the velocity vectors for atoms i and j.
 SHAKE was originally derived for the Verlet integration scheme ([Ryckaert et al. 1977](https://doi.org/10.1016/0021-9991(77)90098-5)) with RATTLE extending SHAKE to work for velocity Verlet where the velocities are also integrated ([Andersen 1983](https://doi.org/10.1016/0021-9991(83)90014-1)).
+
+### LINCS
+
+LINCS (LINear Constraint Solver) is a non-iterative constraint algorithm that uses matrix expansion to approximate the inverse of the constraint coupling matrix ([Hess et al. 1997](https://doi.org/10.1002/(SICI)1096-987X(199709)18:12<1463::AID-JCC4>3.0.CO;2-H)).
+It is typically faster than SHAKE/RATTLE for large systems.
+The implementation in Molly includes explicit velocity constraints.
+The key parameters controlling accuracy are `nrec`, the order of the matrix expansion for coupling matrix inversion (default 4), and `niter`, the number of outer correction iterations for rotational lengthening (default 1).
+Higher values of either improve accuracy at the cost of performance.
+
+!!! note
+    LINCS requires that angle constraints are isolated: none of their atoms may participate in distance constraints or in other angle constraints. This is because internally angle constraints are treated as a triangle of distance constraints, so interactions with other constraints may violate the constrained angle.
 
 Currently, constraints are supported by the following simulators:
 - [`SteepestDescentMinimizer`](@ref)
@@ -1545,6 +1601,20 @@ shake = SHAKE_RATTLE(
 # SHAKE_RATTLE with 0 2-atom clusters, 1 3-atom clusters, 0 4-atom clusters and 1 angle clusters
 ```
 `constraints=(shake,)` can then be given when setting up a [`System`](@ref).
+
+Alternatively, using LINCS:
+```julia
+masses = [1.0u"g/mol", 1.0u"g/mol", 1.0u"g/mol", 1.0u"g/mol", 1.0u"g/mol", 1.0u"g/mol"]
+
+lincs = LINCS(
+    masses=masses,
+    dist_constraints=dist_constraints,
+    angle_constraints=angle_constraints,
+)
+# LINCS with 2 distance and 1 angle constraints (nrec=4, niter=1) (implicitly 5 distance constraints)
+```
+`constraints=(lincs,)` can then be given when setting up a [`System`](@ref).
+
 See [this example](@ref "Constrained dynamics") for more.
 
 This diagram demonstrates the four allowed constraint types:
@@ -1555,13 +1625,14 @@ This diagram demonstrates the four allowed constraint types:
 - 3 atoms around 1 central atom, 3 [`DistanceConstraint`](@ref)s (e.g. an ammonia molecule).
 
 !!! note
-    You can't constrain a linear chain of four atoms or an angle of 180°. Constraints beyond the four valid classes can't be used. For example, you can't constrain all the hydrogen bonds and the double bond in ethylene simultaneously. This would create a cluster of 5 constraints which is not supported.
+    For SHAKE/RATTLE, you can't constrain a linear chain of four atoms or an angle of 180°. Constraints beyond the four valid classes can't be used. For example, you can't constrain all the hydrogen bonds and the double bond in ethylene simultaneously. This would create a cluster of 5 constraints which is not supported. LINCS does not have these cluster size limitations but does require that angle constraints are isolated (no shared atoms with distance constraints or other angle constraints).
 
 These constraints provide enough flexibility to constrain all hydrogen atoms in organic molecules as well as water molecules.
 
-All velocity constraints and diatomic distance constraints are solved analytically while larger constraints are linearized and solved iteratively via matrix inverse.
+For SHAKE/RATTLE, all velocity constraints and diatomic distance constraints are solved analytically while larger constraints are linearized and solved iteratively via matrix inverse.
 The direct matrix inverse does not scale well beyond clusters with 3 constraints and is not implemented.
 Other methods can be used to solve larger constraint clusters, these are not yet supported by Molly.
+LINCS uses a matrix expansion approach that scales better with system size and does not have the same cluster size limitations.
 
 ## Virtual sites
 
@@ -1631,9 +1702,13 @@ The available neighbor finders are:
 - [`TreeNeighborFinder`](@ref)
 
 The recommended neighbor finder is [`CellListMapNeighborFinder`](@ref) on CPU, [`GPUNeighborFinder`](@ref) on NVIDIA GPUs and [`DistanceNeighborFinder`](@ref) on other GPUs.
-When using a neighbor finder you should in general also use an interaction cutoff (see [Cutoffs](@ref)) with a cutoff distance less than the neighbor finder distance.
+When using a classical neighbor finder you should in general also use an interaction cutoff (see [Cutoffs](@ref)) with a cutoff distance less than the neighbor finder distance.
 The difference between the two should be larger than an atom can move in the time of the `n_steps` defined by the neighbor finder.
-The exception is [`GPUNeighborFinder`](@ref), which uses the algorithm from [Eastman and Pande 2010](https://doi.org/10.1002/jcc.21413) to avoid calculating a neighbor list and should have `dist_cutoff` set to the interaction cutoff distance.
+
+[`GPUNeighborFinder`](@ref) follows a different CUDA-specific path based on the tiled GPU strategy of [Eastman and Pande 2010](https://doi.org/10.1002/jcc.21413).
+Instead of materializing a conventional neighbor list, it stores sparse excluded and special pairs and lets the CUDA pairwise kernels reorder atoms, build per-tile masks and cache a compact list of interacting `32x32` tiles internally.
+Accordingly, [`find_neighbors`](@ref) returns `nothing` for [`GPUNeighborFinder`](@ref).
+When using it, set `dist_cutoff` to the interaction cutoff distance and `n_steps_reorder` to the number of steps between reorder and tile-list refresh passes.
 
 ## Analysis
 
@@ -1679,3 +1754,27 @@ julia> random_velocity(10.0u"g/mol", 300.0u"K"; rng=Xoshiro(10))
 ```
 This may not apply across Julia versions, though you can use [StableRNGs.jl](https://github.com/JuliaRandom/StableRNGs.jl).
 It also does not apply across different backends such as CPU and GPU.
+
+## Performance tips
+
+Here is a checklist to ensure that you are getting the optimal performance from your simulations:
+- On CPU, you should tune the `n_threads` argument to [`simulate!`](@ref). If running on a single thread, it should be `1`. Otherwise you should try various values, including larger than the number of threads available to Julia (which balances the load appropriately). Make sure to start Julia with as many threads as possible using `-t`. Generally, `Float32` is not much faster than `Float64` on CPU.
+- On GPU, using `Float32` will give vastly better performance. You can try changing the number of threads for each kernel as described in the [GPU acceleration](@ref) section, but the defaults are generally suitable for modern hardware. Multiple simulations can be run on different GPUs using `device!`. It is not currently possible to split one simulation onto multiple devices.
+- If you run a simulation using CUDA GPUs, Molly has available a `Molly.optimize_cuda_launch_config!(sys)` function. This will atomatically test several launch parameters for the CUDA kernels and select the most performant ones.
+- Run a short `simulate!` call once to ensure JIT compilation. You can run it on `deepcopy(sys)` if you don't want to affect `sys`, though beware of side effects like writing out trajectory files and consider using `run_loggers=false`.
+- Make sure all arrays, such as coordinates and velocities, are concretely typed.
+- In general, using units doesn't slow things down as described in the [Units](@ref) section, but you could try running without units.
+
+## Troubleshooting
+
+There are many reasons that setting up and running a simulation can go wrong:
+- Errors in parameterising a system with a force field are often due to discrepancies between the residues found in the structure and those found in the force field file. See the [OpenMM FAQ](https://github.com/openmm/openmm/wiki/Frequently-Asked-Questions#template) for more.
+- `NaN`s can arise in simulations, usually due to the system "blowing up" after encountering a massive force. Reasons for a massive force include errors in assigning force field parameters, a time step that is too large, incorrectly set boundaries and a lack of energy minimisation. You can try writing out the trajectory every step or reproducing exactly the same simulation (see [Randomness](@ref)) to find the issue. See the [OpenMM FAQ](https://github.com/openmm/openmm/wiki/Frequently-Asked-Questions#nan) for more. Note that the actual error thrown could appear after the point where the problem originated. For example, errors about constraint convergence could indicate earlier problems with the coordinates.
+- GPU memory can be exceeded. In this case, make sure you are running with `Float32` and the GPU does not have other processes running. If you still run out of memory, the system may be too large. Molly does not currently support splitting a simulation over multiple GPUs.
+- Adding an interaction causes a huge slowdown. You may have introduced a type instability or be allocating memory in the inner force/potential energy calls. See the [Julia performance tips](https://docs.julialang.org/en/v1/manual/performance-tips) for more. Make sure to avoid hidden [type promotions](https://docs.julialang.org/en/v1/manual/conversion-and-promotion/#Promotion), for example `1 / 2` is a `Float64` which will promote `Float32`s it interacts with. You can use `T(1 / 2)` to avoid this, where `T` is a function type parameter.
+- All array types must be on the same device. For example, if the coordinates are a `CuArray` then the atoms also need to be a `CuArray`. This is checked during setup.
+- `Minimum box side (...) is less than 2 * dist_cutoff` indicates that the box is too small for the specified non-bonded cutoff distance. Each box side should be twice the cutoff distance, otherwise a particle would see multiple periodic versions of the same atom (though it wouldn't in Molly since we use the minimum image convention).
+- Unitful errors like `DimensionError: 1.0 and 1.0 nm are not dimensionally compatible` usually indicate that a quantity with physical dimensions has not been given an appropriate unit. Whilst frustrating, fixing these errors often prevents silent unit conversion errors later on.
+- Enzyme errors when taking gradients are common, see the [Differentiable simulation with Molly](@ref) section.
+
+Do open an issue if you run into problems.

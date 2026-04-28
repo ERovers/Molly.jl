@@ -130,8 +130,29 @@ end
     end
 end
 
+function constrained_pairs(constraint_clusters)
+    pairs = Tuple{Int32, Int32}[]
+    for interaction_list in cluster_interactions.(constraint_clusters)
+        for (i, j, _) in interaction_list
+            i32 = Int32(i)
+            j32 = Int32(j)
+            if j32 < i32
+                i32, j32 = j32, i32
+            end
+            if i32 != j32
+                push!(pairs, (i32, j32))
+            end
+        end
+    end
+    return pairs
+end
+
 function disable_constrained_interactions!(neighbor_finder, constraint_clusters)
     atom_interactions = cluster_interactions.(constraint_clusters)
+    if neighbor_finder isa GPUNeighborFinder
+        append_excluded_pairs!(neighbor_finder, constrained_pairs(constraint_clusters))
+        return neighbor_finder
+    end
     if isa(neighbor_finder.eligible, AbstractGPUArray)
         i_idx, j_idx = Int[], Int[]
 
@@ -376,30 +397,6 @@ Check whether the coordinates of a system satisfy the position constraints.
 """
 check_position_constraints(sys) = all(ca -> check_position_constraints(sys, ca), sys.constraints)
 
-function check_position_constraints(sys::System{<:Any, <:Any, FT}, ca) where FT
-    err_unit = unit(eltype(eltype(sys.coords)))
-    if err_unit != unit(ca.dist_tolerance)
-        throw(ArgumentError("distance tolerance units in SHAKE ($(unit(ca.dist_tolerance))) " *
-                            "are inconsistent with system coordinate units ($err_unit)"))
-    end
-
-    cluster_maxes = FT[]
-    backend = get_backend(sys.coords)
-    err_kernel = max_dist_error(backend, 128)
-
-    for cluster_type in cluster_keys(ca)
-        clusters = getproperty(ca, cluster_type)
-        if length(clusters) > 0
-            max_storage = allocate(backend, FT, length(clusters))
-            err_kernel(clusters, sys.coords, sys.boundary, max_storage; ndrange=length(clusters))
-            push!(cluster_maxes, reduce(max, Array(max_storage)))
-        end
-    end
-
-    KernelAbstractions.synchronize(backend)
-    return maximum(cluster_maxes) < ustrip(ca.dist_tolerance)
-end
-
 """
     check_velocity_constraints(sys)
     check_velocity_constraints(sys, constraints)
@@ -407,31 +404,6 @@ end
 Check whether the velocities of a system satisfy the velocity constraints.
 """
 check_velocity_constraints(sys) = all(ca -> check_velocity_constraints(sys, ca), sys.constraints)
-
-function check_velocity_constraints(sys::System{<:Any, <:Any, FT}, ca) where FT
-    err_unit = unit(eltype(eltype(sys.velocities))) * unit(eltype(eltype(sys.coords)))
-    if err_unit != unit(ca.vel_tolerance)
-        throw(ArgumentError("velocity tolerance units in RATTLE ($(unit(ca.vel_tolerance))) " *
-                    "are inconsistent with system velocity and coordinate units ($err_unit)"))
-    end
-
-    cluster_maxes = FT[]
-    backend = get_backend(sys.coords)
-    err_kernel = max_vel_error(backend, 128)
-
-    for cluster_type in cluster_keys(ca)
-        clusters = getproperty(ca, cluster_type)
-        if length(clusters) > 0
-            max_storage = allocate(backend, FT, length(clusters))
-            err_kernel(clusters, sys.coords, sys.velocities, sys.boundary, max_storage;
-                       ndrange=length(clusters))
-            push!(cluster_maxes, reduce(max, Array(max_storage)))
-        end
-    end
-
-    KernelAbstractions.synchronize(backend)
-    return maximum(cluster_maxes) < ustrip(ca.vel_tolerance)
-end
 
 """
     check_constraints(sys)
@@ -547,3 +519,11 @@ cluster_interactions(kd::AngleClusterData) = (
 )
 idx_keys(::Type{<:AngleClusterData}) = (:k1, :k2, :k3)
 dist_keys(::Type{<:AngleClusterData}) = (:dist12, :dist13, :dist23)
+
+function constrained_atom_inds(constraints::Union{Tuple, NamedTuple})
+    inds_constrained = Int[]
+    for ca in constraints
+        append!(inds_constrained, constrained_atom_inds(ca))
+    end
+    return inds_constrained
+end

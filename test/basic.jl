@@ -182,21 +182,24 @@
             ff;
             array_type=AT,
             nonbonded_method=:cutoff,
+            dispersion_correction=false,
             neighbor_finder_type=(Molly.uses_gpu_neighbor_finder(AT) ? GPUNeighborFinder :
                                     DistanceNeighborFinder),
+            strictness=:nowarn,
         )
         mcs = Molly.molecule_centers(sys.coords, sys.boundary, sys.topology)
         @test isapprox(from_device(mcs)[1], mean(sys.coords[1:1170]); atol=0.08u"nm")
 
         # Mark all pairs as ineligible for pairwise interactions and check that the
         #   potential energy from the specific interactions does not change on scaling
-        no_nbs = falses(length(sys), length(sys))
         if Molly.uses_gpu_neighbor_finder(AT)
             sys.neighbor_finder = GPUNeighborFinder(
-                eligible=to_device(no_nbs, AT),
-                dist_cutoff=1.0u"nm",
+                n_atoms=length(sys),
+                dist_cutoff=0.0u"nm",
+                device_vector_type=AT{Int32, 1},
             )
         else
+            no_nbs = falses(length(sys), length(sys))
             sys.neighbor_finder = DistanceNeighborFinder(
                 eligible=to_device(no_nbs, AT),
                 dist_cutoff=1.0u"nm",
@@ -243,12 +246,10 @@ end
     ff = MolecularForceField(
         joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml", "gaff.xml", "imatinib.xml",
                            "imatinib_frcmod.xml"])...;
-        units=true,
     )
     ff_custom = MolecularForceField(
         joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml", "gaff.xml", "imatinib.xml",
                            "imatinib_frcmod.xml"])...;
-        units=true,
         custom_residue_templates=joinpath(data_dir, "imatinib_topo.xml"),
     )
     boundary = CubicBoundary(Inf*u"nm")
@@ -261,8 +262,15 @@ end
 
         @test sys_mol2.topology.bonded_atoms == sys_pdb_connect.topology.bonded_atoms
         @test sys_mol2.topology.bonded_atoms == sys_pdb.topology.bonded_atoms
-        @test_throws ArgumentError System(joinpath(data_dir, "imatinib.pdb"), ff; boundary=boundary)
+        @test_throws ErrorException System(joinpath(data_dir, "imatinib.pdb"), ff; boundary=boundary)
     end
+
+    water_pdb  = System(joinpath(data_dir, "water_formats", "water.pdb" ), ff)
+    water_cif  = System(joinpath(data_dir, "water_formats", "water.cif" ), ff)
+    water_mol2 = System(joinpath(data_dir, "water_formats", "water.mol2"), ff)
+    water_sdf  = System(joinpath(data_dir, "water_formats", "water.sdf" ), ff) # Residue inferred
+    @test potential_energy(water_pdb ) ≈ potential_energy(water_cif) ≈
+          potential_energy(water_mol2) ≈ potential_energy(water_sdf) ≈ 11.90186520388919u"kJ/mol"
 end
 
 @testset "System setup" begin
@@ -305,7 +313,7 @@ end
 
         if struc_name == "sgpb_omtky3"
             # Catch if disulfide bonds are not added properly
-            @test_throws ArgumentError System(
+            @test_throws ErrorException System(
                 pdb_file,
                 ff;
                 array_type = AT,
@@ -415,16 +423,46 @@ end
     dist_cutoff = 1.2u"nm"
     sys = System(joinpath(data_dir, "6mrr_equil.pdb"), ff;
                  dist_cutoff=dist_cutoff, dist_buffer=0.0u"nm")
+    cpu_launch_config = Molly.CUDALaunchConfig(force_block_y=8)
+    sys_launch_cpu = System(joinpath(data_dir, "water_3mol_cubic.pdb"), ff;
+                            dist_cutoff=0.5u"nm", dist_buffer=0.0u"nm",
+                            launch_config=cpu_launch_config, autotune_launch=false)
+    @test Molly.cuda_launch_config(sys_launch_cpu) == cpu_launch_config
+    Molly.optimize_cuda_launch_config!(sys_launch_cpu)
+    @test Molly.cuda_launch_config(sys_launch_cpu) == cpu_launch_config
     neighbors_ref = find_neighbors(sys)
     n_neighbors_ref = 4602420
     @test length(neighbors_ref) == neighbors_ref.n == n_neighbors_ref
 
     identical_neighbors(nl1, nl2) = (nl1.n == nl2.n && sort_nbs(nl1.list) == sort_nbs(nl2.list))
 
+    function dense_masks(nf::GPUNeighborFinder)
+        eligible = trues(nf.n_atoms, nf.n_atoms)
+        special = falses(nf.n_atoms, nf.n_atoms)
+        for i in 1:nf.n_atoms
+            eligible[i, i] = false
+        end
+        for (i, j) in zip(Array(nf.excluded_i), Array(nf.excluded_j))
+            eligible[i, j] = false
+            eligible[j, i] = false
+        end
+        for (i, j) in zip(Array(nf.special_i), Array(nf.special_j))
+            special[i, j] = true
+            special[j, i] = true
+        end
+        return eligible, special
+    end
+
+    function dense_masks(nf::Union{DistanceNeighborFinder, TreeNeighborFinder, CellListMapNeighborFinder})
+        return BitMatrix(Array(nf.eligible)), BitMatrix(Array(nf.special))
+    end
+
+    eligible_cpu, special_cpu = dense_masks(sys.neighbor_finder)
+
     for neighbor_finder in (DistanceNeighborFinder, TreeNeighborFinder, CellListMapNeighborFinder)
         nf = neighbor_finder(
-            eligible=sys.neighbor_finder.eligible,
-            special=sys.neighbor_finder.special,
+            eligible=eligible_cpu,
+            special=special_cpu,
             dist_cutoff=dist_cutoff,
         )
         for n_threads in n_threads_list
@@ -435,22 +473,78 @@ end
         end
     end
 
+    gpu_ref_sys = System(
+        joinpath(data_dir, "water_3mol_cubic.pdb"),
+        ff;
+        dist_cutoff=dist_cutoff,
+        dist_buffer=0.0u"nm",
+        neighbor_finder_type=DistanceNeighborFinder,
+        strictness=:nowarn,
+    )
+    gpu_neighbors_ref = find_neighbors(gpu_ref_sys)
+
     for AT in array_list[2:end]
-        sys_gpu = System(joinpath(data_dir, "6mrr_equil.pdb"), ff; array_type=AT)
+        sys_gpu = System(
+            joinpath(data_dir, "water_3mol_cubic.pdb"),
+            ff;
+            array_type=AT,
+            dist_cutoff=dist_cutoff,
+            dist_buffer=0.0u"nm",
+            strictness=:nowarn,
+        )
+        eligible_gpu, special_gpu = dense_masks(sys_gpu.neighbor_finder)
         for neighbor_finder in (DistanceNeighborFinder,)
             nf_gpu = neighbor_finder(
-                eligible=sys_gpu.neighbor_finder.eligible,
-                special=sys_gpu.neighbor_finder.special,
+                eligible=to_device(eligible_gpu, AT),
+                special=to_device(special_gpu, AT),
                 dist_cutoff=dist_cutoff,
             )
             neighbors_gpu = find_neighbors(sys_gpu, nf_gpu)
-            @test length(neighbors_gpu) == n_neighbors_ref
+            @test length(neighbors_gpu) == gpu_neighbors_ref.n
             GPUArrays.allowscalar() do
                 @test neighbors_gpu[10] isa Tuple{Int32, Int32, Bool}
             end
-            @test identical_neighbors(neighbors_gpu, neighbors_ref)
+            @test identical_neighbors(neighbors_gpu, gpu_neighbors_ref)
         end
     end
+end
+
+@testset "GPUNeighborFinder sparse metadata" begin
+    nf = GPUNeighborFinder(
+        n_atoms=4,
+        dist_cutoff=1.0,
+        excluded_pairs=((1, 3), (4, 2)),
+        special_pairs=((1, 4),),
+        device_vector_type=Vector{Int32},
+    )
+    eligible, special = Molly.neighbor_finder_masks(nf)
+    @test size(eligible) == (4, 4)
+    @test size(special) == (4, 4)
+    @test all(i -> !eligible[i, i], 1:4)
+    @test !eligible[1, 3] && !eligible[3, 1]
+    @test !eligible[2, 4] && !eligible[4, 2]
+    @test special[1, 4] && special[4, 1]
+    @test eligible[1, 2]
+
+    @test_throws ArgumentError GPUNeighborFinder(
+        n_atoms=4,
+        dist_cutoff=1.0,
+        excluded_pairs=((0, 2),),
+        device_vector_type=Vector{Int32},
+    )
+    @test_throws ArgumentError GPUNeighborFinder(
+        n_atoms=4,
+        dist_cutoff=1.0,
+        special_pairs=((1, 5),),
+        device_vector_type=Vector{Int32},
+    )
+    @test_throws ArgumentError GPUNeighborFinder(
+        n_atoms=4,
+        dist_cutoff=1.0,
+    )
+
+    @test_throws ArgumentError Molly.update_sparse_pairs!(nf, ((1, 2),), ((2, 5),))
+    @test_throws ArgumentError Molly.append_excluded_pairs!(nf, ((3, 6),))
 end
 
 @testset "Replica System" begin
@@ -614,13 +708,15 @@ end
         zfs = AtomsCalculators.zero_forces(ab_sys, calc)
         @test zfs == fill(SVector(0.0, 0.0, 0.0)u"kJ/Å", length(ab_sys))
 
-        # AtomsCalculators.AtomsCalculatorsTesting functions
-        test_potential_energy(ab_sys, calc)
-        test_forces(ab_sys, calc)
+        AtomsCalculators.Testing.test_potential_energy(ab_sys, calc)
+        AtomsCalculators.Testing.test_forces(ab_sys, calc)
     end
 end
 
 @testset "Virtual sites" begin
+    @test_throws ArgumentError TwoParticleAverageSite(3, 1, 2, 0.6, 0.5, 0.0)
+    @test_throws ArgumentError ThreeParticleAverageSite(7, 4, 5, 6, 0.3, 0.3, 0.5, 0.0)
+
     for AT in array_list
         for units in (false, true)
             if units
@@ -629,7 +725,8 @@ end
             else
                 LU, MU, EU, FU, TU, AU = NoUnits, NoUnits, NoUnits, NoUnits, NoUnits, NoUnits
             end
-            vs_flags = to_device(BitVector([0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1]), AT)
+            vs_flags_cpu = BitVector([0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1])
+            vs_flags = to_device(vs_flags_cpu, AT)
             atom_masses = map(x -> (x ? 0.0 : 10.0), vs_flags) .* MU
             atoms = to_device([Atom(mass=m, σ=(0.1 * LU), ϵ=(0.2 * EU))
                                for m in from_device(atom_masses)], AT)
@@ -734,6 +831,9 @@ end
 
             random_velocities!(sys, 300.0 * TU)
             @test all(map((v, f) -> (f ? iszero(v) : !iszero(v)), sys.velocities, vs_flags))
+
+            non_vss = [Molly.pick_non_virtual_site(sys) for _ in 1:10]
+            @test all(i -> !vs_flags_cpu[i] || !(i in non_vss), eachindex(sys))
         end
     end
 end

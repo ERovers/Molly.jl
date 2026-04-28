@@ -32,6 +32,9 @@
     @test Molly.σ_mixing(lorentz_mixing_static, a1, a2) ≈ 0.5u"nm"
     @test Molly.σ_mixing(lorentz_mixing_static, a1, a3) ≈ 0.35u"nm"
     @test Molly.σ_mixing(lorentz_mixing_static, a3, a3) ≈ 0.6u"nm"
+    eld = Molly.ExceptionList(σ_exceptions_dict)
+    @test (eld.keys == SVector{2}([(2, 1), (3, 3)]) && eld.values == SVector(0.5u"nm", 0.6u"nm")) ||
+          (eld.keys == SVector{2}([(3, 3), (2, 1)]) && eld.values == SVector(0.6u"nm", 0.5u"nm"))
 
     ϵ_exceptions_dict = Dict((2, 1) => 0.5u"kJ * mol^-1", (3, 3) => 0.6u"kJ * mol^-1")
     ϵ_exceptions_static = Molly.ExceptionList(
@@ -75,22 +78,22 @@
 
     inter = Molly.LennardJones14(0.3u"nm", 0.2u"kJ * mol^-1", 1)
     @test isapprox(
-        force(inter, c1, c3, c4, c2, boundary).f4,
+        force(inter, c1, c2, boundary).f2,
         SVector(16.0, 0.0, 0.0)u"kJ * mol^-1 * nm^-1";
         atol=1e-9u"kJ * mol^-1 * nm^-1",
     )
     @test isapprox(
-        force(inter, c1, c2, c4, c3, boundary).f4,
+        force(inter, c1, c3, boundary).f2,
         SVector(-1.375509739, 0.0, 0.0)u"kJ * mol^-1 * nm^-1";
         atol=1e-9u"kJ * mol^-1 * nm^-1",
     )
     @test isapprox(
-        potential_energy(inter, c1, c3, c4, c2, boundary),
+        potential_energy(inter, c1, c2, boundary),
         0.0u"kJ * mol^-1";
         atol=1e-9u"kJ * mol^-1",
     )
     @test isapprox(
-        potential_energy(inter, c1, c2, c4, c3, boundary),
+        potential_energy(inter, c1, c3, boundary),
         -0.1170417309u"kJ * mol^-1";
         atol=1e-9u"kJ * mol^-1",
     )
@@ -329,6 +332,382 @@
         321.4861512527354u"kJ * mol^-1";
         atol=1e-5u"kJ * mol^-1",
     )
+
+    @testset "Soft-core Reaction Field" begin
+        rc_test = 1.0u"nm"
+        dr_rc = SVector(rc_test, 0.0u"nm", 0.0u"nm")
+        dr_beyond = SVector(1.5u"nm", 0.0u"nm", 0.0u"nm")
+        crf_ref = CoulombReactionField(dist_cutoff=rc_test, solvent_dielectric=78.3)
+        cscrfb = CoulombSoftCoreBeutlerReactionField(
+            dist_cutoff=rc_test,
+            solvent_dielectric=78.3,
+            α=1.0,
+        )
+        cscrfg = CoulombSoftCoreGapsysReactionField(
+            dist_cutoff=rc_test,
+            solvent_dielectric=78.3,
+            α=0.3,
+            σQ=1.0u"nm",
+        )
+
+        a1_rf = Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ=1.0)
+        a1_l0 = Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ=0.0)
+        a1_l05 = Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ=0.5)
+
+        @testset "lambda one matches reaction field" begin
+            for dr_test in (dr12, dr13, dr14)
+                ref_f = force(crf_ref, dr_test, a1_rf, a1_rf)
+                ref_pe = potential_energy(crf_ref, dr_test, a1_rf, a1_rf)
+                @test isapprox(force(cscrfb, dr_test, a1_rf, a1_rf), ref_f;
+                               atol=1e-9u"kJ * mol^-1 * nm^-1")
+                @test isapprox(force(cscrfg, dr_test, a1_rf, a1_rf), ref_f;
+                               atol=1e-9u"kJ * mol^-1 * nm^-1")
+                @test isapprox(potential_energy(cscrfb, dr_test, a1_rf, a1_rf), ref_pe;
+                               atol=1e-9u"kJ * mol^-1")
+                @test isapprox(potential_energy(cscrfg, dr_test, a1_rf, a1_rf), ref_pe;
+                               atol=1e-9u"kJ * mol^-1")
+            end
+        end
+
+        @testset "lambda zero vanishes" begin
+            for inter_rf in (cscrfb, cscrfg)
+                @test all(iszero, force(inter_rf, dr12, a1_l0, a1_l0))
+                @test iszero(potential_energy(inter_rf, dr12, a1_l0, a1_l0))
+            end
+        end
+
+        @testset "lambda half stays finite" begin
+            for inter_rf in (cscrfb, cscrfg)
+                for dr_test in (dr12, dr13, dr14)
+                    f_val = force(inter_rf, dr_test, a1_l05, a1_l05)
+                    pe_val = potential_energy(inter_rf, dr_test, a1_l05, a1_l05)
+                    @test all(isfinite, f_val)
+                    @test isfinite(pe_val)
+                    @test !all(iszero, f_val)
+                    @test !iszero(pe_val)
+                end
+            end
+        end
+
+        @testset "potential is zero at cutoff" begin
+            cscrfb_test = CoulombSoftCoreBeutlerReactionField(dist_cutoff=rc_test, α=0.3)
+            cscrfg_test = CoulombSoftCoreGapsysReactionField(
+                dist_cutoff=rc_test,
+                α=0.3,
+                σQ=1.0u"nm",
+            )
+            @test isapprox(potential_energy(cscrfb_test, dr_rc, a1_l05, a1_l05),
+                           0.0u"kJ * mol^-1"; atol=1e-10u"kJ * mol^-1")
+            @test isapprox(potential_energy(cscrfg_test, dr_rc, a1_l05, a1_l05),
+                           0.0u"kJ * mol^-1"; atol=1e-10u"kJ * mol^-1")
+        end
+
+        @testset "values vanish beyond cutoff" begin
+            for inter_rf in (cscrfb, cscrfg)
+                @test all(iszero, force(inter_rf, dr_beyond, a1_l05, a1_l05))
+                @test iszero(potential_energy(inter_rf, dr_beyond, a1_l05, a1_l05))
+                @test all(iszero, force(inter_rf, dr_beyond, a1_rf, a1_rf))
+                @test iszero(potential_energy(inter_rf, dr_beyond, a1_rf, a1_rf))
+            end
+        end
+
+        @testset "special pairs use weighted plain coulomb at lambda one" begin
+            ws = 0.5
+            cscrfb_sp = CoulombSoftCoreBeutlerReactionField(dist_cutoff=rc_test, weight_special=ws)
+            cscrfg_sp = CoulombSoftCoreGapsysReactionField(dist_cutoff=rc_test, weight_special=ws)
+            coul_plain = Coulomb()
+
+            for dr_test in (dr12, dr13)
+                ref_f_sp = force(coul_plain, dr_test, a1_rf, a1_rf) * ws
+                ref_pe_sp = potential_energy(coul_plain, dr_test, a1_rf, a1_rf) * ws
+                @test isapprox(
+                    force(cscrfb_sp, dr_test, a1_rf, a1_rf, u"kJ * mol^-1 * nm^-1", true),
+                    ref_f_sp;
+                    atol=1e-9u"kJ * mol^-1 * nm^-1",
+                )
+                @test isapprox(
+                    force(cscrfg_sp, dr_test, a1_rf, a1_rf, u"kJ * mol^-1 * nm^-1", true),
+                    ref_f_sp;
+                    atol=1e-9u"kJ * mol^-1 * nm^-1",
+                )
+                @test isapprox(
+                    potential_energy(cscrfb_sp, dr_test, a1_rf, a1_rf, u"kJ * mol^-1", true),
+                    ref_pe_sp;
+                    atol=1e-9u"kJ * mol^-1",
+                )
+                @test isapprox(
+                    potential_energy(cscrfg_sp, dr_test, a1_rf, a1_rf, u"kJ * mol^-1", true),
+                    ref_pe_sp;
+                    atol=1e-9u"kJ * mol^-1",
+                )
+            end
+        end
+    end
+
+    @testset "Soft-core Ewald" begin
+        c4_ewald = SVector(1.05, 1.0, 1.0)u"nm"
+        dr14_ewald = vector(c1, c4_ewald, boundary)
+        rc_test = 1.0u"nm"
+        dr_beyond = SVector(1.5u"nm", 0.0u"nm", 0.0u"nm")
+
+        ce_ref = CoulombEwald(dist_cutoff=rc_test)
+        cscbe = CoulombSoftCoreBeutlerEwald(dist_cutoff=rc_test, α=1.0)
+        cscge = CoulombSoftCoreGapsysEwald(
+            dist_cutoff=rc_test,
+            α=0.3,
+            σQ=1.0u"nm",
+        )
+
+        a1_l1 = Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ=1.0)
+        a1_l0 = Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ=0.0)
+        a1_l05 = Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ=0.5)
+
+        @testset "lambda one matches CoulombEwald" begin
+            for dr_test in (dr12, dr13, dr14_ewald)
+                ref_f = force(ce_ref, dr_test, a1_l1, a1_l1)
+                ref_pe = potential_energy(ce_ref, dr_test, a1_l1, a1_l1)
+                @test isapprox(force(cscbe, dr_test, a1_l1, a1_l1), ref_f;
+                               atol=1e-9u"kJ * mol^-1 * nm^-1")
+                @test isapprox(force(cscge, dr_test, a1_l1, a1_l1), ref_f;
+                               atol=1e-9u"kJ * mol^-1 * nm^-1")
+                @test isapprox(potential_energy(cscbe, dr_test, a1_l1, a1_l1), ref_pe;
+                               atol=1e-9u"kJ * mol^-1")
+                @test isapprox(potential_energy(cscge, dr_test, a1_l1, a1_l1), ref_pe;
+                               atol=1e-9u"kJ * mol^-1")
+            end
+        end
+
+        @testset "lambda zero vanishes" begin
+            for inter_ewald in (cscbe, cscge)
+                @test all(iszero, force(inter_ewald, dr12, a1_l0, a1_l0))
+                @test iszero(potential_energy(inter_ewald, dr12, a1_l0, a1_l0))
+            end
+        end
+
+        @testset "lambda half stays finite" begin
+            for inter_ewald in (cscbe, cscge)
+                for dr_test in (dr12, dr13, dr14_ewald)
+                    f_val = force(inter_ewald, dr_test, a1_l05, a1_l05)
+                    pe_val = potential_energy(inter_ewald, dr_test, a1_l05, a1_l05)
+                    @test all(isfinite, f_val)
+                    @test isfinite(pe_val)
+                    @test !all(iszero, f_val)
+                    @test !iszero(pe_val)
+                end
+            end
+        end
+
+        @testset "values vanish beyond cutoff" begin
+            for inter_ewald in (cscbe, cscge)
+                @test all(iszero, force(inter_ewald, dr_beyond, a1_l05, a1_l05))
+                @test iszero(potential_energy(inter_ewald, dr_beyond, a1_l05, a1_l05))
+                @test all(iszero, force(inter_ewald, dr_beyond, a1_l1, a1_l1))
+                @test iszero(potential_energy(inter_ewald, dr_beyond, a1_l1, a1_l1))
+            end
+        end
+
+        @testset "special pairs use weighted plain Coulomb at lambda one" begin
+            ws = 0.5
+            cscbe_sp = CoulombSoftCoreBeutlerEwald(dist_cutoff=rc_test, weight_special=ws)
+            cscge_sp = CoulombSoftCoreGapsysEwald(dist_cutoff=rc_test, weight_special=ws)
+            coul_plain = Coulomb()
+
+            for dr_test in (dr12, dr13)
+                ref_f_sp = force(coul_plain, dr_test, a1_l1, a1_l1) * ws
+                ref_pe_sp = potential_energy(coul_plain, dr_test, a1_l1, a1_l1) * ws
+                @test isapprox(
+                    force(cscbe_sp, dr_test, a1_l1, a1_l1, u"kJ * mol^-1 * nm^-1", true),
+                    ref_f_sp;
+                    atol=1e-9u"kJ * mol^-1 * nm^-1",
+                )
+                @test isapprox(
+                    force(cscge_sp, dr_test, a1_l1, a1_l1, u"kJ * mol^-1 * nm^-1", true),
+                    ref_f_sp;
+                    atol=1e-9u"kJ * mol^-1 * nm^-1",
+                )
+                @test isapprox(
+                    potential_energy(cscbe_sp, dr_test, a1_l1, a1_l1, u"kJ * mol^-1", true),
+                    ref_pe_sp;
+                    atol=1e-9u"kJ * mol^-1",
+                )
+                @test isapprox(
+                    potential_energy(cscge_sp, dr_test, a1_l1, a1_l1, u"kJ * mol^-1", true),
+                    ref_pe_sp;
+                    atol=1e-9u"kJ * mol^-1",
+                )
+            end
+        end
+    end
+
+    @testset "Soft-core Exact Overlap Safeguards" begin
+        dr_zero = zero(dr12)
+        overlap_atom = Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ=0.5)
+        overlap_inters = (
+            LennardJonesSoftCoreBeutler(α=0.3),
+            LennardJonesSoftCoreGapsys(α=0.85),
+            CoulombSoftCoreBeutler(α=0.3),
+            CoulombSoftCoreGapsys(α=0.3, σQ=1.0u"nm"),
+            CoulombSoftCoreBeutlerReactionField(dist_cutoff=1.0u"nm", α=0.3),
+            CoulombSoftCoreGapsysReactionField(dist_cutoff=1.0u"nm", α=0.3, σQ=1.0u"nm"),
+            CoulombSoftCoreBeutlerEwald(dist_cutoff=1.0u"nm", α=0.3),
+            CoulombSoftCoreGapsysEwald(dist_cutoff=1.0u"nm", α=0.3, σQ=1.0u"nm"),
+        )
+
+        for inter in overlap_inters
+            f_val = force(inter, dr_zero, overlap_atom, overlap_atom)
+            pe_val = potential_energy(inter, dr_zero, overlap_atom, overlap_atom)
+            @test all(isfinite, f_val)
+            @test all(iszero, f_val)
+            @test isfinite(pe_val)
+        end
+
+        λ_zero_atom = Atom(
+            charge=1.0,
+            σ=0.3u"nm",
+            ϵ=0.2u"kJ * mol^-1",
+            λ=0.25,
+            alch_role=Molly.DeleteRole,
+        )
+
+        for inter in (LennardJonesSoftCoreBeutler(α=0.3), LennardJonesSoftCoreGapsys(α=0.85))
+            @test all(iszero, force(inter, dr12, λ_zero_atom, λ_zero_atom))
+            @test iszero(potential_energy(inter, dr12, λ_zero_atom, λ_zero_atom))
+        end
+    end
+
+    @testset "PME Scheduler Charge Scaling" begin
+        boundary_pme = CubicBoundary(2.5u"nm")
+        coords_pme = [
+            SVector(0.2, 0.2, 0.2)u"nm",
+            SVector(0.9, 0.7, 0.4)u"nm",
+            SVector(1.6, 1.2, 1.1)u"nm",
+        ]
+        rc = 1.0u"nm"
+
+        @testset "default scheduler matches pre-scaled charges" begin
+            λ_state = 0.75
+            scheduler = Molly.DefaultLambdaScheduler()
+            λ_elec = Molly.scale_elec(scheduler, λ_state, Molly.InsertRole)
+
+            atoms_raw = [
+                Atom(charge=1.0, λ=λ_state, alch_role=Molly.InsertRole),
+                Atom(charge=-0.8, λ=λ_state, alch_role=Molly.InsertRole),
+                Atom(charge=0.3),
+            ]
+            atoms_ref = [
+                Atom(charge=1.0 * λ_elec),
+                Atom(charge=-0.8 * λ_elec),
+                Atom(charge=0.3),
+            ]
+
+            pme_raw = PME(rc, atoms_raw, boundary_pme; scheduler=scheduler)
+            pme_ref = PME(rc, atoms_ref, boundary_pme)
+            sys_raw = System(atoms=atoms_raw, coords=coords_pme, boundary=boundary_pme,
+                             pairwise_inters=(), general_inters=(pme_raw,))
+            sys_ref = System(atoms=atoms_ref, coords=coords_pme, boundary=boundary_pme,
+                             pairwise_inters=(), general_inters=(pme_ref,))
+
+            @test isapprox(potential_energy(sys_raw), potential_energy(sys_ref);
+                           atol=1e-9u"kJ * mol^-1")
+            @test maximum(norm.(forces(sys_raw) .- forces(sys_ref))) <
+                  1e-9u"kJ * mol^-1 * nm^-1"
+        end
+
+        @testset "non-default scheduler matches pre-scaled charges" begin
+            λ_state = 0.75
+            scheduler = Molly.EleScaledLambdaScheduler()
+            λ_elec = Molly.scale_elec(scheduler, λ_state, Molly.InsertRole)
+
+            atoms_raw = [
+                Atom(charge=1.2, λ=λ_state, alch_role=Molly.InsertRole),
+                Atom(charge=-0.9, λ=λ_state, alch_role=Molly.InsertRole),
+                Atom(charge=0.25),
+            ]
+            atoms_ref = [
+                Atom(charge=1.2 * λ_elec),
+                Atom(charge=-0.9 * λ_elec),
+                Atom(charge=0.25),
+            ]
+
+            pme_raw = PME(rc, atoms_raw, boundary_pme; scheduler=scheduler)
+            pme_ref = PME(rc, atoms_ref, boundary_pme)
+            sys_raw = System(atoms=atoms_raw, coords=coords_pme, boundary=boundary_pme,
+                             pairwise_inters=(), general_inters=(pme_raw,))
+            sys_ref = System(atoms=atoms_ref, coords=coords_pme, boundary=boundary_pme,
+                             pairwise_inters=(), general_inters=(pme_ref,))
+
+            @test isapprox(potential_energy(sys_raw), potential_energy(sys_ref);
+                           atol=1e-9u"kJ * mol^-1")
+            @test maximum(norm.(forces(sys_raw) .- forces(sys_ref))) <
+                  1e-9u"kJ * mol^-1 * nm^-1"
+        end
+    end
+
+    @testset "Soft-core PME End-to-End" begin
+        boundary_pme = CubicBoundary(2.2u"nm")
+        coords_pme = [
+            SVector(0.2, 0.2, 0.2)u"nm",
+            SVector(0.26, 0.2, 0.2)u"nm",
+        ]
+        rc = 1.0u"nm"
+
+        atoms_l1 = [
+            Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ=1.0),
+            Atom(charge=-1.0, σ=0.25u"nm", ϵ=0.15u"kJ * mol^-1", λ=1.0),
+        ]
+        atoms_l05 = [
+            Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ=0.5),
+            Atom(charge=-1.0, σ=0.25u"nm", ϵ=0.15u"kJ * mol^-1", λ=0.5),
+        ]
+
+        sys_ref = System(
+            atoms=atoms_l1,
+            coords=coords_pme,
+            boundary=boundary_pme,
+            pairwise_inters=(CoulombEwald(dist_cutoff=rc),),
+            general_inters=(PME(rc, atoms_l1, boundary_pme),),
+        )
+        sys_beutler_l1 = System(
+            atoms=atoms_l1,
+            coords=coords_pme,
+            boundary=boundary_pme,
+            pairwise_inters=(CoulombSoftCoreBeutlerEwald(dist_cutoff=rc, α=0.3),),
+            general_inters=(PME(rc, atoms_l1, boundary_pme),),
+        )
+        sys_gapsys_l1 = System(
+            atoms=atoms_l1,
+            coords=coords_pme,
+            boundary=boundary_pme,
+            pairwise_inters=(CoulombSoftCoreGapsysEwald(dist_cutoff=rc, α=0.3, σQ=1.0u"nm"),),
+            general_inters=(PME(rc, atoms_l1, boundary_pme),),
+        )
+
+        @test isapprox(potential_energy(sys_beutler_l1), potential_energy(sys_ref);
+                       atol=1e-9u"kJ * mol^-1")
+        @test isapprox(potential_energy(sys_gapsys_l1), potential_energy(sys_ref);
+                       atol=1e-9u"kJ * mol^-1")
+        @test maximum(norm.(forces(sys_beutler_l1) .- forces(sys_ref))) <
+              1e-9u"kJ * mol^-1 * nm^-1"
+        @test maximum(norm.(forces(sys_gapsys_l1) .- forces(sys_ref))) <
+              1e-9u"kJ * mol^-1 * nm^-1"
+
+        for pair_inter in (
+            CoulombSoftCoreBeutlerEwald(dist_cutoff=rc, α=0.3),
+            CoulombSoftCoreGapsysEwald(dist_cutoff=rc, α=0.3, σQ=1.0u"nm"),
+        )
+            sys_soft = System(
+                atoms=atoms_l05,
+                coords=coords_pme,
+                boundary=boundary_pme,
+                pairwise_inters=(pair_inter,),
+                general_inters=(PME(rc, atoms_l05, boundary_pme),),
+            )
+            pe_soft = potential_energy(sys_soft)
+            fs_soft = forces(sys_soft)
+            @test isfinite(pe_soft)
+            @test all(fi -> all(isfinite, fi), fs_soft)
+        end
+    end
 
     inter = Yukawa(; weight_special=0.5)
     @test isapprox(
@@ -733,10 +1112,46 @@
     pe_improper = potential_energy(pt_improper, c1t, c2t, c3t, c4t, boundary_rb)
     @test isapprox(pe_improper, 20.0u"kJ * mol^-1"; atol=1e-9u"kJ * mol^-1")
 
+    htor = HarmonicTorsion(1000.0u"kJ/mol", -1.8)
+    c1ht = SVector(27.151, 33.362, 10.650)u"Å"
+    c2ht = SVector(28.260, 33.943, 11.096)u"Å"
+    c3ht = SVector(28.605, 33.965, 12.503)u"Å"
+    c4ht = SVector(28.638, 35.461, 12.900)u"Å"
+    boundary_htor = CubicBoundary(Inf * u"Å")
+    pe_htor = potential_energy(htor, c1ht, c2ht, c3ht, c4ht, boundary_htor)
+    @test pe_htor ≈ 67.60869243622506u"kJ/mol"
+    fs_htor = force(htor, c1ht, c2ht, c3ht, c4ht, boundary_htor)
+    @test fs_htor.f1 ≈ SVector(-228.63867893470425,  398.16345029859656,  49.837063486781354)u"kJ * mol^-1 * Å^-1"
+    @test fs_htor.f2 ≈ SVector( 242.87672193557964, -596.3836043695466 , -50.228876881052855)u"kJ * mol^-1 * Å^-1"
+    @test fs_htor.f3 ≈ SVector( 324.1211893467139 ,  212.83417983707614, -82.80324255936942 )u"kJ * mol^-1 * Å^-1"
+    @test fs_htor.f4 ≈ SVector(-338.3592323475893 , -14.614025766126122,  83.19505595364092 )u"kJ * mol^-1 * Å^-1"
+
+    ff_cmap = MolecularForceField(
+        joinpath.(ff_dir, ["charmm36.xml", "charmm36_water.xml"])...;
+        strictness=:nowarn,
+    )
+    sys_cmap = System(joinpath(data_dir, "6mrr_equil.pdb"), ff_cmap)
+    cmap = CMAPTorsion(48384, 24)
+    cmap_data = sys_cmap.specific_inter_lists[5].data
+    pe_cmap = potential_energy(cmap, sys_cmap.coords[379], sys_cmap.coords[381],
+                        sys_cmap.coords[383], sys_cmap.coords[393], sys_cmap.coords[395],
+                        sys_cmap.boundary, nothing, nothing, nothing, nothing, nothing, nothing,
+                        nothing, nothing, nothing, nothing, nothing, nothing, cmap_data)
+    @test pe_cmap ≈ -10.833264876u"kJ * mol^-1"
+    fs_cmap = force(cmap, sys_cmap.coords[379], sys_cmap.coords[381], sys_cmap.coords[383],
+                    sys_cmap.coords[393], sys_cmap.coords[395], sys_cmap.boundary,
+                    nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing,
+                    nothing, nothing, nothing, nothing, cmap_data)
+    @test fs_cmap.f1 ≈ SVector(-1.033477158 , -1.186639956 ,  0.850729764 )u"kJ * mol^-1 * nm^-1"
+    @test fs_cmap.f2 ≈ SVector(-12.152133492,  17.987633158, -38.576945178)u"kJ * mol^-1 * nm^-1"
+    @test fs_cmap.f3 ≈ SVector( 25.299640846, -27.965252121,  73.477215636)u"kJ * mol^-1 * nm^-1"
+    @test fs_cmap.f4 ≈ SVector(-27.701832125,  22.775084670, -83.963292267)u"kJ * mol^-1 * nm^-1"
+    @test fs_cmap.f5 ≈ SVector( 15.587801928, -11.610825751,  48.212292045)u"kJ * mol^-1 * nm^-1"
+
     struct AlwaysShortcut end
 
-    a1 = Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ = 1.0)
-    a2 = Atom(charge=1.0, σ=0.2u"nm", ϵ=0.1u"kJ * mol^-1", λ = 1.0)
+    a1 = Atom(charge=1.0, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1", λ=1.0)
+    a2 = Atom(charge=1.0, σ=0.2u"nm", ϵ=0.1u"kJ * mol^-1", λ=1.0)
     for inter in (
             LennardJones(),
             Mie(m=6, n=12),
@@ -807,6 +1222,12 @@
     @test Molly.ϵ_mixing(Molly.LorentzMixing(), a1_mie, a_zero) ≈ 0.1u"kJ * mol^-1"
     @test Molly.σ_mixing(Molly.GeometricMixing(), a1_mie, a_zero) ≈ 0.0u"nm"
     @test Molly.ϵ_mixing(Molly.GeometricMixing(), a1_mie, a_zero) ≈ 0.0u"kJ * mol^-1"
+
+    ljdc = LJDispersionCorrection([a1, a2], 1.0u"nm")
+    @test ljdc.factor ≈ -0.00208532857855u"kJ * nm^3 * mol^-1"
+
+    InteractionList2Atoms([1, 2], [3, 4], [0.0, 0.0])
+    @test_throws ArgumentError InteractionList2Atoms([1, 2], [3, 4], [0.0])
 end
 
 @testset "Cutoffs" begin
@@ -829,6 +1250,7 @@ end
         (ShiftedPotentialCutoff(dist_cut)     , -0.04196301990 * fu, -0.00270785727 * eu),
         (ShiftedForceCutoff(dist_cut)         , -0.02537033587 * fu, -0.00104858887 * eu),
         (CubicSplineCutoff(dist_act, dist_cut), -0.06201171875 * fu, -0.00312500000 * eu),
+        (PolynomialCutoff(dist_act, dist_cut) , -0.06716652806 * fu, -0.00246320097 * eu),
     ]
 
     for (cutoff, force_ref, pe_ref) in cutoffs
@@ -899,7 +1321,9 @@ end
                     dist_cutoff=T(dist_cutoff),
                     dist_buffer=zero(T(dist_cutoff)),
                     nonbonded_method=:ewald,
+                    dispersion_correction=false,
                     center_coords=false,
+                    strictness=:nowarn,
                 )
                 sys = System(
                     sys_init;
@@ -969,7 +1393,9 @@ end
                         dist_cutoff=T(dist_cutoff),
                         dist_buffer=zero(T(dist_cutoff)),
                         nonbonded_method=:pme,
+                        dispersion_correction=false,
                         center_coords=false,
+                        strictness=:nowarn,
                     )
                     sys = System(
                         sys_init;
@@ -991,4 +1417,81 @@ end
             end
         end
     end
+end
+
+@testset "DPD interaction" begin
+    r_c = 1.0
+    a_param = 25.0
+    γ_param = 4.5
+    dt = 0.01
+    σ_param = 3.0
+    boundary = CubicBoundary(5.0)
+
+    inter = DPDInteraction(a=a_param, γ=γ_param, σ=σ_param, r_c=r_c, dt=dt)
+
+    @test !use_neighbors(inter)
+    @test use_neighbors(DPDInteraction(use_neighbors=true))
+
+    a1 = Atom(index=1, mass=1.0, charge=0.0, σ=0.0, ϵ=0.0)
+    a2 = Atom(index=2, mass=1.0, charge=0.0, σ=0.0, ϵ=0.0)
+    c1 = SVector(1.0, 1.0, 1.0)
+    c2 = SVector(1.5, 1.0, 1.0)
+    v1 = SVector(0.0, 0.0, 0.0)
+    v2 = SVector(0.0, 0.0, 0.0)
+    dr = vector(c1, c2, boundary)
+    r = norm(dr)
+
+    # Conservative force only (zero velocities, deterministic random from hash)
+    f = force(inter, dr, a1, a2, NoUnits, false, c1, c2, boundary, v1, v2, 0)
+    w_R = 1 - r / r_c
+    f_C_expected = a_param * w_R / r
+    # The force should be in the +x direction (repulsive, pushing j away from i)
+    @test f[1] > 0.0
+    @test isapprox(f[2], 0.0; atol=1e-10)
+    @test isapprox(f[3], 0.0; atol=1e-10)
+
+    # Conservative potential energy
+    pe = potential_energy(inter, dr, a1, a2, NoUnits)
+    pe_expected = (a_param / 2) * r_c * w_R^2
+    @test isapprox(pe, pe_expected; atol=1e-10)
+
+    # Force is zero at and beyond cutoff
+    c3 = SVector(2.0, 1.0, 1.0)
+    dr_cutoff = vector(c1, c3, boundary)
+    f_cutoff = force(inter, dr_cutoff, a1, a2, NoUnits, false, c1, c3, boundary, v1, v2, 0)
+    @test all(isapprox.(f_cutoff, 0.0; atol=1e-10))
+    @test isapprox(potential_energy(inter, dr_cutoff, a1, a2, NoUnits), 0.0; atol=1e-10)
+
+    c4 = SVector(2.5, 1.0, 1.0)
+    dr_beyond = vector(c1, c4, boundary)
+    f_beyond = force(inter, dr_beyond, a1, a2, NoUnits, false, c1, c4, boundary, v1, v2, 0)
+    @test all(isapprox.(f_beyond, 0.0; atol=1e-10))
+
+    # Dissipative force: approaching particles should experience damping
+    v1_approach = SVector(1.0, 0.0, 0.0)
+    v2_still = SVector(0.0, 0.0, 0.0)
+    inter_nodiss = DPDInteraction(a=0.0, γ=γ_param, σ=0.0, r_c=r_c, dt=dt)
+    f_diss = force(inter_nodiss, dr, a1, a2, NoUnits, false, c1, c2, boundary,
+                   v1_approach, v2_still, 0)
+    # Dissipative force on j should push j away from i (same direction as approach)
+    @test f_diss[1] > 0.0
+    # Force should be purely along x axis
+    @test isapprox(f_diss[2], 0.0; atol=1e-10)
+    @test isapprox(f_diss[3], 0.0; atol=1e-10)
+
+    # Receding particles: dissipative force should pull them back
+    v1_recede = SVector(-1.0, 0.0, 0.0)
+    f_diss_recede = force(inter_nodiss, dr, a1, a2, NoUnits, false, c1, c2, boundary,
+                          v1_recede, v2_still, 0)
+    @test f_diss_recede[1] < 0.0
+
+    # Random noise symmetry: dpd_gaussian is symmetric in particle indices
+    for step in 1:10
+        @test Molly.dpd_gaussian(1, 2, step) == Molly.dpd_gaussian(2, 1, step)
+        @test Molly.dpd_gaussian(5, 13, step) == Molly.dpd_gaussian(13, 5, step)
+    end
+
+    # Random noise varies with step number
+    vals = [Molly.dpd_gaussian(1, 2, s) for s in 1:100]
+    @test std(vals) > 0.5
 end
