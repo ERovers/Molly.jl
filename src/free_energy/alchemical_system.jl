@@ -11,16 +11,6 @@ const aminos_dic = Dict("ALA" => 1, "ARG" => 2, "ASN" => 3,
                         "NME" => 0, "HOH" => 0, "MG" => 0, 
                         "CL" => 0, "NA" => 0)
 
-const solvent_aminos_dic = Dict("ALA" => 0, "ARG" => 0, "ASN" => 0,
-                                "ASP" => 0, "CYS" => 0, "GLN" => 0,
-                                "GLU" => 0, "GLY" => 0, "HIS" => 0,
-                                "ILE" => 0, "LEU" => 0, "LYS" => 0, 
-                                "MET" => 0, "PHE" => 0, "SER" => 0,
-                                "THR" => 0, "TRP" => 0, "TYR" => 0,
-                                "VAL" => 0, "ACE" => 0, "ALC" => 0,
-                                "NME" => 0, "HOH" => 1, "MG" => 0, 
-                                "CL" => 0, "NA" => 0)
-
 const rotamer_dic = Dict("ARG" => [62,-177,-67,-62], "LYS" => [62,-177,-90,-67,-62],
                             "MET" => [62,-177,-67,-65], "GLU" => [62, -177,-67,-65],
                             "GLN" => [62,-70,-177,-65,-67], "ASP" => [62, -177,-70],
@@ -47,7 +37,7 @@ original system and λ-mediated atoms.
 """
 
 
-function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, direction=true, temp = T(298.0)u"K", units=true)
+function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic; direction=true, temp = T(298.0)u"K", units=true)
     # initialize data groups for new system
     Atoms = []
     Data = []
@@ -89,19 +79,18 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, direction=t
             residue[d.res_number-1]["backbone_map"][d.atom_name*"*"] = count
         end
         if !(d.res_number in res_num)
-            push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0), solvent=solvent_aminos_dic[d.res_name]))
-            # push!(Data, d)
-            push!(Data, AtomData_L(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
-                                        res_name=d.res_name, res_id=aminos_dic[d.res_name], element=d.element))
+            push!(Atoms, Atom(index=count, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
+                    λ=T(1.0)))
+            push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
+                                        res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
             push!(Coords, c)
             map[i] = count
             count += 1
         elseif (d.res_number in res_num) && d.atom_name in ["N","CA","C","O","H","HA","HA2"]
-            push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                    σ14=a.σ14, ϵ14=a.ϵ14, λ=T(1.0), solvent=solvent_aminos_dic[d.res_name]))
-            push!(Data, AtomData_L(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
-                                        res_name="ALC", res_id=aminos_dic[d.res_name], element=d.element))
+            push!(Atoms, Atom(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
+                    λ=T(1.0)))
+            push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
+                                        res_name="ALC", chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
             push!(Coords, c)
             map[i] = count
             residue[d.res_number]["backbone_map"][d.atom_name] = count
@@ -118,9 +107,9 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, direction=t
     
     # Add all the in the interactions except the ones part of the side-chain that has been removed
     for interaction in sys.specific_inter_lists
-        IT = typeof(interaction)
+        IT = typeof(interaction).name.wrapper
         field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
-        tmp = [[] for _ in field_names[1:end-1]]
+        tmp = [typeof(fn)() for fn in field_names[1:end-1]]
         name = ""
         if typeof(field_names[end-2][1]).name.name==:CMAPTorsion
             index = 0
@@ -141,7 +130,7 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, direction=t
             end
             maps = vcat(maps...)
             if length(tmp[1])>0
-                Interactions = push!(Interactions, InteractionList5Atoms{IT.types[1], Vector{CMAPTorsion{CMAP.types[1]}}, IT.types[end]}(tmp..., maps))
+                Interactions = push!(Interactions, IT(tmp..., maps))
             end
         else
             for field_tuple in zip(field_names[1:end-1]...)
@@ -204,9 +193,9 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, direction=t
                     if  d.atom_name in ["N","H","CA","HA","HA2","C","O"]
                         map_AA[i] = residue[r]["backbone_map"][d.atom_name]
                     else
-                        push!(Atoms, Atom_L(index=count, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                        σ14=a.σ14, ϵ14=a.ϵ14, λ=T(aminos[r][AA]), solvent=solvent_aminos_dic[d.res_name]))
-                        push!(Data, AtomData_L(d.atom_type, d.atom_name, r, d.res_name, aminos_dic[d.res_name], d.chain_id, d.element, d.hetero_atom))
+                        push!(Atoms, Atom(index=count, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
+                        λ=T(aminos[r][AA])))
+                        push!(Data, AtomData(d.atom_type, d.atom_name, r, d.res_name, d.chain_id, d.element, d.hetero_atom))
                         push!(Coords, c)
                         map_AA[i] = count
                         push!(sidechain_A, i)
@@ -376,7 +365,6 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic, direction=t
     σQ= units ? T(1.0)u"nm" : T(1.0)
     cutoff = DistanceCutoff(cut)
     pairwise_inters = (
-                        LennardJones(use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_less_one_shortcut,weight_special=T(1.0)),
                         LennardJonesSoftCoreGapsys(α=T(0.85), λ=nothing, use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_one_shortcut, weight_special=T(1.0)),
                         CoulombEwald_gapsys(dist_cutoff=(units ? T(1.0)u"nm" : T(1.0)), error_tol=T(0.0005), use_neighbors=true, weight_special=T(1.0),
                                             coulomb_const=(units ? T(coulomb_const) : T(ustrip(coulomb_const))), approximate_erfc=true, αg=T(0.6), 

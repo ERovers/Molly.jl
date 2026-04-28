@@ -83,7 +83,10 @@ include("free_energy/thermo.jl")
 include("free_energy/stats.jl")
 include("free_energy/mbar.jl")
 include("free_energy/AWH.jl")
+include("free_energy/alchemical_helper.jl")
+include("free_energy/alchemical_system.jl")
 include("bias/bias.jl")
 include("bias/cv.jl")
+
 
 end
