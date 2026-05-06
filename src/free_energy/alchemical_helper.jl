@@ -8,7 +8,7 @@ export
     Atom_L,
     CMAPTorsion_L,
     print_interaction,
-    kabsch,
+    kabsch_AA,
     step_logger,
     lambda
 
@@ -22,6 +22,16 @@ function print_interaction(interaction, start_idx=1, end_idx=1)
             n_fields = length(ft)
             println("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]))
             println(ft[end-1])
+        end
+    end
+end
+
+function print_interaction(interaction, indexes)
+    field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
+    for (i,ft) in enumerate(zip(field_names[1:end-1]...))
+        if any(x-> x in indexes, ft[1:end-2])
+            n_fields = length(ft)
+            println("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]))
         end
     end
 end
@@ -52,7 +62,7 @@ function step_logger(sys, buffers, neighbors, step_n::Integer; n_threads::Intege
     end
 end
 
-function kabsch(P,Q)
+function kabsch_AA(P,Q)
     P = ustrip(P')
     Q = ustrip(Q')
     cP = mean(P, dims=2)
@@ -253,7 +263,7 @@ function rotate_side_chain(coords::Vector{Any}, p1_idx::Int, p2_idx::Int, moving
     # 1. Define the rotation axis
     p1 = coords[p1_idx, :]
     p2 = coords[p2_idx, :]
-    axis = p2 - p1
+    axis = ustrip.(p2 - p1)
     axis /= norm(axis)
     
     # Pre-calculate rotation components
@@ -299,7 +309,7 @@ function count_clashes(moving_coords::Vector{Any}, static_coords; cutoff::Float6
             # Squared distance is faster (avoids sqrt)
             dist_sq = sqrt(sum((m_atom .- s_atom)[1].^2))
             
-            if dist_sq < cutoff
+            if ustrip.(dist_sq) < cutoff
                 clash_count += 1
             end
         end
@@ -431,63 +441,13 @@ function inject_interaction(inter::CMAPTorsion_L{I,L}, inter_type, params_dic) w
 end
 
 @inline function force(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
-                            coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, 
-                            atoms_m, force_units, velocities_i, velocities_j,
-                            velocities_k, velocities_l, velocities_m, step_n, data)
-    # First angle
-    v0a = vector(coords_j, coords_i, boundary)
-    v1a = vector(coords_j, coords_k, boundary)
-    v2a = vector(coords_l, coords_k, boundary)
-    cp0a = cross(v0a, v1a)
-    cp1a = cross(v1a, v2a)
-    cosangle = dot(cp0a/norm(cp0a), cp1a/norm(cp1a))
-    F = typeof(cosangle)
-    if cosangle > F(0.99) || cosangle < F(-0.99)
-        cross_prod = cp0a × cp1a
-        scale = dot(cp0a,cp0a) * dot(cp1a,cp1a)
-        angleA = asin(sqrt(dot(cross_prod,cross_prod)/scale))
-        if cosangle < F(0.0)
-            angleA = pi - angleA
-        end
-    else
-        angleA = acos(cosangle)
-    end
-    angleA = (ustrip(dot(v0a,cp1a))>=0) ? angleA : -angleA
-    angleA = mod(angleA + F(2*pi), F(2*pi))
-    
-    # Second angle
-    v0b = vector(coords_k, coords_j, boundary)
-    v1b = vector(coords_k, coords_l, boundary)
-    v2b = vector(coords_m, coords_l, boundary)
-    cp0b = cross(v0b, v1b)
-    cp1b = cross(v1b, v2b)
-    cosangle = dot(cp0b/norm(cp0b), cp1b/norm(cp1b))
-    if cosangle > F(0.99) || cosangle < F(-0.99)
-        cross_prod = cross(cp0b, cp1b)
-        scale = dot(cp0b,cp0b) * dot(cp1b,cp1b)
-        angleB = asin(sqrt(dot(cross_prod,cross_prod)/scale))
-        if cosangle < F(0.0)
-            angleB = pi - angleB
-        end
-    else
-        angleB = acos(ustrip(cosangle))
-    end
-    angleB = (ustrip(dot(v0b,cp1b))>=0) ? angleB : -angleB
-    angleB = mod(angleB + F(2*pi), F(2*pi))
+                       coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, 
+                       atoms_m, force_units, velocities_i, velocities_j,
+                       velocities_k, velocities_l, velocities_m, step_n, data)
+    v0a, v1a, v2a, cp0a, cp1a, v0b, v1b, v2b, cp0b, cp1b, delta, idx, da, db = cmap_angles(
+                        inter, coords_i, coords_j, coords_k, coords_l, coords_m, boundary)
 
-    # Identify Patch
-    delta = F(2*pi) / inter.size
-    s = Int(trunc(min(angleA/delta, inter.size-1)))
-    t = Int(trunc(min(angleB/delta, inter.size-1)))
-    idx = inter.index+(4*(s+inter.size*t))+1
-    # c0 = @view data[idx,:]
-    # c1 = @view data[idx+1,:]
-    # c2 = @view data[idx+2,:]
-    # c3 = @view data[idx+3,:]
-    da = angleA/delta - s
-    db = angleB/delta - t
-
-     # Evaluate the spline to determine the energy and gradients.
+    # Evaluate the spline to determine the energy and gradients
     dEdA = (3*data[idx+3,4]*da + 2*data[idx+2,4])*da + data[idx+1,4]
     dEdB = (3*data[idx+3,4]*db + 2*data[idx+3,3])*db + data[idx+3,2]
     dEdA = db*dEdA + (3*data[idx+3,3]*da + 2*data[idx+2,3])*da + data[idx+1,3]
@@ -499,30 +459,30 @@ end
     dEdA /= delta
     dEdB /= delta
 
-    # Calculate the force to the first torsion.
+    # Calculate the force to the first torsion
     normCross1 = dot(cp0a, cp0a)
     normSqrBC = dot(v1a, v1a)
     normBC = sqrt(normSqrBC)
     normCross2 = dot(cp1a, cp1a)
-    dp = 1/normSqrBC
+    dp = inv(normSqrBC)
     ff = ((-dEdA*normBC)/normCross1, dot(v0a, v1a)*dp, dot(v2a, v1a)*dp, (dEdA*normBC)/normCross2)
     force1 = ff[1]*cp0a
     force4 = ff[4]*cp1a
     d = ff[2]*force1 - ff[3]*force4
-    force2 = d-force1
+    force2 =  d-force1
     force3 = -d-force4
 
-    # Calculate the force to the second torsion.
+    # Calculate the force to the second torsion
     normCross1 = dot(cp0b, cp0b)
     normSqrBC = dot(v1b, v1b)
     normBC = sqrt(normSqrBC)
     normCross2 = dot(cp1b, cp1b)
-    dp = 1/normSqrBC
+    dp = inv(normSqrBC)
     ff = ((-dEdB*normBC)/normCross1, dot(v0b, v1b)*dp, dot(v2b, v1b)*dp, (dEdB*normBC)/normCross2)
     force5 = ff[1]*cp0b
     force8 = ff[4]*cp1b
     d = ff[2]*force5 - ff[3]*force8
-    force6 = d-force5
+    force6 =  d-force5
     force7 = -d-force8
 
     # Apply the forces to the atoms
@@ -534,69 +494,19 @@ end
     return SpecificForce5Atoms(inter.λ*fi, inter.λ*fj, inter.λ*fk, inter.λ*fl, inter.λ*fm)
 end
 
-@inline function potential_energy(inter::CMAPTorsion_L,coords_i, coords_j, coords_k, coords_l, 
-                            coords_m, boundary, atoms_i::Atom_L, atoms_j::Atom_L, atoms_k::Atom_L, atoms_l::Atom_L, 
-                            atoms_m::Atom_L, energy_units, velocities_i, velocities_j, velocities_k, velocities_l, 
-                            velocities_m, step_n, data)
-    # First angle
-    v0a = vector(coords_j, coords_i, boundary)
-    v1a = vector(coords_j, coords_k, boundary)
-    v2a = vector(coords_l, coords_k, boundary)
-    cp0a = ustrip.(cross(v0a, v1a))
-    cp1a = ustrip.(cross(v1a, v2a))
-    cosangle = dot(cp0a/norm(cp0a), cp1a/norm(cp1a))
-    F = typeof(cosangle)
-    if cosangle > F(0.99) || cosangle < F(-0.99)
-        cross_prod = cp0a × cp1a
-        scale = dot(cp0a,cp0a) * dot(cp1a,cp1a)
-        angleA = asin(sqrt(dot(cross_prod,cross_prod)/scale))
-        if cosangle < F(0.0)
-            angleA = pi - angleA
-        end
-    else
-        angleA = acos(cosangle)
-    end
-    angleA = (ustrip(dot(v0a,cp1a))>=0) ? angleA : -angleA
-    angleA = mod(angleA + F(2*pi), F(2*pi))
-    
-    # Second angle
-    v0b = vector(coords_k, coords_j, boundary)
-    v1b = vector(coords_k, coords_l, boundary)
-    v2b = vector(coords_m, coords_l, boundary)
-    cp0b = ustrip.(cross(v0b, v1b))
-    cp1b = ustrip.(cross(v1b, v2b))
-    cosangle = dot(cp0b/norm(cp0b), cp1b/norm(cp1b))
-    if cosangle > F(0.99) || cosangle < F(-0.99)
-        cross_prod = cross(cp0b, cp1b)
-        scale = dot(cp0b,cp0b) * dot(cp1b,cp1b)
-        angleB = asin(sqrt(dot(cross_prod,cross_prod)/scale))
-        if cosangle < F(0.0)
-            angleB = pi - angleB
-        end
-    else
-        angleB = acos(ustrip(cosangle))
-    end
-    angleB = (ustrip(dot(v0b,cp1b))>=0) ? angleB : -angleB
-    angleB = mod(angleB + F(2*pi), F(2*pi))
-
-    # Identify Patch
-    delta = F(2*pi) / inter.size
-    s = Int(trunc(min(angleA/delta, inter.size-1)))
-    t = Int(trunc(min(angleB/delta, inter.size-1)))
-    idx = inter.index+(4*(s+inter.size*t))+1
-    # c0 = @view data[idx,:]
-    # c1 = @view data[idx+1,:]
-    # c2 = @view data[idx+2,:]
-    # c3 = @view data[idx+3,:]
-    da = angleA/delta - s
-    db = angleB/delta - t
+@inline function potential_energy(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
+                    coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, atoms_m, energy_units,
+                    velocities_i, velocities_j, velocities_k, velocities_l, velocities_m,
+                    step_n, data)
+    v0a, v1a, v2a, cp0a, cp1a, v0b, v1b, v2b, cp0b, cp1b, delta, idx, da, db = cmap_angles(
+                        inter, coords_i, coords_j, coords_k, coords_l, coords_m, boundary)
 
     # Spline with coefficients
-    energy = ((data[idx+3,4]*db + data[idx+3,3])*db + data[idx+3,2])*db + data[idx+3,1]
-    energy = da*energy + ((data[idx+2,4]*db + data[idx+2,3])*db + data[idx+2,2])*db + data[idx+2,1]
-    energy = da*energy + ((data[idx+1,4]*db + data[idx+1,3])*db + data[idx+1,2])*db + data[idx+1,1]
-    energy = da*energy + ((data[idx,4]*db + data[idx,3])*db + data[idx,2])*db + data[idx,1]
-    return inter.λ*energy
+    pe = ((data[idx+3,4]*db + data[idx+3,3])*db + data[idx+3,2])*db + data[idx+3,1]
+    pe = da*pe + ((data[idx+2,4]*db + data[idx+2,3])*db + data[idx+2,2])*db + data[idx+2,1]
+    pe = da*pe + ((data[idx+1,4]*db + data[idx+1,3])*db + data[idx+1,2])*db + data[idx+1,1]
+    pe = da*pe + ((data[idx,4]*db + data[idx,3])*db + data[idx,2])*db + data[idx,1]
+    return inter.λ*pe
 end
 
 # Energy
@@ -706,7 +616,7 @@ function merge(interactions)
 end
 
 function Base.append!(il1::InteractionList1Atoms{I, T, D}, il2::InteractionList1Atoms{I, T, D}) where {I, T, D}
-    return InteractionList1Atoms{I, T, D}(
+    return InteractionList1Atoms(
         append!(il1.is,il2.is),
         append!(il1.inters,il2.inters),
         append!(il1.types,il2.types),
@@ -715,7 +625,7 @@ function Base.append!(il1::InteractionList1Atoms{I, T, D}, il2::InteractionList1
 end
 
 function Base.append!(il1::InteractionList2Atoms{I, T, D}, il2::InteractionList2Atoms{I, T, D}) where {I, T, D}
-    return InteractionList2Atoms{I, T, D}(
+    return InteractionList2Atoms(
         append!(il1.is,il2.is),
         append!(il1.js,il2.js),
         append!(il1.inters,il2.inters),
@@ -725,7 +635,7 @@ function Base.append!(il1::InteractionList2Atoms{I, T, D}, il2::InteractionList2
 end
 
 function Base.append!(il1::InteractionList3Atoms{I, T, D}, il2::InteractionList3Atoms{I, T, D}) where {I, T, D}
-    return InteractionList3Atoms{I, T, D}(
+    return InteractionList3Atoms(
         append!(il1.is,il2.is),
         append!(il1.js,il2.js),
         append!(il1.ks,il2.ks),
@@ -736,7 +646,7 @@ function Base.append!(il1::InteractionList3Atoms{I, T, D}, il2::InteractionList3
 end
 
 function Base.append!(il1::InteractionList4Atoms{I, T, D}, il2::InteractionList4Atoms{I, T, D}) where {I, T, D}
-    return InteractionList4Atoms{I, T, D}(
+    return InteractionList4Atoms(
         append!(il1.is,il2.is),
         append!(il1.js,il2.js),
         append!(il1.ks,il2.ks),
@@ -754,8 +664,7 @@ function Base.append!(il1::InteractionList5Atoms{I, T, D}, il2::InteractionList5
     for inter in il2.inters
         push!(tmp_inters, cmaptorsion((4*tmp_inters[end].size*tmp_inters[end].size)+tmp_inters[end].index, inter.size, inter.λ, inter.res_num, inter.res_id))
     end
-    # println(vcat(il1.data,il2.data))
-    return InteractionList5Atoms{I, T, D}(
+    return InteractionList5Atoms(
         append!(il1.is,il2.is),
         append!(il1.js,il2.js),
         append!(il1.ks,il2.ks),

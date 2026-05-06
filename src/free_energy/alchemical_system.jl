@@ -37,7 +37,7 @@ original system and λ-mediated atoms.
 """
 
 
-function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic; direction=true, temp = T(298.0)u"K", units=true)
+function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic; direction=true, temp = T(298.0)u"K", units=true, aminos_d=aminos_dic)
     # initialize data groups for new system
     Atoms = []
     Data = []
@@ -48,7 +48,7 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic; direction=t
     for (res, res_vec) in params_dic
         res_n = parse(Int, match(r"\d+", res).match)
         for (i,l) in enumerate(res_vec)
-            res_type = [key for (key,value) in aminos_dic if value==i][1]
+            res_type = [key for (key,value) in aminos_d if value==i][1]
             if haskey(aminos, res_n)
                 aminos[res_n][res_type] = l
             else
@@ -80,7 +80,7 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic; direction=t
         end
         if !(d.res_number in res_num)
             push!(Atoms, Atom(index=count, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                    λ=T(1.0)))
+                    λ=T(1.0), alch_role=CoreRole))
             push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                         res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
             push!(Coords, c)
@@ -163,38 +163,38 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic; direction=t
         for AA in keys(aminos[r])
             rotamer_search[r][AA] = Dict()
             # Load residue system
-            amino_dir = normpath(@__DIR__, "..", "data/aminoacids")
+            amino_dir = normpath(@__DIR__, "../..", "data/aminoacids")
             tmp_sys = System(amino_dir*"/"*AA*".pdb", ff;
-                     nonbonded_method=:cutoff, center_coords=false, units=units)
+                     nonbonded_method=:none, center_coords=false, units=units, array_type=AT)
             
             # Superimpose residue onto backbone
             backbone_coords2 = units ? zeros(T,3,3)u"nm" : zeros(T,3,3)
             for (d,c) in zip(tmp_sys.atoms_data, tmp_sys.coords)
-                if d.atom_name in ["HA","CA","CB","HA2","HA3"] && (d.res_name!="ACE" && d.res_name!="NME") 
+                if d.atom_name in ["HA","CA","CB","HA2","HA3"] && (d.res_name!="TLA") 
                     backbone_coords2[backbone_idx[d.atom_name],:] = c
                 end
             end
-            rot, t = kabsch(backbone_coords2, residue[r]["backbone_coords"])
+            rot, t = kabsch_AA(backbone_coords2, residue[r]["backbone_coords"])
             t = units ? (t)u"nm" : t
             coords2 = ((rot * hcat(tmp_sys.coords...)) .+ t)'
             coords2 = [SVector{length(c)}(c) for c in eachrow(coords2)]
-            
+
             # Create map for interactions and add atoms
             sidechain_A = []
             count = isempty(map_AA) ? maximum(values(map))+1 : maximum(values(map_AA))+1
             map_AA = Dict()
             rotamer_search[r][AA]["index"] = []
             for (i,(a,d,c)) in enumerate(zip(tmp_sys.atoms, tmp_sys.atoms_data, coords2))
-                if d.res_name=="ACE" && d.atom_name=="C"
+                if d.res_name=="TLA" && d.res_number==1 && d.atom_name=="C"
                     map_AA[i] = residue[r]["backbone_map"]["C*"]
-                elseif d.res_name=="NME" && d.atom_name=="N"
+                elseif d.res_name=="TLA" && d.res_number==3 && d.atom_name=="N"
                     map_AA[i] = residue[r]["backbone_map"]["N*"]
                 elseif d.res_name == AA
                     if  d.atom_name in ["N","H","CA","HA","HA2","C","O"]
                         map_AA[i] = residue[r]["backbone_map"][d.atom_name]
                     else
                         push!(Atoms, Atom(index=count, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                        λ=T(aminos[r][AA])))
+                        λ=T(aminos[r][AA]), alch_role=ProbRole))
                         push!(Data, AtomData(d.atom_type, d.atom_name, r, d.res_name, d.chain_id, d.element, d.hetero_atom))
                         push!(Coords, c)
                         map_AA[i] = count
@@ -217,25 +217,44 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic; direction=t
         
             # Add all interactions for the new atoms
             for interaction in tmp_sys.specific_inter_lists
-                IT = typeof(interaction)
+                IT = typeof(interaction).name.wrapper
                 field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
-                tmp = [[] for _ in field_names[1:end-1]]
+                tmp = [typeof(fn)() for fn in field_names[1:end-1]]
         
                 if typeof(field_names[end-2][1]).name.name==:CMAPTorsion
-                    CMAP = typeof(field_names[end-2][1])
+                    n_fields = length(tmp)
+                    tmp[n_fields-1] = CMAPTorsion_L{Int,T}[]
                     for field_tuple in zip(field_names[1:end-1]...)
-                        n_fields = length(field_tuple)
                         name = typeof(field_tuple[end-1]).name.name
                         if all(haskey(map_AA, field_tuple[i]) for i in 1:n_fields-2)
                             for i in 1:n_fields-2
                                 tmp[i] = push!(tmp[i], map_AA[field_tuple[i]])
                             end
                             
-                            tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion_L(field_tuple[end-1].index, field_tuple[end-1].size, T(aminos[r][AA]), r, aminos_dic[AA]))
-                            tmp[n_fields] = push!(tmp[n_fields], "residue_$(r)_r$(aminos_dic[AA])_λ")
+                            tmp[n_fields-1] = push!(tmp[n_fields-1], CMAPTorsion_L(field_tuple[end-1].index, field_tuple[end-1].size, T(aminos[r][AA]), r, aminos_d[AA]))
+                            tmp[n_fields] = push!(tmp[n_fields], "residue_$(r)_r$(aminos_d[AA])_λ")
                         end
                     end
-                    Interactions = push!(Interactions, InteractionList5Atoms{IT.types[1], Vector{CMAPTorsion_L{CMAP.types[1], T}}, IT.types[end]}(tmp..., interaction.data))
+                    tmp[n_fields-1] = collect(tmp[n_fields-1])
+                    Interactions = push!(Interactions, IT(tmp..., interaction.data))
+                elseif typeof(field_names[end-2][1]).name.name==:LennardJones14
+                    n_fields = length(tmp)
+                    typs = fieldtypes(typeof(field_names[end-2][1]))
+                    tmp[n_fields-1] = LennardJones14SoftCoreGapsys{typs[1],typs[2],typs[3],T,typeof(ProductMixing()), typeof(ProbabilityLambdaScheduler())}[]
+                    for field_tuple in zip(field_names[1:end-1]...)
+                        name = typeof(field_tuple[end-1]).name.name
+                        if all(haskey(map_AA, field_tuple[i]) for i in 1:n_fields-2)
+                            for i in 1:n_fields-2
+                                tmp[i] = push!(tmp[i], map_AA[field_tuple[i]])
+                            end
+                            
+                            tmp[n_fields-1] = push!(tmp[n_fields-1], LennardJones14SoftCoreGapsys(field_tuple[end-1].σ14_mixed, field_tuple[end-1].ϵ14_mixed, field_tuple[end-1].weight_14,
+                                                                                                     T(0.85), ProductMixing(), ProbabilityLambdaScheduler()))
+                            tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
+                        end
+                    end
+                    tmp[n_fields-1] = collect(tmp[n_fields-1])
+                    Interactions = push!(Interactions, IT(tmp..., interaction.data))
                 else
                     for field_tuple in zip(field_names[1:end-1]...)
                         n_fields = length(field_tuple)
@@ -254,7 +273,7 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic; direction=t
             end
         end
     end
-    
+
     Interactions = Molly.merge(Interactions)
     specific_inter_lists = tuple(Interactions...)
 
@@ -358,22 +377,31 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic; direction=t
     cut = units ? T(1.2)u"nm" : T(1.2)
     cou_const = units ? T(coulomb_const) : ustrip(T(coulomb_const))
     if AT <:AbstractGPUArray
-        nf = GPUNeighborFinder(eligible=Molly.to_device(eligible, AT), dist_cutoff=cut, special=Molly.to_device(special, AT), n_steps_reorder=10)
+        nf = GPUNeighborFinder(eligible=Molly.to_device(eligible, AT), dist_cutoff=cut, 
+                                special=Molly.to_device(special, AT), n_steps_reorder=10)
     else
-        nf = CellListMapNeighborFinder(eligible=Molly.to_device(eligible, AT), dist_cutoff=cut, special=Molly.to_device(special, AT), n_steps=10)
+        nf = CellListMapNeighborFinder(eligible=Molly.to_device(eligible, AT), dist_cutoff=cut, 
+                                        special=Molly.to_device(special, AT), n_steps=10)
     end
     σQ= units ? T(1.0)u"nm" : T(1.0)
     cutoff = DistanceCutoff(cut)
     pairwise_inters = (
-                        LennardJonesSoftCoreGapsys(α=T(0.85), λ=nothing, use_neighbors=true, cutoff=cutoff, shortcut=lj_λ_one_shortcut, weight_special=T(1.0)),
-                        CoulombEwald_gapsys(dist_cutoff=(units ? T(1.0)u"nm" : T(1.0)), error_tol=T(0.0005), use_neighbors=true, weight_special=T(1.0),
-                                            coulomb_const=(units ? T(coulomb_const) : T(ustrip(coulomb_const))), approximate_erfc=true, αg=T(0.6), 
-                                            σQ=units ? T(1.0)u"nm" : T(1.0)),
+                        LennardJonesSoftCoreGapsys(cutoff=cutoff, α=T(0.85), use_neighbors=true,  
+                                                    shortcut=LJZeroShortcut(), λ_mixing=ProductMixing(),
+                                                    scheduler=ProbabilityLambdaScheduler(), weight_special=T(1.0)),
+                        CoulombSoftCoreGapsysEwald(dist_cutoff=(units ? T(1.0)u"nm" : T(1.0)), error_tol=T(0.0005), 
+                                                    α=T(0.6), σQ=units ? T(1.0)u"nm" : T(1.0),
+                                                    use_neighbors=true,  λ_mixing=ProductMixing(),
+                                                    scheduler=ProbabilityLambdaScheduler(),
+                                                    weight_special=T(1.0), 
+                                                    coulomb_const=(units ? T(coulomb_const) : T(ustrip(coulomb_const))), 
+                                                    approximate_erfc=true)
                         )
 
     
     general_inters = (
-                        PME((units ? T(1.0)u"nm" : T(1.0)), Molly.to_device(Atoms, AT), Boundary; error_tol=T(0.0005), eligible=Molly.to_device(eligible_PME, AT), 
+                        PME((units ? T(1.0)u"nm" : T(1.0)), Molly.to_device(Atoms, AT), Boundary; error_tol=T(0.0005), 
+                            eligible=Molly.to_device(eligible_PME, AT), 
                             special=Molly.to_device(special, AT), grad_safe=true),
                         )
 
@@ -391,10 +419,7 @@ function Hybrid_system(T, AT, epoch, ff, sys, traj_file, params_dic; direction=t
         neighbor_finder=nf,
         general_inters=general_inters,
         loggers=(
-            writer=TrajectoryWriter(10_000, traj_file),
-            step_log=GeneralObservableLogger(step_logger, typeof(one(T)), 10_000),
-            # writer=TrajectoryWriter(1_000, traj_file),
-            # step_log=GeneralObservableLogger(step_logger, typeof(one(T)), 1_000),
+            writer=TrajectoryWriter(1_000, traj_file),
         ),
         force_units=(units ? u"kJ * mol^-1 * nm^-1" : NoUnits),
         energy_units=(units ? u"kJ * mol^-1" : NoUnits),

@@ -3,6 +3,7 @@ const AlchemicalRole = Int
 const CoreRole::AlchemicalRole   = 0
 const InsertRole::AlchemicalRole = 1
 const DeleteRole::AlchemicalRole = 2
+const ProbRole::AlchemicalRole   = 3
 
 #= 
 The logic found in this file is a reinterpretation of how OpenFE deals
@@ -19,6 +20,32 @@ https://github.com/OpenFreeEnergy/openfe/blob/main/src/openfe/protocols/openmm_r
         return InsertRole
     elseif role_i == DeleteRole || role_j == DeleteRole
         return DeleteRole
+    else
+        return CoreRole
+    end
+end
+
+struct ProbabilityLambdaScheduler end
+
+@inline function scale_sterics(::ProbabilityLambdaScheduler, λ::T, role::AlchemicalRole) where T
+    if role == ProbRole
+        return λ
+    else
+        return T(1.0)
+    end
+end
+
+@inline function scale_elec(::ProbabilityLambdaScheduler, λ::T, role::AlchemicalRole) where T
+    if role == ProbRole
+        return λ
+    else
+        return T(1.0)
+    end
+end
+
+@inline function mix_roles(::ProbabilityLambdaScheduler, role_i::AlchemicalRole, role_j::AlchemicalRole)
+    if role_i == ProbRole || role_j == ProbRole
+        return ProbRole
     else
         return CoreRole
     end

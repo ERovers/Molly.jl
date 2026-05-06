@@ -3,7 +3,9 @@ export
     LJDispersionCorrection,
     LennardJonesSoftCoreBeutler,
     LennardJonesSoftCoreGapsys,
-    AshbaughHatch
+    AshbaughHatch,
+    LennardJones14,
+    LennardJones14SoftCoreGapsys
 
 @doc raw"""
     LennardJones(; cutoff, use_neighbors, shortcut, σ_mixing, ϵ_mixing, weight_special)
@@ -861,4 +863,140 @@ end
     r2 = sum(abs2, vector(coords_i, coords_l, boundary))
     six_term = (σ2 / r2) ^ 3
     return inter.weight_14 * 4 * inter.ϵ14_mixed * (six_term ^ 2 - six_term)
+end
+
+# Specific interaction used to allow different σ/ϵ for 1-4 interactions
+# Assumes no 1-4 Lennard-Jones interaction via the pairwise interactions (weight_special = 0)
+@kwdef struct LennardJones14SoftCoreGapsys{S, E, W, A, LM, SCH}
+    σ14_mixed::S
+    ϵ14_mixed::E
+    weight_14::W
+    α::A = 0.85
+    λ_mixing::LM = MinimumMixing()
+    scheduler::SCH = DefaultLambdaScheduler()
+end
+
+function Base.zero(lj::LennardJones14SoftCoreGapsys{S, E, W, A, LM, SCH}) where {S, E, W, A, LM, SCH}
+    return LennardJones14SoftCoreGapsys(
+        zero(S), 
+        zero(E), 
+        zero(W),
+        zero(A),
+        lj.λ_mixing,
+        lj.scheduler,
+        )
+end
+
+function Base.:+(l1::LennardJones14SoftCoreGapsys, l2::LennardJones14SoftCoreGapsys)
+    return LennardJones14SoftCoreGapsys(
+        l1.σ14_mixed + l2.σ14_mixed,
+        l1.ϵ14_mixed + l2.ϵ14_mixed,
+        l1.weight_14 + l2.weight_14,
+        l1.α + l2.α,
+        l1.λ_mixing,
+        l1.scheduler,
+    )
+end
+
+@inline function force(inter::LennardJones14SoftCoreGapsys, coords_i, coords_l, boundary, atoms_i, atoms_l, force_units, args...)
+    T = typeof(ustrip(atoms_i.σ))
+    dr = vector(coords_i, coords_l, boundary)
+    λ_glob = T(λ_mixing(inter.λ_mixing, atoms_i, atoms_l))
+
+    # 1. Fetch alchemical roles from the contiguous array
+    role_i = atoms_i.alch_role
+    role_l = atoms_l.alch_role
+    pair_role = mix_roles(inter.scheduler, role_i, role_l)
+
+    # 2. Dispatch to the scheduler for the effective sterics lambda
+    # Changed scale_elec to scale_sterics
+    λ = T(scale_sterics(inter.scheduler, λ_glob, pair_role))
+
+    if λ <= 0
+        return SpecificForce2Atoms(zero(dr)*force_units, zero(dr)*force_units)
+    end
+
+    r = norm(dr)
+    if iszero_value(r)
+        return SpecificForce2Atoms(zero(dr)*force_units, zero(dr)*force_units)
+    end
+
+    if λ >= 1
+        σ2 = inter.σ14_mixed ^ 2
+        r2 = sum(abs2, dr)
+        six_term = (σ2 / r2) ^ 3
+        fl = inter.weight_14 * (24 * inter.ϵ14_mixed / r2) * (2 * six_term ^ 2 - six_term) * dr
+        fi = -fl
+        return SpecificForce2Atoms(fi, fl)
+    else
+        σ6 = inter.σ14_mixed^6
+        r6 = r^6
+        C6 = 4 * inter.ϵ14_mixed * σ6
+        C12 = C6 * σ6
+        val = (26 * σ6 * (1 - λ)) / 7
+        R = inter.α * sqrt(cbrt(val))
+
+        if r >= R
+            fl = λ * (((12*C12)/(r6*r6*r)) - ((6*C6)/(r6*r))) / r * dr
+            fi = -fl
+            return SpecificForce2Atoms(fi, fl)
+        else
+            invR = inv(R)
+            invR2 = invR^2
+            invR6 = invR^6
+            fl = inter.weight_14 * λ * (((-156*C12*(invR6*invR6*invR2)) + (42*C6*(invR2*invR6)))*r +
+                        (168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR))) / r * dr
+            fi = -fl
+            return SpecificForce2Atoms(fi, fl)
+        end
+    end
+end
+
+@inline function potential_energy(inter::LennardJones14SoftCoreGapsys, coords_i, coords_l, boundary, atoms_i, atoms_l, energy_units, args...)
+    T = typeof(ustrip(atoms_i.σ))
+    dr = vector(coords_i, coords_l, boundary)
+    λ_glob = T(λ_mixing(inter.λ_mixing, atoms_i, atoms_l))
+
+    # 1. Fetch alchemical roles from the contiguous array
+    role_i = atoms_i.alch_role
+    role_l = atoms_l.alch_role
+    pair_role = mix_roles(inter.scheduler, role_i, role_l)
+
+    # 2. Dispatch to the scheduler for the effective sterics lambda
+    # Changed scale_elec to scale_sterics
+    λ = T(scale_sterics(inter.scheduler, λ_glob, pair_role))
+
+    if λ <= 0
+        return ustrip(zero(dr[1])) * energy_units
+    end
+
+    r = norm(dr)
+    if iszero_value(r)
+        return ustrip(zero(dr[1])) * energy_units
+    end
+
+    if λ >= 1
+        σ2 = inter.σ14_mixed ^ 2
+        r2 = r^2
+        six_term = (σ2 / r2) ^ 3
+        return inter.weight_14 * 4 * inter.ϵ14_mixed * (six_term ^ 2 - six_term)
+    else
+        σ6 = inter.σ14_mixed^6
+        C6 = 4 * inter.ϵ14_mixed * σ6
+        C12 = C6 * σ6
+        val = (26 * σ6 * (1 - λ)) / 7
+        R = inter.α * sqrt(cbrt(val))
+
+        r6 = r^6
+        if r >= R
+            return λ * ((C12/(r6*r6)) - (C6/(r6)))
+        else
+            invR = inv(R)
+            invR2 = invR^2
+            invR6 = invR^6
+            return inter.weight_14 * λ * ((78*C12*(invR6*invR6*invR2)) - (21*C6*(invR2*invR6)))*(r^2) -
+                    ((168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR)))*r +
+                    (91*C12*(invR6*invR6)) - (28*C6*(invR6))
+        end
+    end
 end

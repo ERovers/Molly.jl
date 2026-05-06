@@ -124,3 +124,9 @@ struct MinimumMixing end
 function λ_mixing(m::MinimumMixing, a, b, args...)
     return min(one(a.λ), min(a.λ, b.λ))
 end
+
+struct ProductMixing end
+
+function λ_mixing(m::ProductMixing, a, b, args...)
+    return a.λ*b.λ
+end
