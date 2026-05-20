@@ -19,7 +19,7 @@ module MollyCUDAExt
 
 using Molly
 using Molly: from_device, box_sides, sorted_morton_seq!, sum_pairwise_forces,
-             sum_pairwise_potentials, volume
+             sum_pairwise_potentials, sum_pairwise_forces_λ, volume
 using CUDA
 using Atomix
 using KernelAbstractions
@@ -374,6 +374,7 @@ function autotune_force_kernel(buffers, sys::System{D, <:CuArray, T}, pairwise_i
             Val(false),
             Val(T),
             Val(D),
+            Val(false),
             buffers.interacting_tiles_i,
             buffers.interacting_tiles_j,
             buffers.interacting_tiles_type,
@@ -398,6 +399,7 @@ function autotune_force_kernel(buffers, sys::System{D, <:CuArray, T}, pairwise_i
         Val(false),
         Val(T),
         Val(D),
+        Val(false),
         buffers.interacting_tiles_i,
         buffers.interacting_tiles_j,
         buffers.interacting_tiles_type,
@@ -451,6 +453,7 @@ function autotune_force_block_y!(buffers, sys::System{D, <:CuArray, T}, pairwise
                 Val(false),
                 Val(T),
                 Val(D),
+                Val(false),
                 buffers.interacting_tiles_i,
                 buffers.interacting_tiles_j,
                 buffers.interacting_tiles_type,
@@ -832,7 +835,7 @@ Cache contract:
   `n_steps_reorder` and `dist_cutoff`.
 """
 function Molly.pairwise_forces_loop_gpu!(buffers, sys::System{D, <:CuArray, T}, pairwise_inters,
-                         nbs::Nothing, ::Val{needs_vir}, step_n) where {D, T, needs_vir}
+                         nbs::Nothing, ::Val{needs_vir}, step_n, ::Val{grad_lambda}) where {D, T, needs_vir, grad_lambda}
     N = length(sys.coords)
     r_cut2 = sys.neighbor_finder.dist_cutoff_2
     backend = get_backend(sys.coords)
@@ -872,7 +875,7 @@ function Molly.pairwise_forces_loop_gpu!(buffers, sys::System{D, <:CuArray, T}, 
         buffers.coords_reordered, buffers.velocities_reordered, buffers.atoms_reordered,
         Val(N), Val(r_cut2), Val(sys.force_units), pairwise_inters,
         sys.boundary, step_n, buffers.compressed_masks,
-        Val(needs_vir), Val(T), Val(D),
+        Val(needs_vir), Val(T), Val(D), Val(grad_lambda),
         buffers.interacting_tiles_i, buffers.interacting_tiles_j, buffers.interacting_tiles_type,
         buffers.num_interacting_tiles, buffers.interacting_tiles_overflow)
     block_y, maxregs = force_launch_params(sys, auto_kernel)
@@ -889,7 +892,7 @@ function Molly.pairwise_forces_loop_gpu!(buffers, sys::System{D, <:CuArray, T}, 
             buffers.coords_reordered, buffers.velocities_reordered, buffers.atoms_reordered,
             Val(N), Val(r_cut2), Val(sys.force_units), pairwise_inters,
             sys.boundary, step_n, buffers.compressed_masks,
-            Val(needs_vir), Val(T), Val(D),
+            Val(needs_vir), Val(T), Val(D), Val(grad_lambda),
             buffers.interacting_tiles_i, buffers.interacting_tiles_j, buffers.interacting_tiles_type,
             buffers.num_interacting_tiles, buffers.interacting_tiles_overflow)
     end
@@ -901,7 +904,7 @@ function Molly.pairwise_forces_loop_gpu!(buffers, sys::System{D, <:CuArray, T}, 
             buffers.coords_reordered, buffers.velocities_reordered, buffers.atoms_reordered,
             Val(N), Val(r_cut2), Val(sys.force_units), pairwise_inters,
             sys.boundary, step_n, buffers.compressed_masks,
-            Val(needs_vir), Val(T), Val(D),
+            Val(needs_vir), Val(T), Val(D), Val(grad_lambda),
             buffers.interacting_tiles_i, buffers.interacting_tiles_j, buffers.interacting_tiles_type,
             buffers.num_interacting_tiles, buffers.interacting_tiles_overflow;
             threads=(32, block_y), blocks=n_blocks_launch
@@ -1576,8 +1579,9 @@ function force_kernel!(
     ::Val{needs_vir},
     ::Val{T},
     ::Val{D},
+    ::Val{grad_lambda},
     interacting_tiles_i, interacting_tiles_j, interacting_tiles_type, num_interacting_tiles,
-    interacting_tiles_overflow) where {N, r_cut2, A, force_units, needs_vir, T, D}
+    interacting_tiles_overflow; ) where {N, r_cut2, A, force_units, needs_vir, T, D, grad_lambda}
 
     a = Int32(1)
     b = Int32(D)
@@ -1660,32 +1664,42 @@ function force_kernel!(
                 any_active = CUDA.vote_any_sync(0xFFFFFFFF, condition)
                 
                 if any_active
-                    f = condition ? sum_pairwise_forces(
-                        inters_tuple, atoms_i, atoms_j_shuffle, Val(force_units),
-                        false, coords_i, coords_j, boundary, vel_i, vel_j, step_n
-                    ) : zero(SVector{D, T})
+                    if grad_lambda
+                        f = condition ? sum_pairwise_forces_λ(
+                            inters_tuple, atoms_i, atoms_j_shuffle, Val(force_units),
+                            false, coords_i, coords_j, boundary, vel_i, vel_j, step_n
+                        ) : zero(SVector{D, T})
 
-                    @fastmath force_i_x += ustrip(f[1])
-                    @fastmath opposites_sum[shuffle_idx, 1, warpid] -= ustrip(f[1])
-                    if D >= 2
-                        @fastmath force_i_y += ustrip(f[2])
-                        @fastmath opposites_sum[shuffle_idx, 2, warpid] -= ustrip(f[2])
-                    end
-                    if D >= 3
-                        @fastmath force_i_z += ustrip(f[3])
-                        @fastmath opposites_sum[shuffle_idx, 3, warpid] -= ustrip(f[3])
-                    end
+                        @fastmath force_i_x -= ustrip(f[1])
+                        @fastmath opposites_sum[shuffle_idx, 1, warpid] -= ustrip(f[2])
+                    else
+                        f = condition ? sum_pairwise_forces(
+                            inters_tuple, atoms_i, atoms_j_shuffle, Val(force_units),
+                            false, coords_i, coords_j, boundary, vel_i, vel_j, step_n
+                        ) : zero(SVector{D, T})
 
-                    if needs_vir
-                        @fastmath vir_xx += ustrip(f[1]) * ustrip(dr[1])
+                        @fastmath force_i_x += ustrip(f[1])
+                        @fastmath opposites_sum[shuffle_idx, 1, warpid] -= ustrip(f[1])
                         if D >= 2
-                            @fastmath vir_yy += ustrip(f[2]) * ustrip(dr[2])
-                            @fastmath vir_xy += ustrip(f[1]) * ustrip(dr[2])
+                            @fastmath force_i_y += ustrip(f[2])
+                            @fastmath opposites_sum[shuffle_idx, 2, warpid] -= ustrip(f[2])
                         end
                         if D >= 3
-                            @fastmath vir_zz += ustrip(f[3]) * ustrip(dr[3])
-                            @fastmath vir_xz += ustrip(f[1]) * ustrip(dr[3])
-                            @fastmath vir_yz += ustrip(f[2]) * ustrip(dr[3])
+                            @fastmath force_i_z += ustrip(f[3])
+                            @fastmath opposites_sum[shuffle_idx, 3, warpid] -= ustrip(f[3])
+                        end
+
+                        if needs_vir
+                            @fastmath vir_xx += ustrip(f[1]) * ustrip(dr[1])
+                            if D >= 2
+                                @fastmath vir_yy += ustrip(f[2]) * ustrip(dr[2])
+                                @fastmath vir_xy += ustrip(f[1]) * ustrip(dr[2])
+                            end
+                            if D >= 3
+                                @fastmath vir_zz += ustrip(f[3]) * ustrip(dr[3])
+                                @fastmath vir_xz += ustrip(f[1]) * ustrip(dr[3])
+                                @fastmath vir_yz += ustrip(f[2]) * ustrip(dr[3])
+                            end
                         end
                     end
                 end
@@ -1711,32 +1725,42 @@ function force_kernel!(
                 any_active = CUDA.vote_any_sync(0xFFFFFFFF, condition)
                 
                 if any_active
-                    f = condition ? sum_pairwise_forces(
-                        inters_tuple, atoms_i, atoms_j_shuffle, Val(force_units),
-                        (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
-                    ) : zero(SVector{D, T})
+                    if grad_lambda
+                        f = condition ? sum_pairwise_forces_λ(
+                            inters_tuple, atoms_i, atoms_j_shuffle, Val(force_units),
+                            (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
+                        ) : zero(SVector{D, T})
 
-                    @fastmath force_i_x += ustrip(f[1])
-                    @fastmath opposites_sum[shuffle_idx, 1, warpid] -= ustrip(f[1])
-                    if D >= 2
-                        @fastmath force_i_y += ustrip(f[2])
-                        @fastmath opposites_sum[shuffle_idx, 2, warpid] -= ustrip(f[2])
-                    end
-                    if D >= 3
-                        @fastmath force_i_z += ustrip(f[3])
-                        @fastmath opposites_sum[shuffle_idx, 3, warpid] -= ustrip(f[3])
-                    end
+                        @fastmath force_i_x -= ustrip(f[1])
+                        @fastmath opposites_sum[shuffle_idx, 1, warpid] -= ustrip(f[2])
+                    else
+                        f = condition ? sum_pairwise_forces(
+                            inters_tuple, atoms_i, atoms_j_shuffle, Val(force_units),
+                            (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
+                        ) : zero(SVector{D, T})
 
-                    if needs_vir
-                        @fastmath vir_xx += ustrip(f[1]) * ustrip(dr[1])
+                        @fastmath force_i_x += ustrip(f[1])
+                        @fastmath opposites_sum[shuffle_idx, 1, warpid] -= ustrip(f[1])
                         if D >= 2
-                            @fastmath vir_yy += ustrip(f[2]) * ustrip(dr[2])
-                            @fastmath vir_xy += ustrip(f[1]) * ustrip(dr[2])
+                            @fastmath force_i_y += ustrip(f[2])
+                            @fastmath opposites_sum[shuffle_idx, 2, warpid] -= ustrip(f[2])
                         end
                         if D >= 3
-                            @fastmath vir_zz += ustrip(f[3]) * ustrip(dr[3])
-                            @fastmath vir_xz += ustrip(f[1]) * ustrip(dr[3])
-                            @fastmath vir_yz += ustrip(f[2]) * ustrip(dr[3])
+                            @fastmath force_i_z += ustrip(f[3])
+                            @fastmath opposites_sum[shuffle_idx, 3, warpid] -= ustrip(f[3])
+                        end
+
+                        if needs_vir
+                            @fastmath vir_xx += ustrip(f[1]) * ustrip(dr[1])
+                            if D >= 2
+                                @fastmath vir_yy += ustrip(f[2]) * ustrip(dr[2])
+                                @fastmath vir_xy += ustrip(f[1]) * ustrip(dr[2])
+                            end
+                            if D >= 3
+                                @fastmath vir_zz += ustrip(f[3]) * ustrip(dr[3])
+                                @fastmath vir_xz += ustrip(f[1]) * ustrip(dr[3])
+                                @fastmath vir_yz += ustrip(f[2]) * ustrip(dr[3])
+                            end
                         end
                     end
                 end
@@ -1778,38 +1802,50 @@ function force_kernel!(
             any_active = CUDA.vote_any_sync(0xFFFFFFFF, condition)
 
             if any_active
-                f = condition ? sum_pairwise_forces(
-                    inters_tuple, atoms_i, atoms_j, Val(force_units),
-                    (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
-                ) : zero(SVector{D, T})
+                if grad_lambda
+                    f = condition ? sum_pairwise_forces_λ(
+                        inters_tuple, atoms_i, atoms_j, Val(force_units),
+                        (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
+                    ) : zero(SVector{D, T})
 
-                @fastmath force_i_x += ustrip(f[1])
-                if ustrip(f[1]) != zero(T)
-                    CUDA.atomic_add!(pointer(fs_mat, Int64(idx_j) * b - (b - 1)), ustrip(f[1]))
-                end
-                if D >= 2
-                    @fastmath force_i_y += ustrip(f[2])
-                    if ustrip(f[2]) != zero(T)
-                        CUDA.atomic_add!(pointer(fs_mat, Int64(idx_j) * b - (b - 2)), ustrip(f[2]))
+                    @fastmath force_i_x -= ustrip(f[1])
+                    if ustrip(f[1]) != zero(T)
+                        CUDA.atomic_add!(pointer(fs_mat, Int64(idx_j) * b - (b - 1)), ustrip(f[2]))
                     end
-                end
-                if D >= 3
-                    @fastmath force_i_z += ustrip(f[3])
-                    if ustrip(f[3]) != zero(T)
-                        CUDA.atomic_add!(pointer(fs_mat, Int64(idx_j) * b - (b - 3)), ustrip(f[3]))
+                else
+                    f = condition ? sum_pairwise_forces(
+                        inters_tuple, atoms_i, atoms_j, Val(force_units),
+                        (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
+                    ) : zero(SVector{D, T})
+
+                    @fastmath force_i_x += ustrip(f[1])
+                    if ustrip(f[1]) != zero(T)
+                        CUDA.atomic_add!(pointer(fs_mat, Int64(idx_j) * b - (b - 1)), ustrip(f[1]))
                     end
-                end
-                
-                if needs_vir
-                    @fastmath vir_xx += ustrip(f[1]) * ustrip(dr[1])
                     if D >= 2
-                        @fastmath vir_yy += ustrip(f[2]) * ustrip(dr[2])
-                        @fastmath vir_xy += ustrip(f[1]) * ustrip(dr[2])
+                        @fastmath force_i_y += ustrip(f[2])
+                        if ustrip(f[2]) != zero(T)
+                            CUDA.atomic_add!(pointer(fs_mat, Int64(idx_j) * b - (b - 2)), ustrip(f[2]))
+                        end
                     end
                     if D >= 3
-                        @fastmath vir_zz += ustrip(f[3]) * ustrip(dr[3])
-                        @fastmath vir_xz += ustrip(f[1]) * ustrip(dr[3])
-                        @fastmath vir_yz += ustrip(f[2]) * ustrip(dr[3])
+                        @fastmath force_i_z += ustrip(f[3])
+                        if ustrip(f[3]) != zero(T)
+                            CUDA.atomic_add!(pointer(fs_mat, Int64(idx_j) * b - (b - 3)), ustrip(f[3]))
+                        end
+                    end
+                    
+                    if needs_vir
+                        @fastmath vir_xx += ustrip(f[1]) * ustrip(dr[1])
+                        if D >= 2
+                            @fastmath vir_yy += ustrip(f[2]) * ustrip(dr[2])
+                            @fastmath vir_xy += ustrip(f[1]) * ustrip(dr[2])
+                        end
+                        if D >= 3
+                            @fastmath vir_zz += ustrip(f[3]) * ustrip(dr[3])
+                            @fastmath vir_xz += ustrip(f[1]) * ustrip(dr[3])
+                            @fastmath vir_yz += ustrip(f[2]) * ustrip(dr[3])
+                        end
                     end
                 end
             end
@@ -1838,32 +1874,42 @@ function force_kernel!(
             condition = (excl & 0x1) == true && r2 <= r_cut2
             
             # Divergence-safe execution (no vote_any_sync)
-            f = condition ? sum_pairwise_forces(
-                inters_tuple, atoms_i, atoms_j, Val(force_units),
-                (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
-            ) : zero(SVector{D, T})
+            if grad_lambda
+                f = condition ? sum_pairwise_forces_λ(
+                    inters_tuple, atoms_i, atoms_j, Val(force_units),
+                    (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
+                ) : zero(SVector{D, T})
 
-            @fastmath force_i_x += ustrip(f[1])
-            @fastmath opposites_sum[m, 1, warpid] -= ustrip(f[1])
-            if D >= 2
-                @fastmath force_i_y += ustrip(f[2])
-                @fastmath opposites_sum[m, 2, warpid] -= ustrip(f[2])
-            end
-            if D >= 3
-                @fastmath force_i_z += ustrip(f[3])
-                @fastmath opposites_sum[m, 3, warpid] -= ustrip(f[3])
-            end
-            
-            if needs_vir
-                @fastmath vir_xx += ustrip(f[1]) * ustrip(dr[1])
+                @fastmath force_i_x -= ustrip(f[1])
+                @fastmath opposites_sum[m, 1, warpid] -= ustrip(f[2])
+            else
+                f = condition ? sum_pairwise_forces(
+                    inters_tuple, atoms_i, atoms_j, Val(force_units),
+                    (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
+                ) : zero(SVector{D, T})
+
+                @fastmath force_i_x += ustrip(f[1])
+                @fastmath opposites_sum[m, 1, warpid] -= ustrip(f[1])
                 if D >= 2
-                    @fastmath vir_yy += ustrip(f[2]) * ustrip(dr[2])
-                    @fastmath vir_xy += ustrip(f[1]) * ustrip(dr[2])
+                    @fastmath force_i_y += ustrip(f[2])
+                    @fastmath opposites_sum[m, 2, warpid] -= ustrip(f[2])
                 end
                 if D >= 3
-                    @fastmath vir_zz += ustrip(f[3]) * ustrip(dr[3])
-                    @fastmath vir_xz += ustrip(f[1]) * ustrip(dr[3])
-                    @fastmath vir_yz += ustrip(f[2]) * ustrip(dr[3])
+                    @fastmath force_i_z += ustrip(f[3])
+                    @fastmath opposites_sum[m, 3, warpid] -= ustrip(f[3])
+                end
+                
+                if needs_vir
+                    @fastmath vir_xx += ustrip(f[1]) * ustrip(dr[1])
+                    if D >= 2
+                        @fastmath vir_yy += ustrip(f[2]) * ustrip(dr[2])
+                        @fastmath vir_xy += ustrip(f[1]) * ustrip(dr[2])
+                    end
+                    if D >= 3
+                        @fastmath vir_zz += ustrip(f[3]) * ustrip(dr[3])
+                        @fastmath vir_xz += ustrip(f[1]) * ustrip(dr[3])
+                        @fastmath vir_yz += ustrip(f[2]) * ustrip(dr[3])
+                    end
                 end
             end
         end
@@ -1904,32 +1950,42 @@ function force_kernel!(
                 condition = (excl & 0x1) == true && r2 <= r_cut2
                 
                 # Divergence-safe execution (no vote_any_sync)
-                f = condition ? sum_pairwise_forces(
-                    inters_tuple, atoms_i, atoms_j, Val(force_units),
-                    (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
-                ) : zero(SVector{D, T})
+                if grad_lambda
+                    f = condition ? sum_pairwise_forces_λ(
+                        inters_tuple, atoms_i, atoms_j, Val(force_units),
+                        (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
+                    ) : zero(SVector{D, T})
 
-                @fastmath force_i_x += ustrip(f[1])
-                @fastmath opposites_sum[m, 1, warpid] -= ustrip(f[1])
-                if D >= 2
-                    @fastmath force_i_y += ustrip(f[2])
-                    @fastmath opposites_sum[m, 2, warpid] -= ustrip(f[2])
-                end
-                if D >= 3
-                    @fastmath force_i_z += ustrip(f[3])
-                    @fastmath opposites_sum[m, 3, warpid] -= ustrip(f[3])
-                end
-                
-                if needs_vir
-                    @fastmath vir_xx += ustrip(f[1]) * ustrip(dr[1])
+                    @fastmath force_i_x -= ustrip(f[1])
+                    @fastmath opposites_sum[m, 1, warpid] -= ustrip(f[2])
+                else
+                    f = condition ? sum_pairwise_forces(
+                        inters_tuple, atoms_i, atoms_j, Val(force_units),
+                        (spec & 0x1) == true, coords_i, coords_j, boundary, vel_i, vel_j, step_n
+                    ) : zero(SVector{D, T})
+
+                    @fastmath force_i_x += ustrip(f[1])
+                    @fastmath opposites_sum[m, 1, warpid] -= ustrip(f[1])
                     if D >= 2
-                        @fastmath vir_yy += ustrip(f[2]) * ustrip(dr[2])
-                        @fastmath vir_xy += ustrip(f[1]) * ustrip(dr[2])
+                        @fastmath force_i_y += ustrip(f[2])
+                        @fastmath opposites_sum[m, 2, warpid] -= ustrip(f[2])
                     end
                     if D >= 3
-                        @fastmath vir_zz += ustrip(f[3]) * ustrip(dr[3])
-                        @fastmath vir_xz += ustrip(f[1]) * ustrip(dr[3])
-                        @fastmath vir_yz += ustrip(f[2]) * ustrip(dr[3])
+                        @fastmath force_i_z += ustrip(f[3])
+                        @fastmath opposites_sum[m, 3, warpid] -= ustrip(f[3])
+                    end
+                    
+                    if needs_vir
+                        @fastmath vir_xx += ustrip(f[1]) * ustrip(dr[1])
+                        if D >= 2
+                            @fastmath vir_yy += ustrip(f[2]) * ustrip(dr[2])
+                            @fastmath vir_xy += ustrip(f[1]) * ustrip(dr[2])
+                        end
+                        if D >= 3
+                            @fastmath vir_zz += ustrip(f[3]) * ustrip(dr[3])
+                            @fastmath vir_xz += ustrip(f[1]) * ustrip(dr[3])
+                            @fastmath vir_yz += ustrip(f[2]) * ustrip(dr[3])
+                        end
                     end
                 end
             end
@@ -1938,15 +1994,21 @@ function force_kernel!(
         sync_warp()
 
         if lane <= r
-            @fastmath force_i_x += opposites_sum[lane, 1, warpid]
-            opposites_sum[lane, 1, warpid] = zero(T)
-            if D >= 2
-                @fastmath force_i_y += opposites_sum[lane, 2, warpid]
-                opposites_sum[lane, 2, warpid] = zero(T)
-            end
-            if D >= 3
-                @fastmath force_i_z += opposites_sum[lane, 3, warpid]
-                opposites_sum[lane, 3, warpid] = zero(T)
+            # Not 100% about this
+            if grad_lambda
+                @fastmath force_i_x -= opposites_sum[lane, 1, warpid]
+                opposites_sum[lane, 1, warpid] = zero(T)
+            else
+                @fastmath force_i_x += opposites_sum[lane, 1, warpid]
+                opposites_sum[lane, 1, warpid] = zero(T)
+                if D >= 2
+                    @fastmath force_i_y += opposites_sum[lane, 2, warpid]
+                    opposites_sum[lane, 2, warpid] = zero(T)
+                end
+                if D >= 3
+                    @fastmath force_i_z += opposites_sum[lane, 3, warpid]
+                    opposites_sum[lane, 3, warpid] = zero(T)
+                end
             end
         end
     end

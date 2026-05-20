@@ -6,8 +6,7 @@ struct LJZeroShortcut end
 
 function shortcut_pair(::LJZeroShortcut, atom_i, atom_j, args...)
     return iszero_value(atom_i.ϵ) || iszero_value(atom_j.ϵ) ||
-           iszero_value(atom_i.σ) || iszero_value(atom_j.σ) ||
-           iszero_value(atom_i.λ) || iszero_value(atom_j.λ)
+           iszero_value(atom_i.σ) || iszero_value(atom_j.σ) 
 end
 
 struct BuckinghamZeroShortcut end
@@ -118,15 +117,90 @@ function λ_mixing(me::MixingException, atom_i, atom_j, args...)
     return get_pair(me.exceptions, atom_i.atom_type, atom_j.atom_type, default)
 end
 
-
 struct MinimumMixing end
 
-function λ_mixing(m::MinimumMixing, a, b, args...)
-    return min(one(a.λ), min(a.λ, b.λ))
+function λ_mixing(m::MinimumMixing, lambdas::Tuple{Vararg{T}}, args...) where T
+    return min(T(1.0), min(lambdas...))
 end
 
 struct ProductMixing end
 
-function λ_mixing(m::ProductMixing, a, b, args...)
+function λ_mixing(m::ProductMixing, (a, b), args...)
     return a.λ*b.λ
+end
+
+# CoreMixing
+#= 
+The logic found in this file is a reinterpretation of how OpenFE deals
+with alchemical transformations specifically around core atoms that change properties. 
+
+The original logic can be found in:
+https://github.com/OpenFreeEnergy/openfe/blob/main/src/openfe/protocols/openmm_rfe/_rfe_utils/relative.py
+
+=#
+struct ParamsList{N, K, V}
+    keys::SVector{N, K}
+    values::V
+end
+
+function ParamsList(d::AbstractDict)
+    n = length(d)
+    ks = SVector{n}(collect(keys(d)))
+    vs = SVector{n}(d[k] for k in ks)
+    return ParamsList(ks, vs)
+end
+
+function get_params(d::ParamsList{N,K,V}, i, default) where {N,K,V}
+    val = (default, default)
+    for ki in 1:N
+        if d.keys[ki] == i
+            val = d.values[ki]
+        end
+    end
+    return val
+end
+
+struct CoreMixing{M, P}
+    mixing::M
+    params::P
+end
+
+function σ_mixing(me::CoreMixing, atom_i, atom_j, λ, role, args...)
+    if role == EnvRole
+        return xy_mixing(me.mixing, atom_i.σ, atom_j.σ, args...)
+    end
+    sigmaA1, sigmaB1 = get_params(me.params, atom_i.index, atom_i.σ)
+    sigmaA2, sigmaB2 = get_params(me.params, atom_j.index, atom_j.σ)
+    sigmaA = xy_mixing(me.mixing, sigmaA1, sigmaA2, args...)
+    sigmaB = xy_mixing(me.mixing, sigmaB1, sigmaB2, args...)
+    return (1-λ)*sigmaA + λ*sigmaB
+end
+
+function ϵ_mixing(me::CoreMixing, atom_i, atom_j, λ, role, args...)
+    if role == EnvRole
+        return xy_mixing(me.mixing, atom_i.ϵ, atom_j.ϵ, args...)
+    end
+    epsA1, epsB1 = get_params(me.params, atom_i.index, atom_i.ϵ)
+    epsA2, epsB2 = get_params(me.params, atom_j.index, atom_j.ϵ)
+    epsA = xy_mixing(me.mixing, epsA1, epsA2, args...)
+    epsB = xy_mixing(me.mixing, epsB1, epsB2, args...)
+    return (1-λ)*epsA + λ*epsB
+end
+
+function scale_charge(params::ParamsList{N,K,V}, atom_i, atom_j, λ, role, args...) where {N,K,V}
+    if role == EnvRole
+        return atom_i.charge, atom_j.charge
+    end
+    qiA, qiB = get_params(params, atom_i.index, atom_i.charge)
+    qjA, qjB = get_params(params, atom_j.index, atom_j.charge)
+    return (1-λ)*qiA + λ*qiB, (1-λ)*qjA + λ*qjB
+end
+
+function inter_mixing((pA,pB), λ, args...)
+    return (1-λ)*pA + λ*pB
+end
+
+@inline function torsion_mixing(ks_tuple::NTuple{2, NTuple{N, E}}, λ, role, args...) where {N, E}
+    ks_A, ks_B = ks_tuple
+    return ntuple(i -> (1-λ) * ks_A[i] + λ * ks_B[i], N)
 end

@@ -140,3 +140,217 @@ end
     end
     return E
 end
+
+@doc raw"""
+    PeriodicTorsionλ(; periodicities, phases, ks, proper)
+
+A periodic torsion angle between four atoms.
+
+`phases` are in radians.
+The potential energy is defined as
+```math
+V(\phi) = \sum_{n=1}^N k_n (1 + \cos(n \phi - \phi_{s,n}))
+```
+where `ϕ` is the angle between the planes defined by atoms (i, j, k) and (j, k, l).
+
+Only compatible with 3D systems.
+"""
+struct PeriodicTorsionλ{N, T, E, LM, SCH}
+    periodicities::NTuple{2, NTuple{N, Int}}
+    phases::NTuple{2, NTuple{N, T}}
+    ks::NTuple{2, NTuple{N, E}}
+    proper::Bool
+    λ_mixing::LM
+    scheduler::SCH
+end
+
+function pad_torsion_terms(periodicities, phases, ks, n_terms)
+    if n_terms > length(periodicities)
+        n_to_add = n_terms - length(periodicities)
+        periodicities = vcat(collect(periodicities), ones(Int, n_to_add))
+        phases = vcat(collect(phases), zeros(T, n_to_add))
+        ks = vcat(collect(ks), zeros(E, n_to_add))
+    end
+    return periodicities, phases, ks
+end
+
+function PeriodicTorsionλ(; periodicities, phases, ks, proper::Bool=true,
+                            n_terms=nothing, λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    if periodicities isa Tuple{<:Tuple, <:Tuple}
+        perA, perB = periodicities
+        phA, phB = phases
+        ksA, ksB = ks
+    else
+        perA, perB = periodicities, periodicities
+        phA, phB = phases, phases
+        ksA, ksB = ks, ks
+    end
+
+    n_terms = n_terms === nothing ? length(perA) : n_terms
+
+    periodicities_padA, phases_padA, ks_padA = pad_torsion_terms(perA, phA, ksA, n_terms)
+    periodicities_padB, phases_padB, ks_padB = pad_torsion_terms(perB, phB, ksB, n_terms)
+
+    T, E = eltype(phases_padA), eltype(ks_padA)
+    return PeriodicTorsionλ(
+        (tuple(periodicities_padA...), tuple(periodicities_padB...)),
+        (tuple(phases_padA...), tuple(phases_padB...)),
+        (tuple(ks_padA...), tuple(ks_padB...)),
+        proper,
+        λ_mixing,
+        scheduler,
+    )
+end
+
+function Base.zero(::PeriodicTorsionλ{N, T, E}) where {N, T, E}
+    return PeriodicTorsionλ{N, T, E}(
+        ntuple(_ -> 0      , N),
+        ntuple(_ -> zero(T), N),
+        ntuple(_ -> zero(E), N),
+        false,
+        λ_mixing,
+        scheduler,
+    )
+end
+
+function Base.:+(p1::PeriodicTorsionλ{N, T, E}, p2::PeriodicTorsionλ{N, T, E}) where {N, T, E}
+    return PeriodicTorsionλ{N, T, E}(
+        p1.periodicities,
+        p1.phases .+ p2.phases,
+        p1.ks .+ p2.ks,
+        p1.proper,
+        p1.λ_mixing,
+        p1.scheduler,
+    )
+end
+
+function inject_interaction(inter::PeriodicTorsionλ{N, T, E}, inter_type, params_dic) where {N, T, E}
+    if inter.proper
+        key_prefix = "inter_PT_$(inter_type)_"
+    else
+        key_prefix = "inter_IT_$(inter_type)_"
+    end
+    return PeriodicTorsionλ{N, T, E, LM, SCH}(
+        inter.periodicities,
+        inter.phases,
+        inter.ks,
+        inter.proper,
+        inter.λ_mixing,
+        inter.scheduler,
+    )
+end
+
+function extract_parameters!(params_dic,
+                             inter::InteractionList4Atoms{<:Any, <:AbstractVector{<:PeriodicTorsionλ}},
+                             ff)
+    for (torsion_type, torsion) in zip(inter.types, from_device(inter.inters))
+        if torsion.proper
+            key_prefix = "inter_PT_$(torsion_type)_"
+        else
+            key_prefix = "inter_IT_$(torsion_type)_"
+        end
+        if !haskey(params_dic, key_prefix * "phase_1")
+            for i in eachindex(torsion.phases)
+                params_dic[key_prefix * "phase_$i"] = torsion.phases[i]
+                params_dic[key_prefix * "k_$i"    ] = torsion.ks[i]
+            end
+        end
+    end
+    return params_dic
+end
+
+# The summation gives different errors with Enzyme on CPU and GPU
+#   so there are two similar implementations
+@inline function force(d::PeriodicTorsionλ{N, T, E}, coords_i, coords_j, coords_k,
+                       coords_l, boundary, atom_i, atom_j, 
+                       atom_k, atom_l, args...) where {N, T, E}
+    ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ = torsion_vectors(
+                                        coords_i, coords_j, coords_k, coords_l, boundary)
+
+    λ_glob = T(λ_mixing(d.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)))    
+    pair_role = mix_roles(d.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role, atom_l.alch_role))
+    λ, λ_params = scale_torsion(d.scheduler, λ_glob, pair_role)
+    
+    ks = torsion_mixing(d.ks, λ_params, pair_role, args...)
+    phases = torsion_mixing(d.phases, λ_params, pair_role, args...)
+    periodicities = torsion_mixing(d.periodicities, λ_params, pair_role, args...)
+
+    fs = sum(zip(periodicities, phases, ks)) do (periodicity, phase, k)
+        fi, fj, fk, fl = periodic_torsion_force(periodicity, phase, k, ab, bc, cd, cross_ab_bc,
+                                                cross_bc_cd, bc_norm, θ)
+        return SpecificForce4Atoms(λ*fi, λ*fj, λ*fk, λ*fl)
+    end
+    return fs
+end
+
+@inline function force_gpu(d::PeriodicTorsionλ{N, T, E}, coords_i, coords_j, coords_k,
+                           coords_l, boundary, atom_i, atom_j, 
+                           atom_k, atom_l, args...) where {N, T, E}
+    ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ = torsion_vectors(
+                                        coords_i, coords_j, coords_k, coords_l, boundary)
+    λ_glob = T(λ_mixing(d.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)))    
+    pair_role = mix_roles(d.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role, atom_l.alch_role))
+    λ, λ_params = scale_torsion(d.scheduler, λ_glob, pair_role)
+    
+    ks = torsion_mixing(d.ks, λ_params, pair_role)
+    phases = torsion_mixing(d.phases, λ_params, pair_role)
+    periodicities = torsion_mixing(d.periodicities, λ_params, pair_role)
+
+    fi_sum, fj_sum, fk_sum, fl_sum = periodic_torsion_force(periodicities[1], phases[1],
+                                        ks[1], ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
+    for i in 2:N
+        fi, fj, fk, fl = periodic_torsion_force(periodicities[i], phases[i], ks[i], ab, bc,
+                                                cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
+        fi_sum += fi
+        fj_sum += fj
+        fk_sum += fk
+        fl_sum += fl
+    end
+    return SpecificForce4Atoms(λ*fi_sum, λ*fj_sum, λ*fk_sum, λ*fl_sum)
+end
+
+@inline function potential_energy(d::PeriodicTorsionλ{N, T, E}, coords_i, coords_j, coords_k,
+                                  coords_l, boundary, atom_i, atom_j, 
+                                  atom_k, atom_l, args...) where {N, T, E}
+    θ = torsion_angle(coords_i, coords_j, coords_k, coords_l, boundary)
+
+    λ_glob = T(λ_mixing(d.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)))    
+    pair_role = mix_roles(d.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role, atom_l.alch_role))
+    λ, λ_params = scale_torsion(d.scheduler, λ_glob, pair_role)
+    
+    ks = torsion_mixing(d.ks, λ_params, pair_role)
+    phases = torsion_mixing(d.phases, λ_params, pair_role)
+    periodicities = torsion_mixing(d.periodicities, λ_params, pair_role)
+    
+    pe = ks[1] + ks[1] * cos((periodicities[1] * θ) - phases[1])
+    for i in 2:N
+        pe += ks[i] + ks[i] * cos((periodicities[i] * θ) - phases[i])
+    end
+    return λ * pe
+end
+
+@inline function force_λ(d::PeriodicTorsionλ{N, T}, coords_i, coords_j, coords_k,
+                       coords_l, boundary, atom_i, atom_j, 
+                       atom_k, atom_l, F, args...) where {N, T}
+    θ = torsion_angle(coords_i, coords_j, coords_k, coords_l, boundary)
+    k1 = d.ks[1]
+    E = k1 + k1 * cos((d.periodicities[1] * θ) - d.phases[1])
+
+    if atom_i.alch_role==EnvRole && atom_j.alch_role==EnvRole && atom_k.alch_role==EnvRole && atom_l.alch_role==EnvRole
+        tmp = zero_pairwise_force(coords_i, F)
+        return SpecificForce4Atoms(tmp,tmp,tmp,tmp)
+    else
+        idx = findfirst(x-> x!=CoreRole, (atom_i.alch_role,atom_j.alch_role,atom_k.alch_role,atom_l.alch_role,ProbRole))
+        di = idx == 1
+        dj = idx == 2
+        dk = idx == 3
+        dl = idx == 4
+    end
+    
+    for i in 2:N
+        k = d.ks[i]
+        E += k + k * cos((d.periodicities[i] * θ) - d.phases[i])
+    end
+    tmp = SVector{3,T}(ustrip(E),T(0),T(0))*F
+    return SpecificForce4Atoms(tmp.*di, tmp.*dj, tmp.*dk, tmp.*dl)
+end

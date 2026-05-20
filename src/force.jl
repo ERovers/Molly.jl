@@ -59,6 +59,13 @@ force_gpu(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, sn, data) = force(
 force_gpu(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, sn, data) = force(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, sn, data)
 force_gpu(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, sn, data) = force(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, sn, data)
 
+force_λ_gpu(inter, dr, ai, aj, fu, sp, ci, cj, bnd, vi, vj, sn, data) = force_λ(inter, dr, ai, aj, fu, sp, ci, cj, bnd, vi, vj, sn, data)
+force_λ_gpu(inter, ci, bnd, ai, fu, vi, sn, data) = force_λ(inter, ci, bnd, ai, fu, vi, sn, data)
+force_λ_gpu(inter, ci, cj, bnd, ai, aj, fu, vi, vj, sn, args...) = force_λ(inter, ci, cj, bnd, ai, aj, fu, vi, vj, sn, args...)
+force_λ_gpu(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, sn, data) = force_λ(inter, ci, cj, ck, bnd, ai, aj, ak, fu, vi, vj, vk, sn, data)
+force_λ_gpu(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, sn, data) = force_λ(inter, ci, cj, ck, cl, bnd, ai, aj, ak, al, fu, vi, vj, vk, vl, sn, data)
+force_λ_gpu(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, sn, data) = force_λ(inter, ci, cj, ck, cl, cm, bnd, ai, aj, ak, al, am, fu, vi, vj, vk, vl, vm, sn, data)
+
 @inline zero_pairwise_force(dr, force_units) = ustrip.(zero(dr)) * force_units
 
 @inline function radial_force_vector(f, r, dr, force_units)
@@ -668,7 +675,7 @@ function specific_forces!(fs_nounits, vir_nounits, atoms, coords, velocities, bo
 end
 
 function forces!(fs, sys::System{D, <:AbstractGPUArray, T}, neighbors, buffers::BuffersGPU,
-                 ::Val{needs_vir}, step_n::Integer=0;
+                 ::Val{needs_vir}, step_n::Integer=0; grad_lambda=false,
                  n_threads::Integer=Threads.nthreads()) where {D, T, needs_vir}
     if needs_vir
         fill!(buffers.virial, zero(T) * sys.energy_units)
@@ -683,18 +690,18 @@ function forces!(fs, sys::System{D, <:AbstractGPUArray, T}, neighbors, buffers::
     if length(pairwise_inters_nonl) > 0
         n = length(sys)
         nbs = NoNeighborList(n)
-        pairwise_forces_loop_gpu!(buffers, sys, pairwise_inters_nonl, nbs, Val(needs_vir), step_n)
+        pairwise_forces_loop_gpu!(buffers, sys, pairwise_inters_nonl, nbs, Val(needs_vir), step_n, Val(grad_lambda))
     end
 
     pairwise_inters_nl = filter(use_neighbors, values(sys.pairwise_inters))
     if length(pairwise_inters_nl) > 0
-        pairwise_forces_loop_gpu!(buffers, sys, pairwise_inters_nl, neighbors, Val(needs_vir), step_n)
+        pairwise_forces_loop_gpu!(buffers, sys, pairwise_inters_nl, neighbors, Val(needs_vir), step_n, Val(grad_lambda))
     end
 
     for inter_list in values(sys.specific_inter_lists)
         specific_forces_gpu!(buffers.fs_mat, buffers.virial_nounits,
                             inter_list, sys.coords, sys.velocities, sys.atoms,
-                            sys.boundary, Val(needs_vir), step_n, sys.force_units, Val(T))
+                            sys.boundary, Val(needs_vir), step_n, sys.force_units, Val(T), Val(grad_lambda))
     end
 
     fs .= reinterpret(SVector{D, T}, vec(buffers.fs_mat)) .* sys.force_units
@@ -704,8 +711,14 @@ function forces!(fs, sys::System{D, <:AbstractGPUArray, T}, neighbors, buffers::
     end
 
     for inter in values(sys.general_inters)
-        AtomsCalculators.forces!(fs, sys, inter; neighbors=neighbors, step_n=step_n,
-                                 n_threads=n_threads, buffers=buffers, needs_vir=needs_vir)
+        if grad_lambda
+            if isa(inter, PME)
+                force_λ!(fs, inter, sys.atoms, sys.coords, sys.boundary, Val(sys.energy_units), Val(sys.force_units))
+            end
+        else
+            AtomsCalculators.forces!(fs, sys, inter; neighbors=neighbors, step_n=step_n,
+                                    n_threads=n_threads, buffers=buffers, needs_vir=needs_vir)
+        end
     end
     distribute_forces!(fs, sys, buffers)
 

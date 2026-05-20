@@ -17,6 +17,17 @@
     return f
 end
 
+@inline function sum_pairwise_forces_λ(inters, atom_i, atom_j, ::Val{F}, special, coord_i, coord_j,
+                                     boundary, vel_i, vel_j, step_n) where F
+    dr = vector(coord_i, coord_j, boundary)
+    f_tuple = ntuple(length(inters)) do inter_type_i
+        force_λ_gpu(inters[inter_type_i], dr, atom_i, atom_j, F, special, coord_i, coord_j, boundary,
+                  vel_i, vel_j, step_n)
+    end
+    f = sum(f_tuple)
+    return f
+end
+
 @inline function sum_pairwise_potentials(inters, atom_i, atom_j, ::Val{E}, special, coord_i, coord_j,
                                          boundary, vel_i, vel_j, step_n) where E
     dr = vector(coord_i, coord_j, boundary)
@@ -94,12 +105,12 @@ end
 function specific_forces_gpu!(fs_mat, vir, inter_list::InteractionList1Atoms,
                               coords::AbstractArray{SVector{D, C}}, velocities, atoms, boundary,
                               ::Val{needs_vir}, step_n, force_units,
-                              ::Val{T}) where {D, C, needs_vir, T}
+                              ::Val{T}, ::Val{grad_lambda}) where {D, C, needs_vir, T, grad_lambda}
     backend = get_backend(coords)
     n_threads_gpu = gpu_threads_specific(length(inter_list))
     kernel! = specific_force_1_atoms_kernel!(backend, n_threads_gpu)
     kernel!(fs_mat, vir, coords, velocities, atoms, boundary, step_n, inter_list.is,
-            inter_list.inters, inter_list.data, Val(needs_vir), Val(D), Val(force_units);
+            inter_list.inters, inter_list.data, Val(needs_vir), Val(D), Val(force_units), Val(grad_lambda);
             ndrange=length(inter_list))
     return fs_mat
 end
@@ -107,65 +118,70 @@ end
 function specific_forces_gpu!(fs_mat, vir, inter_list::InteractionList2Atoms,
                               coords::AbstractArray{SVector{D, C}}, velocities, atoms, boundary,
                               ::Val{needs_vir}, step_n, force_units,
-                              ::Val{T}) where {D, C, T, needs_vir}
+                              ::Val{T}, ::Val{grad_lambda}) where {D, C, T, needs_vir, grad_lambda}
     backend = get_backend(coords)
     n_threads_gpu = gpu_threads_specific(length(inter_list))
     kernel! = specific_force_2_atoms_kernel!(backend, n_threads_gpu)
     kernel!(fs_mat, vir, coords, velocities, atoms, boundary, step_n, inter_list.is,
             inter_list.js, inter_list.inters, inter_list.data, Val(needs_vir), Val(D),
-            Val(force_units); ndrange=length(inter_list))
+            Val(force_units), Val(grad_lambda); ndrange=length(inter_list))
     return fs_mat
 end
 
 function specific_forces_gpu!(fs_mat, vir, inter_list::InteractionList3Atoms,
                               coords::AbstractArray{SVector{D, C}}, velocities, atoms, boundary,
                               ::Val{needs_vir}, step_n, force_units,
-                              ::Val{T}) where {D, C, needs_vir, T}
+                              ::Val{T}, ::Val{grad_lambda}) where {D, C, needs_vir, T, grad_lambda}
     backend = get_backend(coords)
     n_threads_gpu = gpu_threads_specific(length(inter_list))
     kernel! = specific_force_3_atoms_kernel!(backend, n_threads_gpu)
     kernel!(fs_mat, vir, coords, velocities, atoms, boundary, step_n, inter_list.is,
             inter_list.js, inter_list.ks, inter_list.inters, inter_list.data, Val(needs_vir),
-            Val(D), Val(force_units); ndrange=length(inter_list))
+            Val(D), Val(force_units), Val(grad_lambda); ndrange=length(inter_list))
     return fs_mat
 end
 
 function specific_forces_gpu!(fs_mat, vir, inter_list::InteractionList4Atoms,
                               coords::AbstractArray{SVector{D, C}}, velocities, atoms, boundary,
                               ::Val{needs_vir}, step_n, force_units,
-                              ::Val{T}) where {D, C, needs_vir, T}
+                              ::Val{T}, ::Val{grad_lambda}) where {D, C, needs_vir, T, grad_lambda}
     backend = get_backend(coords)
     n_threads_gpu = gpu_threads_specific(length(inter_list))
     kernel! = specific_force_4_atoms_kernel!(backend, n_threads_gpu)
     kernel!(fs_mat, vir, coords, velocities, atoms, boundary, step_n, inter_list.is,
             inter_list.js, inter_list.ks, inter_list.ls, inter_list.inters, inter_list.data,
-            Val(needs_vir), Val(D), Val(force_units); ndrange=length(inter_list))
+            Val(needs_vir), Val(D), Val(force_units), Val(grad_lambda); ndrange=length(inter_list))
     return fs_mat
 end
 
 function specific_forces_gpu!(fs_mat, vir, inter_list::InteractionList5Atoms,
                               coords::AbstractArray{SVector{D, C}}, velocities, atoms, boundary,
                               ::Val{needs_vir}, step_n, force_units,
-                              ::Val{T}) where {D, C, needs_vir, T}
+                              ::Val{T}, ::Val{grad_lambda}) where {D, C, needs_vir, T, grad_lambda}
     backend = get_backend(coords)
     n_threads_gpu = gpu_threads_specific(length(inter_list))
     kernel! = specific_force_5_atoms_kernel!(backend, n_threads_gpu)
     kernel!(fs_mat, vir, coords, velocities, atoms, boundary, step_n, inter_list.is,
             inter_list.js, inter_list.ks, inter_list.ls, inter_list.ms, inter_list.inters,
-            inter_list.data, Val(needs_vir), Val(D), Val(force_units); ndrange=length(inter_list))
+            inter_list.data, Val(needs_vir), Val(D), Val(force_units), Val(grad_lambda); ndrange=length(inter_list))
     return fs_mat
 end
 
 @kernel inbounds=true function specific_force_1_atoms_kernel!(fs_mat, vir, @Const(coords),
                                         @Const(velocities), @Const(atoms), boundary, step_n,
                                         @Const(is), @Const(inters), @Const(data), ::Val{needs_vir},
-                                        ::Val{D}, ::Val{F}) where {needs_vir, D, F}
+                                        ::Val{D}, ::Val{F}, ::Val{grad_lambda}) where {needs_vir, D, F, grad_lambda}
     inter_i = @index(Global, Linear)
 
     if inter_i <= length(is)
         i = is[inter_i]
-        fs = force_gpu(inters[inter_i], coords[i], boundary, atoms[i], F, velocities[i],
-                       step_n, data)
+        if grad_lambda
+            fs = force_λ_gpu(inters[inter_i], coords[i], boundary, atoms[i], F, velocities[i],
+                        step_n, data)
+        else
+            fs = force_gpu(inters[inter_i], coords[i], boundary, atoms[i], F, velocities[i],
+                        step_n, data)
+        end
         if unit(fs.f1[1]) != F
             error("wrong force unit returned, was expecting $F")
         end
@@ -186,12 +202,17 @@ end
                                         @Const(velocities), @Const(atoms), boundary, step_n,
                                         @Const(is), @Const(js), @Const(inters), @Const(data),
                                         ::Val{needs_vir}, ::Val{D},
-                                        ::Val{F}) where {needs_vir, D, F}
+                                        ::Val{F}, ::Val{grad_lambda}) where {needs_vir, D, F, grad_lambda}
     inter_i = @index(Global, Linear)
     if inter_i <= length(is)
         i, j = is[inter_i], js[inter_i]
-        fs = force_gpu(inters[inter_i], coords[i], coords[j], boundary, atoms[i], atoms[j], F,
-                       velocities[i], velocities[j], step_n, data)
+        if grad_lambda
+            fs = force_λ_gpu(inters[inter_i], coords[i], coords[j], boundary, atoms[i], atoms[j], F,
+                        velocities[i], velocities[j], step_n, data)
+        else
+            fs = force_gpu(inters[inter_i], coords[i], coords[j], boundary, atoms[i], atoms[j], F,
+                        velocities[i], velocities[j], step_n, data)
+        end
         if unit(fs.f1[1]) != F || unit(fs.f2[1]) != F
             error("wrong force unit returned, was expecting $F")
         end
@@ -214,15 +235,21 @@ end
                                         @Const(velocities), @Const(atoms), boundary, step_n,
                                         @Const(is), @Const(js), @Const(ks), @Const(inters),
                                         @Const(data), ::Val{needs_vir}, ::Val{D},
-                                        ::Val{F}) where {needs_vir, D, F}
+                                        ::Val{F}, ::Val{grad_lambda}) where {needs_vir, D, F, grad_lambda}
     inter_i = @index(Global, Linear)
     FT = eltype(fs_mat)
 
     if inter_i <= length(is)
         i, j, k = is[inter_i], js[inter_i], ks[inter_i]
-        fs = force_gpu(inters[inter_i], coords[i], coords[j], coords[k], boundary, atoms[i],
-                       atoms[j], atoms[k], F, velocities[i], velocities[j], velocities[k],
-                       step_n, data)
+        if grad_lambda
+            fs = force_λ_gpu(inters[inter_i], coords[i], coords[j], coords[k], boundary, atoms[i],
+                        atoms[j], atoms[k], F, velocities[i], velocities[j], velocities[k],
+                        step_n, data)
+        else
+            fs = force_gpu(inters[inter_i], coords[i], coords[j], coords[k], boundary, atoms[i],
+                        atoms[j], atoms[k], F, velocities[i], velocities[j], velocities[k],
+                        step_n, data)
+        end
         if unit(fs.f1[1]) != F || unit(fs.f2[1]) != F || unit(fs.f3[1]) != F
             error("wrong force unit returned, was expecting $F")
         end
@@ -249,16 +276,21 @@ end
                                         @Const(velocities), @Const(atoms), boundary, step_n,
                                         @Const(is), @Const(js), @Const(ks), @Const(ls),
                                         @Const(inters), @Const(data), ::Val{needs_vir}, ::Val{D},
-                                        ::Val{F}) where {needs_vir, D, F}
+                                        ::Val{F}, ::Val{grad_lambda}) where {needs_vir, D, F, grad_lambda}
     inter_i = @index(Global, Linear)
     FT = eltype(fs_mat)
 
     if inter_i <= length(is)
         i, j, k, l = is[inter_i], js[inter_i], ks[inter_i], ls[inter_i]
-
-        fs = force_gpu(inters[inter_i], coords[i], coords[j], coords[k], coords[l], boundary,
-                       atoms[i], atoms[j], atoms[k], atoms[l], F, velocities[i], velocities[j],
-                       velocities[k], velocities[l], step_n, data)
+        if grad_lambda
+            fs = force_λ_gpu(inters[inter_i], coords[i], coords[j], coords[k], coords[l], boundary,
+                        atoms[i], atoms[j], atoms[k], atoms[l], F, velocities[i], velocities[j],
+                        velocities[k], velocities[l], step_n, data)
+        else
+            fs = force_gpu(inters[inter_i], coords[i], coords[j], coords[k], coords[l], boundary,
+                        atoms[i], atoms[j], atoms[k], atoms[l], F, velocities[i], velocities[j],
+                        velocities[k], velocities[l], step_n, data)
+        end
         if unit(fs.f1[1]) != F || unit(fs.f2[1]) != F || unit(fs.f3[1]) != F || unit(fs.f4[1]) != F
             error("wrong force unit returned, was expecting $F")
         end
@@ -289,16 +321,27 @@ end
                                         @Const(velocities), @Const(atoms), boundary, step_n,
                                         @Const(is), @Const(js), @Const(ks), @Const(ls), @Const(ms),
                                         @Const(inters), @Const(data), ::Val{needs_vir}, ::Val{D},
-                                        ::Val{F}) where {needs_vir, D, F}
+                                        ::Val{F}, ::Val{grad_lambda}) where {needs_vir, D, F, grad_lambda}
     inter_i = @index(Global, Linear)
     FT = eltype(fs_mat)
 
     if inter_i <= length(is)
         i, j, k, l, m = is[inter_i], js[inter_i], ks[inter_i], ls[inter_i], ms[inter_i]
-
-        fs = force_gpu(inters[inter_i], coords[i], coords[j], coords[k], coords[l], coords[m],
-                       boundary, atoms[i], atoms[j], atoms[k], atoms[l], atoms[m], F, velocities[i],
-                       velocities[j], velocities[k], velocities[l], velocities[m], step_n, data)
+        if grad_lambda && isa(inters[inter_i], CMAPTorsion_L)
+            λf = force_λ_gpu(inters[inter_i], coords[i], coords[j], coords[k], coords[l], coords[m],
+                        boundary, atoms[i], atoms[j], atoms[k], atoms[l], atoms[m], F, velocities[i],
+                        velocities[j], velocities[k], velocities[l], velocities[m], step_n, data)
+            Atomix.@atomic fs_mat[1, inters[inter_i].λ_id] += λf
+            tmp = zero_pairwise_force(coords[i], F)
+            fs = SpecificForce5Atoms(tmp,tmp,tmp,tmp,tmp)
+        elseif grad_lambda
+            tmp = zero_pairwise_force(coords[i], F)
+            fs = SpecificForce5Atoms(tmp,tmp,tmp,tmp,tmp)
+        else
+            fs = force_gpu(inters[inter_i], coords[i], coords[j], coords[k], coords[l], coords[m],
+                        boundary, atoms[i], atoms[j], atoms[k], atoms[l], atoms[m], F, velocities[i],
+                        velocities[j], velocities[k], velocities[l], velocities[m], step_n, data)
+        end
         if unit(fs.f1[1]) != F || unit(fs.f2[1]) != F || unit(fs.f3[1]) != F ||
                         unit(fs.f4[1]) != F || unit(fs.f5[1]) != F
             error("wrong force unit returned, was expecting $F")

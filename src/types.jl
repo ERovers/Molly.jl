@@ -11,6 +11,7 @@ export
     Atom,
     mass,
     charge,
+    lambda,
     AtomData,
     MolecularTopology,
     NeighborList,
@@ -428,6 +429,142 @@ function inject_interaction_list(inter::InteractionList5Atoms, params_dic, AT)
                           inter.types, inter.data)
 end
 
+function merge(interactions)
+    interactions_final = []
+    cache = []
+    for (i,inter) in enumerate(interactions)
+        i in cache && continue
+        idx = findall(x->typeof(x)==typeof(inter), interactions)
+        inters = interactions[idx[1]]
+        for j in idx[2:end]
+            inters = append!(inters,interactions[j])
+        end
+        push!(interactions_final, inters)
+        append!(cache,idx)
+    end
+    return interactions_final
+end
+
+function Base.append!(il1::InteractionList1Atoms{I, T, D}, il2::InteractionList1Atoms{I, T, D}) where {I, T, D}
+    return InteractionList1Atoms(
+        append!(il1.is,il2.is),
+        append!(il1.inters,il2.inters),
+        append!(il1.types,il2.types),
+        nothing,
+    )
+end
+
+function Base.append!(il1::InteractionList2Atoms{I, T, D}, il2::InteractionList2Atoms{I, T, D}) where {I, T, D}
+    return InteractionList2Atoms(
+        append!(il1.is,il2.is),
+        append!(il1.js,il2.js),
+        append!(il1.inters,il2.inters),
+        append!(il1.types,il2.types),
+        nothing
+    )
+end
+
+function Base.append!(il1::InteractionList3Atoms{I, T, D}, il2::InteractionList3Atoms{I, T, D}) where {I, T, D}
+    return InteractionList3Atoms(
+        append!(il1.is,il2.is),
+        append!(il1.js,il2.js),
+        append!(il1.ks,il2.ks),
+        append!(il1.inters,il2.inters),
+        append!(il1.types,il2.types),
+        nothing
+    )
+end
+
+function Base.append!(il1::InteractionList4Atoms{I, T, D}, il2::InteractionList4Atoms{I, T, D}) where {I, T, D}
+    return InteractionList4Atoms(
+        append!(il1.is,il2.is),
+        append!(il1.js,il2.js),
+        append!(il1.ks,il2.ks),
+        append!(il1.ls,il2.ls),
+        append!(il1.inters,il2.inters),
+        append!(il1.types,il2.types),
+        nothing
+    )
+end
+
+function Base.append!(il1::InteractionList5Atoms{I, T, D}, il2::InteractionList5Atoms{I, T, D}) where {I, T, D}
+    tmp_inters = il1.inters
+    cmaptorsion = typeof(il1.inters[1])
+    matrix = typeof(il1.data)
+    for inter in il2.inters
+        if isa(inter, CMAPTorsion)
+            push!(tmp_inters, cmaptorsion((4*tmp_inters[end].size*tmp_inters[end].size)+tmp_inters[end].index, inter.size, inter.λ, inter.res_num, inter.res_id))
+        elseif isa(inter, CMAPTorsion_L)
+            push!(tmp_inters, cmaptorsion((4*tmp_inters[end].size*tmp_inters[end].size)+tmp_inters[end].index, inter.size, inter.λ, inter.res_num, inter.res_id, inter.λ_id))
+        end
+    end
+    return InteractionList5Atoms(
+        append!(il1.is,il2.is),
+        append!(il1.js,il2.js),
+        append!(il1.ks,il2.ks),
+        append!(il1.ls,il2.ls),
+        append!(il1.ms,il2.ms),
+        tmp_inters,
+        append!(il1.types,il2.types),
+        vcat(il1.data,il2.data),
+    )
+end
+
+function to_device(il1::InteractionList1Atoms{I, T, D}, ::Type{AT}) where {I, T, D, AT}
+    return InteractionList1Atoms(
+        to_device(il1.is, AT),
+        to_device(il1.inters,AT),
+        il1.types,
+        nothing,
+    )
+end
+
+function to_device(il1::InteractionList2Atoms{I, T, D}, ::Type{AT}) where {I, T, D, AT}
+    return InteractionList2Atoms(
+        to_device(il1.is, AT),
+        to_device(il1.js, AT),
+        to_device(il1.inters,AT),
+        il1.types,
+        nothing,
+    )
+end
+
+function to_device(il1::InteractionList3Atoms{I, T, D}, ::Type{AT}) where {I, T, D, AT}
+    return InteractionList3Atoms(
+        to_device(il1.is, AT),
+        to_device(il1.js, AT),
+        to_device(il1.ks, AT),
+        to_device(il1.inters,AT),
+        il1.types,
+        nothing,
+    )
+end
+
+function to_device(il1::InteractionList4Atoms{I, T, D}, ::Type{AT}) where {I, T, D, AT}
+    return InteractionList4Atoms(
+        to_device(il1.is, AT),
+        to_device(il1.js, AT),
+        to_device(il1.ks, AT),
+        to_device(il1.ls, AT),
+        to_device(il1.inters,AT),
+        il1.types,
+        nothing,
+    )
+end
+
+function to_device(il1::InteractionList5Atoms{I, T, D}, ::Type{AT}) where {I, T, D, AT}
+    return InteractionList5Atoms(
+        to_device(il1.is, AT),
+        to_device(il1.js, AT),
+        to_device(il1.ks, AT),
+        to_device(il1.ls, AT),
+        to_device(il1.ms, AT),
+        to_device(il1.inters,AT),
+        il1.types,
+        to_device(il1.data,AT),
+    )
+end
+
 """
     Atom(; <keyword arguments>)
 
@@ -460,7 +597,7 @@ The types used should be bits types if the GPU is going to be used.
     σ::S = 0.0u"nm"
     ϵ::E = 0.0u"kJ * mol^-1"
     λ::L = 1.0
-    alch_role::Int = CoreRole
+    alch_role::Int = EnvRole
 end
 
 function Base.zero(::Atom{T, M, C, S, E, L}) where {T, M, C, S, E, L}
@@ -495,6 +632,7 @@ end
 The partial charge of an [`Atom`](@ref).
 """
 charge(atom) = atom.charge
+lambda(atom) = atom.λ
 
 """
     mass(atom)

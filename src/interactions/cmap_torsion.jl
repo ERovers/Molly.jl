@@ -1,4 +1,6 @@
-export CMAPTorsion
+export 
+    CMAPTorsion,
+    CMAPTorsion_L
 
 """
     CMAPTorsion(index, size)
@@ -341,4 +343,130 @@ end
     pe = da*pe + ((data[idx+1,4]*db + data[idx+1,3])*db + data[idx+1,2])*db + data[idx+1,1]
     pe = da*pe + ((data[idx,4]*db + data[idx,3])*db + data[idx,2])*db + data[idx,1]
     return pe
+end
+
+"""
+    CMAPTorsion_L(index, size, λ, res_num, res_id)
+
+Torsional correction map (CMAP) for sets of five atoms, for example protein ϕ and ψ
+backbone torsion angles scaled by λ. ~~ ADD MORE DOCUMENTATION ABOUT IT ~~
+
+The CMAP data is stored in the `data` field of the associated [`InteractionList5Atoms`](@ref).
+
+Only compatible with 3D systems.
+"""
+
+@kwdef struct CMAPTorsion_L{I,L}
+    index::I
+    size::I
+    λ::L
+    res_num::I
+    res_id::I
+    λ_id::I
+end
+
+Base.zero(::CMAPTorsion_L) = CMAPTorsion_L(index=0, size=0, λ=0.0, res_num=0, res_id=0, λ_id=0)
+
+function dict_get(dic, key, inter::CMAPTorsion_L, default)
+    if haskey(dic, key)
+        return dic[key][inter.res_id]
+    else
+        return default
+    end
+end
+
+function inject_interaction(inter::CMAPTorsion_L{I,L}, inter_type, params_dic) where {I,L}
+    key_prefix = "residue_" * string(inter.res_num) * "_λ"
+    return CMAPTorsion_L{I,L}(
+        inter.index,
+        inter.size,
+        dict_get(params_dic, key_prefix, inter, inter.λ),
+        inter.res_num,
+        inter.res_id,
+        inter.λ_id,
+    )
+end
+
+@inline function force(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
+                       coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, 
+                       atoms_m, force_units, velocities_i, velocities_j,
+                       velocities_k, velocities_l, velocities_m, step_n, data)
+    v0a, v1a, v2a, cp0a, cp1a, v0b, v1b, v2b, cp0b, cp1b, delta, idx, da, db = cmap_angles(
+                        inter, coords_i, coords_j, coords_k, coords_l, coords_m, boundary)
+
+    # Evaluate the spline to determine the energy and gradients
+    dEdA = (3*data[idx+3,4]*da + 2*data[idx+2,4])*da + data[idx+1,4]
+    dEdB = (3*data[idx+3,4]*db + 2*data[idx+3,3])*db + data[idx+3,2]
+    dEdA = db*dEdA + (3*data[idx+3,3]*da + 2*data[idx+2,3])*da + data[idx+1,3]
+    dEdB = da*dEdB + (3*data[idx+2,4]*db + 2*data[idx+2,3])*db + data[idx+2,2]
+    dEdA = db*dEdA + (3*data[idx+3,2]*da + 2*data[idx+2,2])*da + data[idx+1,2]
+    dEdB = da*dEdB + (3*data[idx+1,4]*db + 2*data[idx+1,3])*db + data[idx+1,2]
+    dEdA = db*dEdA + (3*data[idx+3,1]*da + 2*data[idx+2,1])*da + data[idx+1,1]
+    dEdB = da*dEdB + (3*data[idx,4]*db + 2*data[idx,3])*db + data[idx,2]
+    dEdA /= delta
+    dEdB /= delta
+
+    # Calculate the force to the first torsion
+    normCross1 = dot(cp0a, cp0a)
+    normSqrBC = dot(v1a, v1a)
+    normBC = sqrt(normSqrBC)
+    normCross2 = dot(cp1a, cp1a)
+    dp = inv(normSqrBC)
+    ff = ((-dEdA*normBC)/normCross1, dot(v0a, v1a)*dp, dot(v2a, v1a)*dp, (dEdA*normBC)/normCross2)
+    force1 = ff[1]*cp0a
+    force4 = ff[4]*cp1a
+    d = ff[2]*force1 - ff[3]*force4
+    force2 =  d-force1
+    force3 = -d-force4
+
+    # Calculate the force to the second torsion
+    normCross1 = dot(cp0b, cp0b)
+    normSqrBC = dot(v1b, v1b)
+    normBC = sqrt(normSqrBC)
+    normCross2 = dot(cp1b, cp1b)
+    dp = inv(normSqrBC)
+    ff = ((-dEdB*normBC)/normCross1, dot(v0b, v1b)*dp, dot(v2b, v1b)*dp, (dEdB*normBC)/normCross2)
+    force5 = ff[1]*cp0b
+    force8 = ff[4]*cp1b
+    d = ff[2]*force5 - ff[3]*force8
+    force6 =  d-force5
+    force7 = -d-force8
+
+    # Apply the forces to the atoms
+    fi = force1
+    fj = force2 + force5
+    fk = force3 + force6
+    fl = force4 + force7
+    fm =          force8
+    return SpecificForce5Atoms(inter.λ*fi, inter.λ*fj, inter.λ*fk, inter.λ*fl, inter.λ*fm)
+end
+
+@inline function potential_energy(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
+                    coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, atoms_m, energy_units,
+                    velocities_i, velocities_j, velocities_k, velocities_l, velocities_m,
+                    step_n, data)
+    v0a, v1a, v2a, cp0a, cp1a, v0b, v1b, v2b, cp0b, cp1b, delta, idx, da, db = cmap_angles(
+                        inter, coords_i, coords_j, coords_k, coords_l, coords_m, boundary)
+
+    # Spline with coefficients
+    pe = ((data[idx+3,4]*db + data[idx+3,3])*db + data[idx+3,2])*db + data[idx+3,1]
+    pe = da*pe + ((data[idx+2,4]*db + data[idx+2,3])*db + data[idx+2,2])*db + data[idx+2,1]
+    pe = da*pe + ((data[idx+1,4]*db + data[idx+1,3])*db + data[idx+1,2])*db + data[idx+1,1]
+    pe = da*pe + ((data[idx,4]*db + data[idx,3])*db + data[idx,2])*db + data[idx,1]
+    return inter.λ*pe
+end
+
+@inline function force_λ(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
+                       coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, 
+                       atoms_m, force_units, velocities_i, velocities_j,
+                       velocities_k, velocities_l, velocities_m, step_n, data)
+    v0a, v1a, v2a, cp0a, cp1a, v0b, v1b, v2b, cp0b, cp1b, delta, idx, da, db = cmap_angles(
+                        inter, coords_i, coords_j, coords_k, coords_l, coords_m, boundary)
+
+    # Spline with coefficients
+    pe = ((data[idx+3,4]*db + data[idx+3,3])*db + data[idx+3,2])*db + data[idx+3,1]
+    pe = da*pe + ((data[idx+2,4]*db + data[idx+2,3])*db + data[idx+2,2])*db + data[idx+2,1]
+    pe = da*pe + ((data[idx+1,4]*db + data[idx+1,3])*db + data[idx+1,2])*db + data[idx+1,1]
+    pe = da*pe + ((data[idx,4]*db + data[idx,3])*db + data[idx,2])*db + data[idx,1]
+    return ustrip(pe)
 end

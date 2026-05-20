@@ -4,21 +4,18 @@
 # Julia version: 1.11
 
 export
-    lambda4,
-    Atom_L,
-    CMAPTorsion_L,
     print_interaction,
     kabsch_AA,
     step_logger,
-    lambda
+    dict_reverse
 
-function print_interaction(interaction, start_idx=1, end_idx=1)
+function print_interaction(interaction; start_idx=1, end_idx=1)
     field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
     if end_idx==1
-        end_idx = length(field_names)
+        end_idx = length(interaction)
     end
     for (i,ft) in enumerate(zip(field_names[1:end-1]...))
-        if i>start_idx && i<end_idx
+        if i>=start_idx && i<=end_idx
             n_fields = length(ft)
             println("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]))
             println(ft[end-1])
@@ -31,7 +28,7 @@ function print_interaction(interaction, indexes)
     for (i,ft) in enumerate(zip(field_names[1:end-1]...))
         if any(x-> x in indexes, ft[1:end-2])
             n_fields = length(ft)
-            println("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]))
+            println("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]), " -> $(ft[end-1])")
         end
     end
 end
@@ -62,6 +59,16 @@ function step_logger(sys, buffers, neighbors, step_n::Integer; n_threads::Intege
     end
 end
 
+function dict_reverse(dic::AbstractDict)
+    ks = collect(keys(dic))
+    vs = collect(values(dic))
+    new_dic = Dict()
+    for (k,v) in zip(ks,vs)
+        new_dic[v] = k
+    end
+    return new_dic
+end
+
 function kabsch_AA(P,Q)
     P = ustrip(P')
     Q = ustrip(Q')
@@ -80,175 +87,6 @@ function kabsch_AA(P,Q)
     
     t = Q[:,1] - (rot * P)[:,1]
     return rot, t
-end
-
-@inline function lambda4(l1, l2, l3, l4)
-    minλ = min(min(l1, l2), min(l3, l4))
-    all_equal = (l1 == l2) & (l2 == l3) & (l3 == l4)
-    return ifelse(all_equal, one(l1), minλ)
-end
-
-function lambda_mix(inter, atom_i, atom_j)
-    if atom_i.λ == one(atom_i.λ)
-        return atom_j.λ
-    elseif atom_j.λ == one(atom_j.λ)
-        return atom_i.λ
-    end
-    # return lorentz_λ_mixing(atom_i, atom_j)
-    return atom_i.λ * atom_j.λ
-end
-
-
-function charmm_pdb_file(data_dir, filename, filename2)
-    file_content = readlines(joinpath(data_dir,filename))
-    final_lines = []
-    current_res = ""
-    current_idx = 0
-    index = 1
-    NME_flag = false
-    for line in file_content
-        if occursin("REMARK", line)
-            push!(final_lines, line)
-        elseif occursin("CRYST", line)
-            push!(final_lines, line)
-        elseif occursin("END", line)
-            push!(final_lines, line)
-        elseif occursin("Y", line[13:17])
-            len = 78-length(line)
-            push!(final_lines, line[1:17]*"ACE"*line[21:22]*lpad(string(1), 4)*line[27:end])
-        elseif occursin("T", line[13:17])
-            NME_flag = true
-            len = 78-length(line)
-            if parse(Int, line[23:27])==current_idx
-                index += 1
-                current_idx -= 1
-            end
-            push!(final_lines, line[1:17]*"NME"*line[21:22]*lpad(string(index), 4)*line[27:end])
-        elseif occursin("TER", line)
-            push!(final_lines, line[1:22]*lpad(string(index), 4))
-        elseif occursin("HOH", line)
-            NME_flag = false
-            len = 78-length(line)
-            if (parse(Int, line[23:27])!=current_idx || line[18:20]!=current_res)
-                index += 1
-                current_idx = parse(Int, line[23:27])
-                current_res = line[18:20]
-            end
-            push!(final_lines, line[1:22]*lpad(string(index), 4)*line[27:end])
-        else
-            len = 78-length(line)
-            if (parse(Int, line[23:27])!=current_idx || line[18:20]!=current_res) && !NME_flag
-                index += 1
-                current_idx = parse(Int, line[23:27])
-                current_res = line[18:20]
-            end
-            if !NME_flag
-                push!(final_lines, line[1:22]*lpad(string(index), 4)*line[27:end])
-            else
-                push!(final_lines, line[1:17]*"NME"*line[21:22]*lpad(string(index), 4)*line[27:end])
-            end
-        end
-    end
-    
-    file = open(joinpath(data_dir,filename2), "w")
-    for line in final_lines
-        println(file, line)
-    end
-    close(file)
-end
-
-"""
-    Atom_L(; <keyword arguments>)
-
-Similar to Atom Type, but with λ scaling for alchemical transformations.
-
-# Arguments
-- `index::Int`: the index of the atom in the system.
-- `atom_type::T`: the type of the atom.
-- `mass::M=1.0u"g/mol"`: the mass of the atom.
-- `charge::C=0.0`: the charge of the atom, used for electrostatic interactions.
-- `σ::S=0.0u"nm"`: the Lennard-Jones finite distance at which the inter-particle
-    potential is zero.
-- `ϵ::E=0.0u"kJ * mol^-1"`: the Lennard-Jones depth of the potential well.
-- `λ::L=1.0: the λ scaling factor (if λ is 1.0, all potentials are regular energy potentials)
-"""
-
-@kwdef struct Atom_L{T, M, C, S, E, L}
-    index::Int = 1
-    atom_type::T = 1
-    mass::M = 1.0u"g/mol"
-    charge::C = 0.0
-    σ::S = 0.0u"nm"
-    ϵ::E = 0.0u"kJ * mol^-1"
-    σ14::S = 0.0u"nm"
-    ϵ14::E = 0.0u"kJ * mol^-1"
-    λ::L = 1.0
-    charge_type::T = 0
-    solvent::T = 0
-end
-
-lambda(atom) = atom.λ
-
-function Base.show(io::IO, a::Atom_L)
-    print(io, "Atom with index=", a.index, ", atom_type=", a.atom_type, ", mass=", mass(a),
-          ", charge=", charge(a), ", σ=", a.σ, ", ϵ=", a.ϵ, ", λ=", a.λ, ", charge_type=", a.charge_type, ", solvent=", a.solvent)
-end
-
-function dict_get(dic, key, atom::Atom_L, at_data, default)
-    if haskey(dic, key)
-        if at_data.res_name!="ALC"
-            return dic[key][at_data.res_id]
-        else
-            return default
-        end
-    else
-        return default
-    end
-end
-
-function inject_atom(at::Atom_L, at_data, params_dic)
-    key_prefix = "residue_" * string(at_data.res_number) * "_λ"
-    return Atom_L(
-                at.index,
-                at.atom_type,
-                at.mass,
-                at.charge, 
-                at.σ,
-                at.ϵ,
-                at.σ14,
-                at.ϵ14,
-                dict_get(params_dic, key_prefix, at, at_data, at.λ),
-                at.charge_type,
-                at.solvent,
-            )
-end
-
-"""
-    AtomData_L(; atom_type="?", atom_name="?", res_number=1, res_name="???", res_id=1,
-             chain_id="A", element="?", hetero_atom=false)
-
-Data associated with an atom.
-
-Storing this separately allows the [`Atom`](@ref) types to be bits types and hence
-work on the GPU.
-"""
-@kwdef struct AtomData_L
-    atom_type::String = "?"
-    atom_name::String = "?"
-    res_number::Int = 1
-    res_name::String = "???"
-    res_id::Int = 1
-    chain_id::String = "A"
-    element::String = "?"
-    hetero_atom::Bool = false
-end
-
-function BioStructures.AtomRecord(at_data::AtomData_L, i, coord)
-    return BioStructures.AtomRecord(
-        at_data.hetero_atom, i, at_data.atom_name, ' ', at_data.res_name,
-        at_data.chain_id, at_data.res_number, ' ', coord, 1.0, 0.0,
-        at_data.element == "?" ? "  " : at_data.element, "  "
-    )
 end
 
 # Rotamer search
@@ -315,198 +153,6 @@ function count_clashes(moving_coords::Vector{Any}, static_coords; cutoff::Float6
         end
     end
     return clash_count
-end
-
-# Shortcuts
-function lj_λ_less_one_shortcut(atom_i, atom_j)
-    return iszero_value(atom_i.ϵ) || iszero_value(atom_j.ϵ) ||
-           iszero_value(atom_i.σ) || iszero_value(atom_j.σ) ||
-           (atom_i.λ<1) || (atom_j.λ<1)
-end
-
-function lj_λ_one_shortcut(atom_i, atom_j)
-    return ( iszero_value(atom_i.ϵ) || iszero_value(atom_j.ϵ) ||
-           iszero_value(atom_i.σ) || iszero_value(atom_j.σ) ) ||
-           ( (atom_i.λ==1) && (atom_j.λ==1) )
-end
-
-function coul_zero_shortcut(atom_i, atom_j)
-    return iszero_value(atom_i.charge) || iszero_value(atom_j.charge)
-end
-
-function coul_λ_less_one_shortcut(atom_i, atom_j)
-    return iszero_value(atom_i.charge) || iszero_value(atom_j.charge) ||
-           (atom_i.λ<1) || (atom_j.λ<1)
-end
-
-function coul_λ_one_shortcut(atom_i, atom_j)
-    return ( iszero_value(atom_i.charge) || iszero_value(atom_j.charge) ) ||
-           ( (atom_i.λ==1) && (atom_j.λ==1) )
-end
-
-# Torsion functions
-@inline function force(d::PeriodicTorsion, coords_i, coords_j, coords_k,
-                       coords_l, boundary, atom_i::Atom_L, atom_j::Atom_L, 
-                       atom_k::Atom_L, atom_l::Atom_L, args...)
-    ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ = periodic_torsion_vectors(
-                                        coords_i, coords_j, coords_k, coords_l, boundary)
-    fs = sum(zip(d.periodicities, d.phases, d.ks)) do (periodicity, phase, k)
-        fi, fj, fk, fl = periodic_torsion_force(periodicity, phase, k, ab, bc, cd, cross_ab_bc,
-                                                cross_bc_cd, bc_norm, θ)
-        
-        if atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ) && atom_k.λ<one(atom_k.λ) && atom_l.λ<one(atom_l.λ)
-            l = one(atom_i.λ)
-        else
-            l = minimum((atom_i.λ,atom_j.λ,atom_k.λ,atom_l.λ))
-        end
-    
-        return SpecificForce4Atoms(l*fi, l*fj, l*fk, l*fl)
-    end
-    return fs
-end
-
-@inline function force_gpu(d::PeriodicTorsion{N}, coords_i, coords_j, coords_k,
-                           coords_l, boundary, atom_i::Atom_L, atom_j::Atom_L, atom_k::Atom_L, 
-                           atom_l::Atom_L, args...) where N
-    ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ = periodic_torsion_vectors(
-                                        coords_i, coords_j, coords_k, coords_l, boundary)
-    fi_sum, fj_sum, fk_sum, fl_sum = periodic_torsion_force(d.periodicities[1], d.phases[1],
-                                        d.ks[1], ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
-    
-    if atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ) && atom_k.λ<one(atom_k.λ) && atom_l.λ<one(atom_l.λ)
-        l = one(atom_i.λ)
-    else
-        l = minimum((atom_i.λ,atom_j.λ,atom_k.λ,atom_l.λ))
-    end
-    
-    for i in 2:N
-        fi, fj, fk, fl = periodic_torsion_force(d.periodicities[i], d.phases[i], d.ks[i], ab, bc,
-                                                cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
-        fi_sum += fi
-        fj_sum += fj
-        fk_sum += fk
-        fl_sum += fl
-    end
-    return SpecificForce4Atoms(l*fi_sum,l*fj_sum, l*fk_sum, l*fl_sum)
-end
-
-@inline function potential_energy(d::PeriodicTorsion{N}, coords_i, coords_j, coords_k,
-                                  coords_l, boundary, atom_i::Atom_L, atom_j::Atom_L,
-                                  atom_k::Atom_L, atom_l::Atom_L, args...) where N
-    θ = torsion_angle(coords_i, coords_j, coords_k, coords_l, boundary)
-    k1 = d.ks[1]
-    E = k1 + k1 * cos((d.periodicities[1] * θ) - d.phases[1])
-
-    if atom_i.λ<one(atom_i.λ) && atom_j.λ<one(atom_j.λ) && atom_k.λ<one(atom_k.λ) && atom_l.λ<one(atom_l.λ)
-        l = one(atom_i.λ)
-    else
-        l = minimum((atom_i.λ,atom_j.λ,atom_k.λ,atom_l.λ))
-    end
-    
-    for i in 2:N
-        k = d.ks[i]
-        E += k + k * cos((d.periodicities[i] * θ) - d.phases[i])
-    end
-    return l * E
-end
-
-# CMAPtorsion
-@kwdef struct CMAPTorsion_L{I,L}
-    index::I
-    size::I
-    λ::L
-    res_num::I
-    res_id::I
-end
-
-Base.zero(::CMAPTorsion_L) = CMAPTorsion_L(index=0, size=0, λ=0.0, res_num=0, res_id=0)
-
-function dict_get(dic, key, inter::CMAPTorsion_L, default)
-    if haskey(dic, key)
-        return dic[key][inter.res_id]
-    else
-        return default
-    end
-end
-
-function inject_interaction(inter::CMAPTorsion_L{I,L}, inter_type, params_dic) where {I,L}
-    key_prefix = "residue_" * string(inter.res_num) * "_λ"
-    return CMAPTorsion_L{I,L}(
-        inter.index,
-        inter.size,
-        dict_get(params_dic, key_prefix, inter, inter.λ),
-        inter.res_num,
-        inter.res_id,
-    )
-end
-
-@inline function force(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
-                       coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, 
-                       atoms_m, force_units, velocities_i, velocities_j,
-                       velocities_k, velocities_l, velocities_m, step_n, data)
-    v0a, v1a, v2a, cp0a, cp1a, v0b, v1b, v2b, cp0b, cp1b, delta, idx, da, db = cmap_angles(
-                        inter, coords_i, coords_j, coords_k, coords_l, coords_m, boundary)
-
-    # Evaluate the spline to determine the energy and gradients
-    dEdA = (3*data[idx+3,4]*da + 2*data[idx+2,4])*da + data[idx+1,4]
-    dEdB = (3*data[idx+3,4]*db + 2*data[idx+3,3])*db + data[idx+3,2]
-    dEdA = db*dEdA + (3*data[idx+3,3]*da + 2*data[idx+2,3])*da + data[idx+1,3]
-    dEdB = da*dEdB + (3*data[idx+2,4]*db + 2*data[idx+2,3])*db + data[idx+2,2]
-    dEdA = db*dEdA + (3*data[idx+3,2]*da + 2*data[idx+2,2])*da + data[idx+1,2]
-    dEdB = da*dEdB + (3*data[idx+1,4]*db + 2*data[idx+1,3])*db + data[idx+1,2]
-    dEdA = db*dEdA + (3*data[idx+3,1]*da + 2*data[idx+2,1])*da + data[idx+1,1]
-    dEdB = da*dEdB + (3*data[idx,4]*db + 2*data[idx,3])*db + data[idx,2]
-    dEdA /= delta
-    dEdB /= delta
-
-    # Calculate the force to the first torsion
-    normCross1 = dot(cp0a, cp0a)
-    normSqrBC = dot(v1a, v1a)
-    normBC = sqrt(normSqrBC)
-    normCross2 = dot(cp1a, cp1a)
-    dp = inv(normSqrBC)
-    ff = ((-dEdA*normBC)/normCross1, dot(v0a, v1a)*dp, dot(v2a, v1a)*dp, (dEdA*normBC)/normCross2)
-    force1 = ff[1]*cp0a
-    force4 = ff[4]*cp1a
-    d = ff[2]*force1 - ff[3]*force4
-    force2 =  d-force1
-    force3 = -d-force4
-
-    # Calculate the force to the second torsion
-    normCross1 = dot(cp0b, cp0b)
-    normSqrBC = dot(v1b, v1b)
-    normBC = sqrt(normSqrBC)
-    normCross2 = dot(cp1b, cp1b)
-    dp = inv(normSqrBC)
-    ff = ((-dEdB*normBC)/normCross1, dot(v0b, v1b)*dp, dot(v2b, v1b)*dp, (dEdB*normBC)/normCross2)
-    force5 = ff[1]*cp0b
-    force8 = ff[4]*cp1b
-    d = ff[2]*force5 - ff[3]*force8
-    force6 =  d-force5
-    force7 = -d-force8
-
-    # Apply the forces to the atoms
-    fi = force1
-    fj = force2 + force5
-    fk = force3 + force6
-    fl = force4 + force7
-    fm =          force8
-    return SpecificForce5Atoms(inter.λ*fi, inter.λ*fj, inter.λ*fk, inter.λ*fl, inter.λ*fm)
-end
-
-@inline function potential_energy(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
-                    coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, atoms_m, energy_units,
-                    velocities_i, velocities_j, velocities_k, velocities_l, velocities_m,
-                    step_n, data)
-    v0a, v1a, v2a, cp0a, cp1a, v0b, v1b, v2b, cp0b, cp1b, delta, idx, da, db = cmap_angles(
-                        inter, coords_i, coords_j, coords_k, coords_l, coords_m, boundary)
-
-    # Spline with coefficients
-    pe = ((data[idx+3,4]*db + data[idx+3,3])*db + data[idx+3,2])*db + data[idx+3,1]
-    pe = da*pe + ((data[idx+2,4]*db + data[idx+2,3])*db + data[idx+2,2])*db + data[idx+2,1]
-    pe = da*pe + ((data[idx+1,4]*db + data[idx+1,3])*db + data[idx+1,2])*db + data[idx+1,1]
-    pe = da*pe + ((data[idx,4]*db + data[idx,3])*db + data[idx,2])*db + data[idx,1]
-    return inter.λ*pe
 end
 
 # Energy
@@ -596,137 +242,4 @@ end
     end
     
     return pe
-end
-
-# Interactions
-function merge(interactions)
-    interactions_final = []
-    cache = []
-    for (i,inter) in enumerate(interactions)
-        i in cache && continue
-        idx = findall(x->typeof(x)==typeof(inter), interactions)
-        inters = interactions[idx[1]]
-        for j in idx[2:end]
-            inters = append!(inters,interactions[j])
-        end
-        push!(interactions_final, inters)
-        append!(cache,idx)
-    end
-    return interactions_final
-end
-
-function Base.append!(il1::InteractionList1Atoms{I, T, D}, il2::InteractionList1Atoms{I, T, D}) where {I, T, D}
-    return InteractionList1Atoms(
-        append!(il1.is,il2.is),
-        append!(il1.inters,il2.inters),
-        append!(il1.types,il2.types),
-        nothing,
-    )
-end
-
-function Base.append!(il1::InteractionList2Atoms{I, T, D}, il2::InteractionList2Atoms{I, T, D}) where {I, T, D}
-    return InteractionList2Atoms(
-        append!(il1.is,il2.is),
-        append!(il1.js,il2.js),
-        append!(il1.inters,il2.inters),
-        append!(il1.types,il2.types),
-        nothing
-    )
-end
-
-function Base.append!(il1::InteractionList3Atoms{I, T, D}, il2::InteractionList3Atoms{I, T, D}) where {I, T, D}
-    return InteractionList3Atoms(
-        append!(il1.is,il2.is),
-        append!(il1.js,il2.js),
-        append!(il1.ks,il2.ks),
-        append!(il1.inters,il2.inters),
-        append!(il1.types,il2.types),
-        nothing
-    )
-end
-
-function Base.append!(il1::InteractionList4Atoms{I, T, D}, il2::InteractionList4Atoms{I, T, D}) where {I, T, D}
-    return InteractionList4Atoms(
-        append!(il1.is,il2.is),
-        append!(il1.js,il2.js),
-        append!(il1.ks,il2.ks),
-        append!(il1.ls,il2.ls),
-        append!(il1.inters,il2.inters),
-        append!(il1.types,il2.types),
-        nothing
-    )
-end
-
-function Base.append!(il1::InteractionList5Atoms{I, T, D}, il2::InteractionList5Atoms{I, T, D}) where {I, T, D}
-    tmp_inters = il1.inters
-    cmaptorsion = typeof(il1.inters[1])
-    matrix = typeof(il1.data)
-    for inter in il2.inters
-        push!(tmp_inters, cmaptorsion((4*tmp_inters[end].size*tmp_inters[end].size)+tmp_inters[end].index, inter.size, inter.λ, inter.res_num, inter.res_id))
-    end
-    return InteractionList5Atoms(
-        append!(il1.is,il2.is),
-        append!(il1.js,il2.js),
-        append!(il1.ks,il2.ks),
-        append!(il1.ls,il2.ls),
-        append!(il1.ms,il2.ms),
-        tmp_inters,
-        append!(il1.types,il2.types),
-        vcat(il1.data,il2.data),
-    )
-end
-
-function to_device(il1::InteractionList1Atoms{I, T, D}, ::Type{AT}) where {I, T, D, AT}
-    return InteractionList1Atoms(
-        to_device(il1.is, AT),
-        to_device(il1.inters,AT),
-        il1.types,
-        nothing,
-    )
-end
-
-function to_device(il1::InteractionList2Atoms{I, T, D}, ::Type{AT}) where {I, T, D, AT}
-    return InteractionList2Atoms(
-        to_device(il1.is, AT),
-        to_device(il1.js, AT),
-        to_device(il1.inters,AT),
-        il1.types,
-        nothing,
-    )
-end
-
-function to_device(il1::InteractionList3Atoms{I, T, D}, ::Type{AT}) where {I, T, D, AT}
-    return InteractionList3Atoms(
-        to_device(il1.is, AT),
-        to_device(il1.js, AT),
-        to_device(il1.ks, AT),
-        to_device(il1.inters,AT),
-        il1.types,
-        nothing,
-    )
-end
-
-function to_device(il1::InteractionList4Atoms{I, T, D}, ::Type{AT}) where {I, T, D, AT}
-    return InteractionList4Atoms(
-        to_device(il1.is, AT),
-        to_device(il1.js, AT),
-        to_device(il1.ks, AT),
-        to_device(il1.ls, AT),
-        to_device(il1.inters,AT),
-        il1.types,
-        nothing,
-    )
-end
-
-function to_device(il1::InteractionList5Atoms{I, T, D}, ::Type{AT}) where {I, T, D, AT}
-    return InteractionList5Atoms(
-        to_device(il1.is, AT),
-        to_device(il1.js, AT),
-        to_device(il1.ks, AT),
-        to_device(il1.ls, AT),
-        to_device(il1.ms, AT),
-        to_device(il1.inters,AT),
-        il1.types,
-        to_device(il1.data,AT),
-    )
 end
