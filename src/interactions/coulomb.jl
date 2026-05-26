@@ -1418,7 +1418,7 @@ function CoulombSoftCoreGapsysEwald(; dist_cutoff, error_tol=0.0005, α=0.3,
     T = typeof(ustrip(dist_cutoff))
     α_ewald = inv(dist_cutoff) * sqrt(-log(2 * error_tol))
     if isnothing(charge_scaling)
-        charge_scaling = ParamsList(Dict(0=>SVector{2,T}(T(0),T(0))))
+        charge_scaling = CoreMixing()
     end
     return CoulombSoftCoreGapsysEwald(
         dist_cutoff,
@@ -1503,12 +1503,12 @@ end
     end
 
     if special
-        return radial_force_vector(f_soft, r, dr, force_units) * inter.weight_special * (r <= inter.dist_cutoff)
+        return (f_soft / r) * dr * inter.weight_special * (r <= inter.dist_cutoff)
     end
 
     erfc_αr, force_screen = softcore_ewald_screen(inter, r)
     f = (f_soft * erfc_αr) + (pe_soft * force_screen)
-    return radial_force_vector(f, r, dr, force_units) * (r <= inter.dist_cutoff)
+    return (f / r) * dr * (r <= inter.dist_cutoff)
 end
 
 @inline function potential_energy(inter::CoulombSoftCoreGapsysEwald,
@@ -1554,7 +1554,7 @@ end
                        force_units=u"kJ * mol^-1 * nm^-1",
                        special=false,
                        args...)
-                       T = typeof(ustrip(atom_i.σ))
+    T = typeof(ustrip(atom_i.λ))
     if !isa(inter.λ_mixing, typeof(Molly.ProductMixing()))
         error("force with respect to λ only possible with ProductMixing(), currently using: ", typeof(inter.λ_mixing))
     end

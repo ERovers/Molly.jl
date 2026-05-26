@@ -525,9 +525,6 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
     Data = []
     Coords = []
     Interactions = []
-    p_charge = Dict{Int64, SVector{2, C}}()
-    p_σ = Dict{Int64, SVector{2, S}}()
-    p_ϵ = Dict{Int64, SVector{2, E}}()
     Boundary = deepcopy(sysA.boundary)
 
     # Add all the atoms with new numbering (save a mapping to adjust the interactions list later)
@@ -537,24 +534,27 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                λ=T(global_λ), alch_role=CoreRole))
+        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, 
+                                            charge=SVector{2,C}(sysA.atoms[i].charge, sysB.atoms[core_mapAB[i]].charge), 
+                                            σ=SVector{2,S}(sysA.atoms[i].σ, sysB.atoms[core_mapAB[i]].σ),
+                                            ϵ=SVector{2,E}(sysA.atoms[i].ϵ, sysB.atoms[core_mapAB[i]].ϵ), 
+                                            λ=T(global_λ), alch_role=CoreRole))
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
         push!(Coords, c)
         mapping_A[i] = counter
         mapping_B[core_mapBA[i]] = counter
-        p_charge[counter] = SVector{2,C}(sysA.atoms[i].charge, sysB.atoms[core_mapAB[i]].charge)
-        p_σ[counter] = SVector{2,S}(sysA.atoms[i].σ, sysB.atoms[core_mapAB[i]].σ)
-        p_ϵ[counter] = SVector{2,E}(sysA.atoms[i].ϵ, sysB.atoms[core_mapAB[i]].ϵ)
         counter += 1
     end
     for i in mapping["unique_A"]
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                λ=T(global_λ), alch_role=DeleteRole))
+        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, 
+                                            charge=SVector{2,C}(a.charge, a.charge), 
+                                            σ=SVector{2,S}(a.σ, a.σ), 
+                                            ϵ=SVector{2,E}(a.ϵ, a.ϵ), 
+                                            λ=T(global_λ), alch_role=DeleteRole))
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
         push!(Coords, c)
@@ -566,8 +566,9 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         a = sysB.atoms[i]
         d = sysB.atoms_data[i]
         c = sysB.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                λ=T(global_λ), alch_role=InsertRole))
+        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=SVector{2,C}(a.charge, a.charge), 
+                                            σ=SVector{2,S}(a.σ, a.σ), ϵ=SVector{2,E}(a.ϵ, a.ϵ), 
+                                            λ=T(global_λ), alch_role=InsertRole))
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
         push!(Coords, c)
@@ -579,8 +580,9 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                λ=T(1.0), alch_role=EnvRole))
+        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=SVector{2,C}(a.charge, a.charge), 
+                                            σ=SVector{2,S}(a.σ, a.σ), ϵ=SVector{2,E}(a.ϵ, a.ϵ), 
+                                            λ=T(1.0), alch_role=EnvRole))
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
         push!(Coords, c)
@@ -703,8 +705,8 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
     for inter in sysA.pairwise_inters
         if inter isa LennardJones
             push!(PairInteraction, LennardJonesSoftCoreGapsys(cutoff=inter.cutoff, α=T(0.85), use_neighbors=inter.use_neighbors,  
-                                                    shortcut=inter.shortcut, σ_mixing=CoreMixing(inter.σ_mixing, ParamsList(p_σ)), 
-                                                    ϵ_mixing=CoreMixing(inter.ϵ_mixing, ParamsList(p_ϵ)),
+                                                    shortcut=inter.shortcut, σ_mixing=CoreMixing(inter.σ_mixing), 
+                                                    ϵ_mixing=CoreMixing(inter.ϵ_mixing),
                                                     λ_mixing=MinimumMixing(),scheduler=DefaultLambdaScheduler(), weight_special=inter.weight_special))
         elseif inter isa Coulomb
             push!(PairInteraction, CoulombSoftCoreGapsys(cutoff=inter.cutoff,
@@ -718,7 +720,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
             push!(PairInteraction, CoulombSoftCoreGapsysEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, 
                                                     α=T(0.6), σQ=units ? T(1.0)u"nm" : T(1.0),
                                                     use_neighbors=inter.use_neighbors, λ_mixing=MinimumMixing(),
-                                                    charge_scaling=ParamsList(p_charge),
+                                                    charge_scaling=CoreMixing(),
                                                     scheduler=DefaultLambdaScheduler(),
                                                     weight_special=inter.weight_special, 
                                                     coulomb_const=inter.coulomb_const, 
@@ -736,12 +738,12 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         if inter isa PME
             push!(GenerInteraction, PME(inter.dist_cutoff, to_device(Atoms, AT), Boundary; error_tol=inter.error_tol, 
                             fixed_charges=false, eligible=to_device(eligible_PME, AT), special=to_device(special, AT), 
-                            scheduler=DefaultLambdaScheduler(), charge_scaling=ParamsList(p_charge), grad_safe=inter.grad_safe),
+                            scheduler=DefaultLambdaScheduler(), grad_safe=inter.grad_safe),
                         )
         elseif inter isa LJDispersionCorrection
             push!(GenerInteraction, LJDispersionCorrectionλ(to_device(Atoms, AT), inter.dist_cutoff, DefaultLambdaScheduler(), 
-                            MinimumMixing(), CoreMixing(LorentzMixing(), ParamsList(p_σ)), 
-                            CoreMixing(GeometricMixing(), ParamsList(p_ϵ)))
+                            MinimumMixing(), CoreMixing(LorentzMixing()), 
+                            CoreMixing(GeometricMixing()))
                             )
         end
     end

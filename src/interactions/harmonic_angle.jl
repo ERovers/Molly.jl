@@ -133,7 +133,7 @@ end
 
 @inline function force(a::HarmonicAngleλ, coords_i, coords_j, coords_k, boundary, 
                         atom_i, atom_j, atom_k, args...)
-    T = typeof(ustrip(atom_i.σ))
+    T = typeof(ustrip(atom_i.λ))
     # In 2D we use then eliminate the cross product
     ba = vector_pad3D(coords_j, coords_i, boundary)
     bc = vector_pad3D(coords_j, coords_k, boundary)
@@ -161,7 +161,7 @@ end
 @inline function potential_energy(a::HarmonicAngleλ, coords_i, coords_j,
                                   coords_k, boundary, atom_i,
                                   atom_j, atom_k, args...)
-    T = typeof(ustrip(atom_i.σ))
+    T = typeof(ustrip(atom_i.λ))
     θ = bond_angle(coords_i, coords_j, coords_k, boundary)
     λ_glob = T(λ_mixing(a.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ)))    
     pair_role = mix_roles(a.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role))

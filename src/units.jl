@@ -64,6 +64,8 @@ function check_system_units(masses, coords, velocities, energy_units, force_unit
         vel_units, mass_units, energy_units, force_units))
 end
 
+flatten_units(vec) = vec[1] isa Tuple || vec[1] isa AbstractArray ? [x for list in vec for x in list] : vec
+
 function check_other_units(atoms_dev, boundary, sys_units::NamedTuple)
     atoms = from_device(atoms_dev)
     box_units = unit(length_type(boundary))
@@ -75,6 +77,8 @@ function check_other_units(atoms_dev, boundary, sys_units::NamedTuple)
 
     sigmas   = getproperty.(atoms[hasproperty.(atoms, :σ)], :σ)
     epsilons = getproperty.(atoms[hasproperty.(atoms, :ϵ)], :ϵ)
+    sigmas = flatten_units(sigmas)
+    epsilons = flatten_units(epsilons)
 
     if !all(sigmas .== 0.0u"nm")
         σ_units = unit.(sigmas)

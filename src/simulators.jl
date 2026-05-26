@@ -1234,7 +1234,7 @@ function simulate_remd!(sys::ReplicaSystem,
     remaining_steps = n_cycles > 0 ? n_steps % n_cycles : n_steps
     n_attempts = 0
 
-    progress = setup_progress(n_steps, show_progress)
+    progress = setup_progress(n_cycles, show_progress)
     for cycle in 1:n_cycles
         @sync for i in 1:sys.n_replicas
             state_idx = sys.state_indices[i]
@@ -1256,7 +1256,7 @@ function simulate_remd!(sys::ReplicaSystem,
             # Enforce n_threads >= 1 to prevent buffer chunk crashes
             Threads.@spawn simulate!(active_sys, integrator, cycle_length;
                                      n_threads=max(1, thread_div[i]), run_loggers=run_loggers,
-                                     rng=rng, strictness=strictness)
+                                     rng=rng, strictness=strictness, show_progress=false)
         end
 
         cycle_parity = cycle % 2
@@ -1292,8 +1292,9 @@ function simulate_remd!(sys::ReplicaSystem,
             
             Threads.@spawn simulate!(active_sys, integrator, remaining_steps;
                                      n_threads=max(1, thread_div[i]), run_loggers=run_loggers,
-                                     rng=rng, strictness=strictness)
+                                     rng=rng, strictness=strictness, show_progress=false)
         end
+        next_nograd!(progress)
     end
 
     if run_loggers != false && !isnothing(sys.exchange_logger)

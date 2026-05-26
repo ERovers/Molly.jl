@@ -239,7 +239,7 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     n_atoms = length(atoms)
     atoms_cpu = from_device(atoms)
     at = atoms_cpu[1]
-    ϵσ12_sum, ϵσ6_sum = zero(at.ϵ * at.σ^12), zero(at.ϵ * at.σ^6)
+    ϵσ12_sum, ϵσ6_sum = zero(at.ϵ[1] * at.σ[1]^12), zero(at.ϵ[1] * at.σ[1]^6)
     nλ_atoms = T(0)
     for i in 1:n_atoms
         atom_i = atoms_cpu[i]
@@ -373,7 +373,7 @@ end
                        special=false,
                        args...)
     # Mix Lambda
-    T = typeof(ustrip(atom_i.σ))
+    T = typeof(ustrip(atom_i.λ))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
 
     # 1. Fetch alchemical roles from the contiguous array
@@ -448,7 +448,7 @@ end
                                   special=false,
                                   args...)
     # Mix Lambda
-    T = typeof(ustrip(atom_i.σ))
+    T = typeof(ustrip(atom_i.λ))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
 
     # 1. Fetch alchemical roles from the contiguous array
@@ -606,7 +606,7 @@ end
                        special=false,
                        args...)
 
-    T = typeof(ustrip(atom_i.σ))
+    T = typeof(ustrip(atom_i.mass))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
 
     # 1. Fetch alchemical roles from the contiguous array
@@ -634,14 +634,15 @@ end
 
     σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_glob, λ, pair_role)
     ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_glob, λ, pair_role)
-    σ6 = σ^6
+    σ2 = σ^2
+    σ6 = σ2^3
 
     # 3. Fast Path: Standard Lennard Jones
     if λ >= 1
         # Pass standard LJ params tuple (Length 2)
         params = (σ^2, ϵ, nothing, nothing)
-        f = force_cutoff(cutoff, inter, r, params)
-        fdr = radial_force_vector(f, r, dr, force_units)
+        f = force_cutoff(cutoff, inter, r, params) * dr
+        fdr = f / r
         return special ? fdr * inter.weight_special : fdr
     end
 
@@ -654,7 +655,7 @@ end
     # Pass SoftCore params tuple (Length 4)
     params = (C12, C6, λ, R)
     f = force_cutoff(cutoff, inter, r, params)
-    fdr = radial_force_vector(f, r, dr, force_units)
+    fdr = (f / r) * dr
     return special ? fdr * inter.weight_special : fdr
 end
 
@@ -666,13 +667,14 @@ end
 
 # Dispatch 2: Soft Core Logic (Matches Tuple length 4)
 @inline function pairwise_force(::LennardJonesSoftCoreGapsys, r, (C12, C6, λ, R)::Tuple{Any, Any, Any, Any})
-    r6 = r^6
+    r2 = r^2
+    r6 = r2^3
     if r >= R
         return λ * (((12*C12)/(r6*r6*r)) - ((6*C6)/(r6*r)))
     else
         invR = inv(R)
         invR2 = invR^2
-        invR6 = invR^6
+        invR6 = invR2^3
         return λ * (((-156*C12*(invR6*invR6*invR2)) + (42*C6*(invR2*invR6)))*r +
                     (168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR)))
     end
@@ -685,7 +687,7 @@ end
                                   energy_units=u"kJ * mol^-1",
                                   special=false,
                                   args...)
-    T = typeof(ustrip(atom_i.σ))
+    T = typeof(ustrip(atom_i.mass))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
 
     # 1. Fetch alchemical roles from the contiguous array
@@ -761,7 +763,7 @@ end
                        special=false,
                        args...)
 
-    T = typeof(ustrip(atom_i.σ))
+    T = typeof(ustrip(atom_i.λ))
     if !isa(inter.λ_mixing, typeof(Molly.ProductMixing()))
         error("force with respect to λ only possible with ProductMixing(), currently using: ", typeof(inter.λ_mixing))
     end

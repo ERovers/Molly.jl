@@ -461,7 +461,6 @@ function pairwise_forces_loop!(fs_nounits, fs_chunks, vir_nounits, vir_chunks, a
                 v = dr * transpose(f)
                 vir_nounits .+= ustrip.(v)
             end
-
         end
     end
 

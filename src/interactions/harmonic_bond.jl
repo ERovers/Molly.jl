@@ -119,7 +119,7 @@ end
 
 @inline function force(b::HarmonicBondλ{K, D, LM, SCH},coord_i, coord_j, 
                                     boundary, atom_i, atom_j, args...) where {K, D, LM, SCH}
-    T = typeof(ustrip(atom_i.σ))
+    T = typeof(ustrip(atom_i.λ))
     ab = vector(coord_i, coord_j, boundary)
     λ_glob = T(λ_mixing(b.λ_mixing, (atom_i.λ, atom_j.λ)))    
     pair_role = mix_roles(b.scheduler, (atom_i.alch_role, atom_j.alch_role))
@@ -133,7 +133,7 @@ end
 
 @inline function potential_energy(b::HarmonicBondλ{K, D, LM, SCH}, coord_i, coord_j, 
                                     boundary, atom_i, atom_j, args...) where {K, D, LM, SCH}
-    T = typeof(ustrip(atom_i.σ))
+    T = typeof(ustrip(atom_i.λ))
     dr = vector(coord_i, coord_j, boundary)
     r = norm(dr)
     λ_glob = T(λ_mixing(b.λ_mixing, (atom_i.λ, atom_j.λ)))    

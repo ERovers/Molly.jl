@@ -138,61 +138,29 @@ The original logic can be found in:
 https://github.com/OpenFreeEnergy/openfe/blob/main/src/openfe/protocols/openmm_rfe/_rfe_utils/relative.py
 
 =#
-struct ParamsList{N, K, V}
-    keys::SVector{N, K}
-    values::V
-end
-
-function ParamsList(d::AbstractDict)
-    n = length(d)
-    ks = SVector{n}(collect(keys(d)))
-    vs = SVector{n}(d[k] for k in ks)
-    return ParamsList(ks, vs)
-end
-
-function get_params(d::ParamsList{N,K,V}, i, default) where {N,K,V}
-    val = (default, default)
-    for ki in 1:N
-        if d.keys[ki] == i
-            val = d.values[ki]
-        end
-    end
-    return val
-end
-
-struct CoreMixing{M, P}
-    mixing::M
-    params::P
+@kwdef struct CoreMixing{M}
+    mixing::M = nothing
 end
 
 function σ_mixing(me::CoreMixing, atom_i, atom_j, λ, role, args...)
-    if role == EnvRole
-        return xy_mixing(me.mixing, atom_i.σ, atom_j.σ, args...)
-    end
-    sigmaA1, sigmaB1 = get_params(me.params, atom_i.index, atom_i.σ)
-    sigmaA2, sigmaB2 = get_params(me.params, atom_j.index, atom_j.σ)
-    sigmaA = xy_mixing(me.mixing, sigmaA1, sigmaA2, args...)
-    sigmaB = xy_mixing(me.mixing, sigmaB1, sigmaB2, args...)
+    σ_iA, σ_iB = atom_i.σ
+    σ_jA, σ_jB = atom_j.σ
+    sigmaA = xy_mixing(me.mixing, σ_iA, σ_jA, args...)
+    sigmaB = xy_mixing(me.mixing, σ_iB, σ_jB, args...)
     return (1-λ)*sigmaA + λ*sigmaB
 end
 
 function ϵ_mixing(me::CoreMixing, atom_i, atom_j, λ, role, args...)
-    if role == EnvRole
-        return xy_mixing(me.mixing, atom_i.ϵ, atom_j.ϵ, args...)
-    end
-    epsA1, epsB1 = get_params(me.params, atom_i.index, atom_i.ϵ)
-    epsA2, epsB2 = get_params(me.params, atom_j.index, atom_j.ϵ)
-    epsA = xy_mixing(me.mixing, epsA1, epsA2, args...)
-    epsB = xy_mixing(me.mixing, epsB1, epsB2, args...)
+    ϵ_iA, ϵ_iB = atom_i.ϵ
+    ϵ_jA, ϵ_jB = atom_j.ϵ
+    epsA = xy_mixing(me.mixing, ϵ_iA, ϵ_jA, args...)
+    epsB = xy_mixing(me.mixing, ϵ_iB, ϵ_jB, args...)
     return (1-λ)*epsA + λ*epsB
 end
 
-function scale_charge(params::ParamsList{N,K,V}, atom_i, atom_j, λ, role, args...) where {N,K,V}
-    if role == EnvRole
-        return atom_i.charge, atom_j.charge
-    end
-    qiA, qiB = get_params(params, atom_i.index, atom_i.charge)
-    qjA, qjB = get_params(params, atom_j.index, atom_j.charge)
+function scale_charge(me::CoreMixing, atom_i, atom_j, λ, role, args...)
+    qiA, qiB = atom_i.charge
+    qjA, qjB = atom_j.charge
     return (1-λ)*qiA + λ*qiB, (1-λ)*qjA + λ*qjB
 end
 
