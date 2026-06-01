@@ -1179,26 +1179,26 @@ function force_λ!(Fs, inter::PME{T}, atoms, coords, boundary, ::Val{energy_unit
     f = (energy_units == NoUnits ? ustrip(T(Molly.coulomb_const)) : T(Molly.coulomb_const))
     f_div_ϵr = f / ϵr
 
-    # exclusion_E = excluded_interactions_λ!(Fs, inter.excluded_buffer_Fs,
-    #             inter.excluded_pairs, atoms, coords, boundary, α, f, inter.scheduler,
-    #             force_units, Val(T))
+    exclusion_E = excluded_interactions_λ!(Fs, inter.excluded_buffer_Fs,
+                inter.excluded_pairs, atoms, coords, boundary, α, f, inter.scheduler,
+                force_units, Val(T))
 
     # #### Reciprocal Space ####
-    # recip_box = invert_box_vectors(boundary)
-    # grid_placement!(inter.grid_indices, inter.grid_fractions, coords, recip_box, mesh_dims)
-    # update_bsplines!(inter.bsplines_θ, inter.bsplines_dθ, inter.grid_fractions, order, 1)
-    # spread_charge!(inter.charge_grid, inter.charge_grid_buffer, inter.grid_indices,
-    #                inter.bsplines_θ, mesh_dims, order, atoms, inter.scheduler, Val(1))
-    # grad_safe_fft!(inter.charge_grid, inter.fft_plan)
-    # reciprocal_space_E = recip_conv!(nothing, inter.virial_buffer, inter.charge_grid,
-    #                 inter.recip_conv_buffer, inter.bsplines_moduli_x, inter.bsplines_moduli_y,
-    #                 inter.bsplines_moduli_z, recip_box, f_div_ϵr, α, mesh_dims, boundary,
-    #                 energy_units, Val(1), Val(false))
-    # inter.charge_grid[1, 1, 1] = zero(Complex{T})
-    # grad_safe_bfft!(inter.charge_grid, inter.bfft_plan)
+    recip_box = invert_box_vectors(boundary)
+    grid_placement!(inter.grid_indices, inter.grid_fractions, coords, recip_box, mesh_dims)
+    update_bsplines!(inter.bsplines_θ, inter.bsplines_dθ, inter.grid_fractions, order, 1)
+    spread_charge!(inter.charge_grid, inter.charge_grid_buffer, inter.grid_indices,
+                   inter.bsplines_θ, mesh_dims, order, atoms, inter.scheduler, Val(1))
+    grad_safe_fft!(inter.charge_grid, inter.fft_plan)
+    reciprocal_space_E = recip_conv!(nothing, inter.virial_buffer, inter.charge_grid,
+                    inter.recip_conv_buffer, inter.bsplines_moduli_x, inter.bsplines_moduli_y,
+                    inter.bsplines_moduli_z, recip_box, f_div_ϵr, α, mesh_dims, boundary,
+                    energy_units, Val(1), Val(false))
+    inter.charge_grid[1, 1, 1] = zero(Complex{T})
+    grad_safe_bfft!(inter.charge_grid, inter.bfft_plan)
 
-    # interpolate_force_λ!(Fs, inter.charge_grid, inter.grid_indices, inter.bsplines_θ,
-    #                 mesh_dims, order, force_units, atoms, inter.scheduler, 1)
+    interpolate_force_λ!(Fs, inter.charge_grid, inter.grid_indices, inter.bsplines_θ,
+                    mesh_dims, order, force_units, atoms, inter.scheduler, 1)
     
     #### Self ####
     partial_charges = ustrip.([effective_charge(inter.scheduler, atom, Val(T))

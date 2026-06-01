@@ -632,6 +632,12 @@ end
 The partial charge of an [`Atom`](@ref).
 """
 charge(atom) = atom.charge
+
+"""
+    lambda(atom)
+
+The lambda of an [`Atom`](@ref).
+"""
 lambda(atom) = atom.λ
 
 """

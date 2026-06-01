@@ -543,7 +543,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
         push!(Coords, c)
         mapping_A[i] = counter
-        mapping_B[core_mapBA[i]] = counter
+        mapping_B[core_mapAB[i]] = counter
         counter += 1
     end
     for i in mapping["unique_A"]
@@ -625,7 +625,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         for field_tuple in zip(field_names[1:end-1]...)
             n_fields = length(field_tuple)
             name = typeof(field_tuple[end-1]).name.name
-            if any(haskey(mapping_B, field_tuple[i]) for i in 1:n_fields-2)
+            if all(haskey(mapping_B, field_tuple[i]) for i in 1:n_fields-2)
                 mapped = Vector{Int}(undef, n_fields-2)
                 for i in 1:n_fields-2
                     if haskey(mapping_B, field_tuple[i])

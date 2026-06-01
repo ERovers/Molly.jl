@@ -243,7 +243,7 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     nλ_atoms = T(0)
     for i in 1:n_atoms
         atom_i = atoms_cpu[i]
-        λ, λ_params = scale_sterics(scheduler, atoms[i].λ, atoms[i].alch_role)
+        λ, λ_params = scale_sterics(scheduler, atom_i.λ, atom_i.alch_role)
         nλ_atoms += λ
         for j in 1:i
             atom_j = atoms_cpu[j]
