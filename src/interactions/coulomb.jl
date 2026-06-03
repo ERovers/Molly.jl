@@ -1393,14 +1393,13 @@ Should be used alongside [`Ewald`](@ref) or [`PME`](@ref) configured with the sa
 electrostatic scheduler. Special pairs are excluded from the reciprocal-space
 calculation, so their interaction uses the undamped soft-core form.
 """
-struct CoulombSoftCoreGapsysEwald{ET, D, A, SQ, LM, SC, SCH, W, C, EA} <: PairwiseInteraction
+struct CoulombSoftCoreGapsysEwald{ET, D, A, SQ, LM, SCH, W, C, EA} <: PairwiseInteraction
     dist_cutoff::D
     error_tol::ET
     α::A
     σQ::SQ
     use_neighbors::Bool
     λ_mixing::LM
-    charge_scaling::SC
     scheduler::SCH
     weight_special::W
     coulomb_const::C
@@ -1411,15 +1410,11 @@ end
 function CoulombSoftCoreGapsysEwald(; dist_cutoff, error_tol=0.0005, α=0.3,
                                     σQ=1.0u"nm", use_neighbors=false,
                                     λ_mixing=MinimumMixing(),
-                                    charge_scaling=nothing,
                                     scheduler=DefaultLambdaScheduler(),
                                     weight_special=1, coulomb_const=coulomb_const,
                                     approximate_erfc=true)
     T = typeof(ustrip(dist_cutoff))
     α_ewald = inv(dist_cutoff) * sqrt(-log(2 * error_tol))
-    if isnothing(charge_scaling)
-        charge_scaling = CoreMixing()
-    end
     return CoulombSoftCoreGapsysEwald(
         dist_cutoff,
         error_tol,
@@ -1427,7 +1422,6 @@ function CoulombSoftCoreGapsysEwald(; dist_cutoff, error_tol=0.0005, α=0.3,
         σQ,
         use_neighbors,
         λ_mixing,
-        charge_scaling,
         scheduler,
         weight_special,
         coulomb_const,
@@ -1438,7 +1432,7 @@ end
 
 use_neighbors(inter::CoulombSoftCoreGapsysEwald) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreGapsysEwald{ET, D, A, SQ, LM, SC, SCH, W, C, EA}) where {ET, D, A, SQ, LM, SC, SCH, W, C, EA}
+function Base.zero(coul::CoulombSoftCoreGapsysEwald{ET, D, A, SQ, LM, SCH, W, C, EA}) where {ET, D, A, SQ, LM, SCH, W, C, EA}
     return CoulombSoftCoreGapsysEwald(
         zero(D),
         zero(ET),
@@ -1446,7 +1440,6 @@ function Base.zero(coul::CoulombSoftCoreGapsysEwald{ET, D, A, SQ, LM, SC, SCH, W
         coul.σQ,
         coul.use_neighbors,
         coul.λ_mixing,
-        coul.charge_scaling,
         coul.scheduler,
         zero(W),
         zero(C),
@@ -1463,7 +1456,6 @@ function Base.:+(c1::CoulombSoftCoreGapsysEwald, c2::CoulombSoftCoreGapsysEwald)
         c1.σQ + c2.σQ,
         c1.use_neighbors,
         c1.λ_mixing,
-        c1.charge_scaling,
         c1.scheduler,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
@@ -1489,8 +1481,7 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
-    qij = qi * qj
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     R = inter.α * sqrt(cbrt(1 - λ)) * (oneunit(r) + inter.σQ * abs(qij))
 
     if r >= R
@@ -1524,8 +1515,7 @@ end
     end
 
     r = norm(dr)
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
-    qij = qi * qj
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
 
     if λ >= 1
         pe_soft = inter.coulomb_const * (qij / r)

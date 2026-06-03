@@ -26,67 +26,20 @@ const interaction_mapping = Dict(HarmonicBond => HarmonicBondλ,
                                 PeriodicTorsion => PeriodicTorsionλ)
 
 function to_lambda_param(inter::HarmonicBond)
-    return HarmonicBondλ(k=(inter.k, inter.k), r0=(inter.r0, inter.r0))
+    return HarmonicBondλ(k=inter.k, r0=inter.r0)
 end
 
 function to_lambda_param(inter::HarmonicAngle)
-    return HarmonicAngleλ(k=(inter.k, inter.k), θ0=(inter.θ0, inter.θ0))
+    return HarmonicAngleλ(k=inter.k, θ0=inter.θ0)
 end
 
 function to_lambda_param(inter::PeriodicTorsion)
     return PeriodicTorsionλ(
-        periodicities=(inter.periodicities, inter.periodicities),
-        phases       =(inter.phases,        inter.phases),
-        ks           =(inter.ks,            inter.ks),
+        periodicities=inter.periodicities,
+        phases       =inter.phases,
+        ks           =inter.ks,
         proper       =inter.proper,
     )
-end
-
-function merge_core_params(existing::HarmonicBondλ, b::HarmonicBond)
-    return HarmonicBondλ(k=(existing.k[1], b.k), r0=(existing.r0[1], b.r0))
-end
-
-function merge_core_params(existing::HarmonicAngleλ, b::HarmonicAngle)
-    return HarmonicAngleλ(k=(existing.k[1], b.k), θ0=(existing.θ0[1], b.θ0))
-end
-
-function merge_core_params(existing::PeriodicTorsionλ, b::PeriodicTorsion)
-    return PeriodicTorsionλ(
-        periodicities=(existing.periodicities[1], b.periodicities),
-        phases       =(existing.phases[1],        b.phases),
-        ks           =(existing.ks[1],            b.ks),
-        proper       =existing.proper,
-    )
-end
-
-function merge_core_params(existing, _)
-    return existing
-end
-
-function find_and_merge_core_interaction!(Interactions, IT, mapped, b_param, b_type)
-    for inter_list in Interactions
-        if typeof(inter_list).name.wrapper !== IT
-            continue
-        end
-
-        names = fieldnames(typeof(inter_list))
-        n_indices = length(mapped)
-        index_fields = names[1:n_indices]
-        inters_field = names[n_indices + 1]
-        types_field = names[n_indices + 2]
-
-        index_arrays = getfield.((inter_list,), index_fields)
-        types_arr = getfield(inter_list, types_field)
-        inters_arr = getfield(inter_list, inters_field)
-
-        for (i,key) in enumerate(zip(index_arrays...))
-            if all(x->x in key, mapped)
-                inters_arr[i] = merge_core_params(inters_arr[i], b_param)
-                return true
-            end
-        end
-    end
-    return false
 end
 
 """
@@ -508,7 +461,6 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
     S = typeof(sysA.atoms[1].σ)
     E = typeof(sysA.atoms[1].ϵ)
     C = typeof(sysA.atoms[1].charge)
-    core_mapBA = dict_reverse(core_mapAB)
     env = []
     for i in 1:length(sysA.atoms)
         if !(i in mapping["unique_A"]) && !(i in mapping["core"])
@@ -521,9 +473,10 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
     unique_groups = Dict("sysA"=>[], "sysB"=>[])
 
     # Initialize data groups for new system
-    Atoms = []
-    Data = []
-    Coords = []
+    Atoms        = []
+    Virtual      = []
+    Data         = []
+    Coords       = []
     Interactions = []
     Boundary = deepcopy(sysA.boundary)
 
@@ -534,26 +487,33 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, 
-                                            charge=SVector{2,C}(sysA.atoms[i].charge, sysB.atoms[core_mapAB[i]].charge), 
-                                            σ=SVector{2,S}(sysA.atoms[i].σ, sysB.atoms[core_mapAB[i]].σ),
-                                            ϵ=SVector{2,E}(sysA.atoms[i].ϵ, sysB.atoms[core_mapAB[i]].ϵ), 
-                                            λ=T(global_λ), alch_role=CoreRole))
+        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
+                                            λ=T(global_λ), alch_role=CoreDRole))
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
         push!(Coords, c)
         mapping_A[i] = counter
+        push!(unique_groups["sysA"], counter)
+        counter += 1
+
+        a = sysB.atoms[core_mapAB[i]]
+        d = sysB.atoms_data[core_mapAB[i]]
+        c = sysB.coords[core_mapAB[i]]
+        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=(units ? T(0.0)u"g/mol" : T(0.0)), charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
+                                            λ=T(global_λ), alch_role=CoreIRole))
+        push!(Virtual, OneParticleSite(counter, counter-1))
+        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
+                                    res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
+        push!(Coords, zero(c))
         mapping_B[core_mapAB[i]] = counter
+        push!(unique_groups["sysB"], counter)
         counter += 1
     end
     for i in mapping["unique_A"]
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, 
-                                            charge=SVector{2,C}(a.charge, a.charge), 
-                                            σ=SVector{2,S}(a.σ, a.σ), 
-                                            ϵ=SVector{2,E}(a.ϵ, a.ϵ), 
+        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                             λ=T(global_λ), alch_role=DeleteRole))
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
@@ -566,8 +526,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         a = sysB.atoms[i]
         d = sysB.atoms_data[i]
         c = sysB.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=SVector{2,C}(a.charge, a.charge), 
-                                            σ=SVector{2,S}(a.σ, a.σ), ϵ=SVector{2,E}(a.ϵ, a.ϵ), 
+        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                             λ=T(global_λ), alch_role=InsertRole))
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
@@ -580,8 +539,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=SVector{2,C}(a.charge, a.charge), 
-                                            σ=SVector{2,S}(a.σ, a.σ), ϵ=SVector{2,E}(a.ϵ, a.ϵ), 
+        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                             λ=T(1.0), alch_role=EnvRole))
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
@@ -631,12 +589,8 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                     if haskey(mapping_B, field_tuple[i])
                         mapped[i] = mapping_B[field_tuple[i]]
                     else
-                        mapped[i] = mapping_A[core_mapBA[field_tuple[i]]]
+                        mapped[i] = mapping_A[field_tuple[i]]
                     end
-                end
-
-                if find_and_merge_core_interaction!(Interactions, IT, mapped, field_tuple[end-1], field_tuple[end])
-                    continue
                 end
 
                 for i in 1:n_fields-2
@@ -653,6 +607,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
 
     # Ensure all arrays have correct typing
     Atoms = Vector{typeof(Atoms[1])}(Atoms)
+    Virtual = Vector{typeof(Virtual[1])}(Virtual)
     Coords = Vector{typeof(Coords[1])}(Coords)
     Data = Vector{typeof(Data[1])}(Data)
     specific_inter_lists = tuple(Interactions...)
@@ -705,14 +660,12 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
     for inter in sysA.pairwise_inters
         if inter isa LennardJones
             push!(PairInteraction, LennardJonesSoftCoreGapsys(cutoff=inter.cutoff, α=T(0.85), use_neighbors=inter.use_neighbors,  
-                                                    shortcut=inter.shortcut, σ_mixing=CoreMixing(inter.σ_mixing), 
-                                                    ϵ_mixing=CoreMixing(inter.ϵ_mixing),
+                                                    shortcut=inter.shortcut, σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing,
                                                     λ_mixing=MinimumMixing(),scheduler=DefaultLambdaScheduler(), weight_special=inter.weight_special))
         elseif inter isa Coulomb
             push!(PairInteraction, CoulombSoftCoreGapsys(cutoff=inter.cutoff,
                                                     α=T(0.6), σQ=units ? T(1.0)u"nm" : T(1.0),
                                                     use_neighbors=inter.use_neighbors, λ_mixing=MinimumMixing(),
-                                                    charge_scaling=ParamsList(p_charge),
                                                     scheduler=DefaultLambdaScheduler(),
                                                     weight_special=inter.weight_special, 
                                                     coulomb_const=inter.coulomb_const))
@@ -720,7 +673,6 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
             push!(PairInteraction, CoulombSoftCoreGapsysEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, 
                                                     α=T(0.6), σQ=units ? T(1.0)u"nm" : T(1.0),
                                                     use_neighbors=inter.use_neighbors, λ_mixing=MinimumMixing(),
-                                                    charge_scaling=CoreMixing(),
                                                     scheduler=DefaultLambdaScheduler(),
                                                     weight_special=inter.weight_special, 
                                                     coulomb_const=inter.coulomb_const, 
@@ -729,7 +681,6 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
             error("Currently {$inter} is not yet implemented for relative binding free energy")
         end
     end
-
     pairwise_inters = tuple(PairInteraction...)
 
     # General interactions
@@ -742,12 +693,10 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                         )
         elseif inter isa LJDispersionCorrection
             push!(GenerInteraction, LJDispersionCorrectionλ(to_device(Atoms, AT), inter.dist_cutoff, DefaultLambdaScheduler(), 
-                            MinimumMixing(), CoreMixing(LorentzMixing()), 
-                            CoreMixing(GeometricMixing()))
+                            MinimumMixing(), LorentzMixing(), GeometricMixing()),
                             )
         end
     end
-
     general_inters = tuple(GenerInteraction...)
 
     # Setup new system
@@ -758,6 +707,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         coords=to_device(Coords, AT),
         atoms_data=Data,
         boundary=Boundary,
+        virtual_sites=to_device(Virtual,AT),
         velocities=to_device(vels_gpu, AT),
         pairwise_inters=pairwise_inters,
         specific_inter_lists=to_device.(specific_inter_lists,AT),

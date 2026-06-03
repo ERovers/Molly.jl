@@ -76,7 +76,7 @@ end
 @doc raw"""
     HarmonicAngleλ(; k, θ0)
 
-A harmonic bond angle between three atoms.
+A harmonic bond angle between three atoms that are core atoms.
 
 `θ0` is in radians.
 The second atom is the middle atom.
@@ -85,25 +85,11 @@ The potential energy is defined as
 V(\theta) = \frac{1}{2} k (\theta - \theta_0)^2
 ```
 """
-struct HarmonicAngleλ{K, D, LM, SCH}
+@kwdef struct HarmonicAngleλ{K, D, LM, SCH}
     k::K
     θ0::D
-    λ_mixing::LM
-    scheduler::SCH
-end
-
-function HarmonicAngleλ(; k, θ0, λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    if k isa Tuple
-        k = tuple(k...)
-    else
-        k = (k, k)
-    end
-    if θ0 isa Tuple
-        θ0 = tuple(θ0...)
-    else
-        θ0 = (θ0, θ0)
-    end
-    return HarmonicAngleλ(k, θ0, λ_mixing, scheduler)
+    λ_mixing::LM = MinimumMixing()
+    scheduler::SCH = DefaultLambdaScheduler()
 end
 
 Base.zero(::HarmonicAngleλ{K, D}) where {K, D} = HarmonicAngleλ(k=zero(K), θ0=zero(D))
@@ -148,14 +134,12 @@ end
     λ_glob = T(λ_mixing(a.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ)))    
     pair_role = mix_roles(a.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role))
     λ = scale(a.scheduler, λ_glob, pair_role)
-    k = inter_mixing(a.k, λ)
-    θ0 = inter_mixing(a.θ0, λ)
 
-    angle_term = -k * (acosbound(dot(ba, bc) / (norm(ba) * norm(bc))) - θ0)
+    angle_term = -a.k * (acosbound(dot(ba, bc) / (norm(ba) * norm(bc))) - a.θ0)
     fa = (angle_term / norm(ba)) * pa
     fc = (angle_term / norm(bc)) * pc
     fb = -fa - fc
-    return SpecificForce3Atoms(fa, fb, fc)
+    return SpecificForce3Atoms(λ*fa, λ*fb, λ*fc)
 end
 
 @inline function potential_energy(a::HarmonicAngleλ, coords_i, coords_j,
@@ -166,9 +150,7 @@ end
     λ_glob = T(λ_mixing(a.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ)))    
     pair_role = mix_roles(a.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role))
     λ = scale(a.scheduler, λ_glob, pair_role)
-    k = inter_mixing(a.k, λ)
-    θ0 = inter_mixing(a.θ0, λ)
-    return (k / 2) * (θ - θ0) ^ 2
+    return λ * (a.k / 2) * (θ - a.θ0) ^ 2
 end
 
 @inline function force_λ(a::HarmonicAngleλ, coords_i, coords_j, coords_k, boundary, atom_i,

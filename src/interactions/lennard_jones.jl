@@ -177,8 +177,8 @@ function LJDispersionCorrection(atoms, dist_cutoff, σ_mix, ϵ_mix)
         atom_i = atoms_cpu[i]
         for j in 1:i
             atom_j = atoms_cpu[j]
-            σ = σ_mixing(σ_mix, atom_i, atom_j, false)
-            ϵ = ϵ_mixing(ϵ_mix, atom_i, atom_j, false)
+            σ = σ_mixing(σ_mix, atom_i, atom_j)
+            ϵ = ϵ_mixing(ϵ_mix, atom_i, atom_j)
             ϵσ12_sum += ϵ * σ^12
             ϵσ6_sum  += ϵ * σ^6
         end
@@ -239,19 +239,19 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     n_atoms = length(atoms)
     atoms_cpu = from_device(atoms)
     at = atoms_cpu[1]
-    ϵσ12_sum, ϵσ6_sum = zero(at.ϵ[1] * at.σ[1]^12), zero(at.ϵ[1] * at.σ[1]^6)
+    ϵσ12_sum, ϵσ6_sum = zero(at.ϵ * at.σ^12), zero(at.ϵ * at.σ^6)
     nλ_atoms = T(0)
     for i in 1:n_atoms
         atom_i = atoms_cpu[i]
         λ, λ_params = scale_sterics(scheduler, atom_i.λ, atom_i.alch_role)
-        nλ_atoms += λ
+        nλ_atoms += (atom_i.alch_role==CoreIRole || atom_i.alch_role==CoreDRole ? λ_params : λ)
         for j in 1:i
             atom_j = atoms_cpu[j]
             # Still have to figure out a better way of doing this, maybe include an 
             # eligibility matrix where the alchemical groups = false and rest true
-            if atom_i.alch_role==InsertRole && atom_j.alch_role==DeleteRole
+            if atom_i.alch_role in [InsertRole, CoreIRole] && atom_j.alch_role in [DeleteRole, CoreDRole]
                 continue
-            elseif atom_i.alch_role==DeleteRole && atom_j.alch_role==InsertRole
+            elseif atom_i.alch_role in [DeleteRole, CoreDRole] && atom_j.alch_role in [InsertRole, CoreIRole]
                 continue
             end
 
@@ -261,8 +261,8 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
             pair_role = mix_roles(scheduler, (role_i, role_j))
             λ, λ_params = scale_sterics(scheduler, λ_glob, pair_role)
 
-            σ = σ_mixing(σ_mix, atom_i, atom_j, λ_params, pair_role)
-            ϵ = ϵ_mixing(ϵ_mix, atom_i, atom_j, λ_params, pair_role)
+            σ = λ_params * σ_mixing(σ_mix, atom_i, atom_j)
+            ϵ = λ_params * ϵ_mixing(ϵ_mix, atom_i, atom_j)
             ϵσ12_sum += λ * ϵ * σ^12
             ϵσ6_sum  += λ * ϵ * σ^6
         end
@@ -632,8 +632,8 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_glob, λ, pair_role)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_glob, λ, pair_role)
+    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j)
+    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
     σ2 = σ^2
     σ6 = σ2^3
 
@@ -709,8 +709,8 @@ end
 
     cutoff = inter.cutoff
     r = norm(dr)
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
+    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j)
+    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
     σ6 = σ^6
 
     # 3. Fast Path: Standard Lennard Jones

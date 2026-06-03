@@ -1,10 +1,11 @@
 const AlchemicalRole = Int
 
 const EnvRole::AlchemicalRole    = 0
-const CoreRole::AlchemicalRole   = 1
-const InsertRole::AlchemicalRole = 2
-const DeleteRole::AlchemicalRole = 3
-const ProbRole::AlchemicalRole   = 4
+const CoreIRole::AlchemicalRole  = 1
+const CoreDRole::AlchemicalRole  = 2
+const InsertRole::AlchemicalRole = 3
+const DeleteRole::AlchemicalRole = 4
+const ProbRole::AlchemicalRole   = 5
 
 #= 
 The logic found in this file is a reinterpretation of how OpenFE deals
@@ -21,8 +22,10 @@ https://github.com/OpenFreeEnergy/openfe/blob/main/src/openfe/protocols/openmm_r
         return InsertRole
     elseif any(x->x==DeleteRole, roles)
         return DeleteRole
-    elseif any(x->x==CoreRole, roles)
-        return CoreRole
+    elseif any(x->x==CoreIRole, roles)
+        return CoreIRole
+    elseif any(x->x==CoreDRole, roles)
+        return CoreDRole
     else
         return EnvRole
     end
@@ -58,8 +61,10 @@ struct DefaultLambdaScheduler end
 
 
 @inline function scale(::DefaultLambdaScheduler, λ::T, role::AlchemicalRole) where T
-    if role == CoreRole
+    if role == CoreIRole
         return λ
+    elseif role == CoreDRole
+        return (1-λ)
     else
         return one(λ)
     end
@@ -67,35 +72,47 @@ end
 
 @inline function scale_torsion(::DefaultLambdaScheduler, λ::T, role::AlchemicalRole) where T
     if role == InsertRole
-        return λ, λ
-    elseif role== DeleteRole
-        return (1-λ), λ
+        return λ
+    elseif role == DeleteRole
+        return (1-λ)
+    elseif role == CoreIRole
+        return λ
+    elseif role == CoreDRole
+        return (1-λ)
     else
-        return one(λ), λ
+        return one(λ)
     end
 end
 
 @inline function scale_sterics(::DefaultLambdaScheduler, λ::T, role::AlchemicalRole) where T
     if role == InsertRole
         λ = λ < T(0.5) ? T(2.0) * λ : T(1.0)
-        return λ, λ
+        return λ, one(λ)
     elseif role == DeleteRole
         λ = λ < T(0.5) ? T(0.0) : T(2.0) * (λ - T(0.5))
-        return (1-λ), λ
-    else
+        return (1-λ), one(λ)
+    elseif role == CoreIRole
         return one(λ), λ
+    elseif role == CoreDRole
+        return one(λ), (1-λ)
+    else
+        return one(λ), one(λ)
     end
 end
 
 @inline function scale_elec(::DefaultLambdaScheduler, λ::T, role::AlchemicalRole) where T
     if role == InsertRole
         λ = T(λ < T(0.5) ? T(0.0) : T(2.0) * (λ - T(0.5)))
-        return λ, λ
+        return λ, one(λ)
     elseif role == DeleteRole
         λ = T(λ < T(0.5) ? T(2.0) * λ : T(1.0))
-        return (1-λ), λ
-    else
+        return (1-λ), one(λ)
+    elseif role == CoreIRole
         return one(λ), λ
+    elseif role == CoreDRole
+        return one(λ), (1-λ)
+    else
+        return one(λ), one(λ)
     end
 end
 

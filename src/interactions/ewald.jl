@@ -70,27 +70,13 @@ end
 end
 
 @inline function effective_charge(scheduler, atom::Atom, ::Val{T}) where T
-    qA, qB = atom.charge, atom.charge
     λ, λ_params = electrostatic_lambda(scheduler, atom, Val(T))
-    return λ * ((1 - λ_params) * qA + λ_params * qB)
-end
-
-@inline function effective_charge(scheduler, atom::Atom{T, M, C, S, E, L}, ::Val{R}) where {T, M, C <: SVector, S, E, L, R}
-    qA, qB = atom.charge 
-    λ, λ_params = electrostatic_lambda(scheduler, atom, Val(R))
-    return λ * ((1 - λ_params) * qA + λ_params * qB)
+    return λ * λ_params * atom.charge
 end
 
 @inline function effective_charge_sqrt(scheduler, atom::Atom, ::Val{T}) where T
-    qA, qB = atom.charge, atom.charge
     λ, λ_params = electrostatic_lambda(scheduler, atom, Val(T))
-    return λ*(sqrt(1-λ_params)*qA + sqrt(λ_params)*qB)
-end
-
-@inline function effective_charge_sqrt(scheduler, atom::Atom{T, M, C, S, E, L}, ::Val{R}) where {T, M, C <: SVector, S, E, L, R}
-    qA, qB = atom.charge
-    λ, λ_params = electrostatic_lambda(scheduler, atom, Val(R))
-    return λ*(sqrt(1-λ_params)*qA + sqrt(λ_params)*qB)
+    return sqrt(λ*λ_params)*atom.charge
 end
 
 # Passing vec_ij and r, and not having calculate_forces as a Val, was required to avoid allocations
@@ -569,6 +555,63 @@ function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5,
                charge_grid, charge_grid_buffer, excluded_buffer_Fs, excluded_buffer_Es,
                recip_conv_buffer, virial_buffer, pc_sum, pc_abs2_sum, fft_plan,
                bfft_plan, scheduler, grad_safe)
+end
+
+function Base.deepcopy(t::Tuple)
+    return map(deepcopy, t)
+end
+
+function configure_copied_plans!(fft_plan, bfft_plan, charge_grid)
+    return nothing
+end
+
+function Base.deepcopy(pme::PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, F, B, SCH}) where {T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, F, B, SCH}
+    # 1. Deepcopy standard immutable parameters and CPU buffers
+    dist_cutoff    = pme.dist_cutoff
+    error_tol      = pme.error_tol
+    order          = pme.order
+    ϵr             = pme.ϵr
+    α              = pme.α
+    mesh_dims      = pme.mesh_dims
+    pc_sum         = deepcopy(pme.pc_sum)
+    pc_abs2_sum    = deepcopy(pme.pc_abs2_sum)
+    scheduler      = pme.scheduler
+    grad_safe      = pme.grad_safe
+
+    # 2. Duplicate GPU/CPU Arrays cleanly via deepcopy or copy
+    excluded_pairs      = deepcopy(pme.excluded_pairs)
+    grid_indices        = deepcopy(pme.grid_indices)
+    grid_fractions      = deepcopy(pme.grid_fractions)
+    bsplines_θ          = deepcopy(pme.bsplines_θ)
+    bsplines_dθ         = deepcopy(pme.bsplines_dθ)
+    bsplines_moduli_x   = deepcopy(pme.bsplines_moduli_x)
+    bsplines_moduli_y   = deepcopy(pme.bsplines_moduli_y)
+    bsplines_moduli_z   = deepcopy(pme.bsplines_moduli_z)
+    
+    # Critical allocations: Main charge grid and working buffers
+    charge_grid         = deepcopy(pme.charge_grid)
+    charge_grid_buffer  = deepcopy(pme.charge_grid_buffer)
+    excluded_buffer_Fs  = deepcopy(pme.excluded_buffer_Fs)
+    excluded_buffer_Es  = deepcopy(pme.excluded_buffer_Es)
+    recip_conv_buffer   = deepcopy(pme.recip_conv_buffer)
+    virial_buffer       = deepcopy(pme.virial_buffer)
+
+    # 3. CRITICAL FIX: Re-plan the FFTs on the NEW charge_grid buffer
+    # Do NOT copy the old fft_plan; it contains shared handles/streams.
+    fft_plan  = plan_fft!(charge_grid)
+    bfft_plan = plan_bfft!(charge_grid)
+
+    configure_copied_plans!(fft_plan, bfft_plan, charge_grid)
+
+    # 4. Return the brand new, isolated PME struct
+    return PME(
+        dist_cutoff, error_tol, order, ϵr, excluded_pairs, α, mesh_dims,
+        grid_indices, grid_fractions, bsplines_θ, bsplines_dθ, 
+        bsplines_moduli_x, bsplines_moduli_y, bsplines_moduli_z,
+        charge_grid, charge_grid_buffer, excluded_buffer_Fs, excluded_buffer_Es,
+        recip_conv_buffer, virial_buffer, pc_sum, pc_abs2_sum, 
+        fft_plan, bfft_plan, scheduler, grad_safe
+    )
 end
 
 function Base.zero(pme::PME)

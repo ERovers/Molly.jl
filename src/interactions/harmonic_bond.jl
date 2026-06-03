@@ -71,25 +71,11 @@ k = (1-λ)*k^a + λ*k^b
 r_0 = (1-λ)*r_0^a + λ*r_0^b
 ```
 """
-struct HarmonicBondλ{K, D, LM, SCH}
+@kwdef struct HarmonicBondλ{K, D, LM, SCH}
     k::K
     r0::D
-    λ_mixing::LM
-    scheduler::SCH
-end
-
-function HarmonicBondλ(; k, r0, λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    if k isa Tuple
-        k = tuple(k...)
-    else
-        k = (k, k)
-    end
-    if r0 isa Tuple
-        r0 = tuple(r0...)
-    else
-        r0 = (r0, r0)
-    end
-    return HarmonicBondλ(k, r0, λ_mixing, scheduler)
+    λ_mixing::LM = MinimumMixing()
+    scheduler::SCH = DefaultLambdaScheduler()
 end
 
 Base.zero(::HarmonicBondλ{K, D, LM, SCH}) where {K, D, LM, SCH} = HarmonicBondλ(k=zero(K), r0=zero(D))
@@ -124,11 +110,9 @@ end
     λ_glob = T(λ_mixing(b.λ_mixing, (atom_i.λ, atom_j.λ)))    
     pair_role = mix_roles(b.scheduler, (atom_i.alch_role, atom_j.alch_role))
     λ = scale(b.scheduler, λ_glob, pair_role)
-    k = inter_mixing(b.k, λ)
-    r0 = inter_mixing(b.r0, λ)
-    c = k * (norm(ab) - r0)
+    c = b.k * (norm(ab) - b.r0)
     f = c * normalize(ab)
-    return SpecificForce2Atoms(f, -f)
+    return SpecificForce2Atoms(λ*f, λ*-f)
 end
 
 @inline function potential_energy(b::HarmonicBondλ{K, D, LM, SCH}, coord_i, coord_j, 
@@ -139,9 +123,7 @@ end
     λ_glob = T(λ_mixing(b.λ_mixing, (atom_i.λ, atom_j.λ)))    
     pair_role = mix_roles(b.scheduler, (atom_i.alch_role, atom_j.alch_role))
     λ = scale(b.scheduler, λ_glob, pair_role)
-    k = inter_mixing(b.k, λ)
-    r0 = inter_mixing(b.r0, λ)
-    return (k / 2) * (r - r0) ^ 2
+    return λ * (b.k / 2) * (r - b.r0) ^ 2
 end
 
 @inline function force_λ(b::HarmonicBondλ, coord_i, coord_j, boundary, atoms_i, atoms_j, F, args...)

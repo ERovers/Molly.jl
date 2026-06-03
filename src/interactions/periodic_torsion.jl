@@ -156,50 +156,28 @@ where `ϕ` is the angle between the planes defined by atoms (i, j, k) and (j, k,
 Only compatible with 3D systems.
 """
 struct PeriodicTorsionλ{N, T, E, LM, SCH}
-    periodicities::NTuple{2, NTuple{N, Int}}
-    phases::NTuple{2, NTuple{N, T}}
-    ks::NTuple{2, NTuple{N, E}}
+    periodicities::NTuple{N, Int}
+    phases::NTuple{N, T}
+    ks::NTuple{N, E}
     proper::Bool
     λ_mixing::LM
     scheduler::SCH
 end
 
-function pad_torsion_terms(periodicities, phases, ks, n_terms)
+function PeriodicTorsionλ(; periodicities, phases, ks, proper::Bool=true,
+                            n_terms=length(periodicities), λ_mixing=MinimumMixing(), 
+                            scheduler=DefaultLambdaScheduler())
+    T, E, LM, SCH = eltype(phases), eltype(ks), typeof(λ_mixing), typeof(scheduler)
     if n_terms > length(periodicities)
         n_to_add = n_terms - length(periodicities)
-        periodicities = vcat(collect(periodicities), ones(Int, n_to_add))
-        phases = vcat(collect(phases), zeros(T, n_to_add))
-        ks = vcat(collect(ks), zeros(E, n_to_add))
-    end
-    return periodicities, phases, ks
-end
-
-function PeriodicTorsionλ(; periodicities, phases, ks, proper::Bool=true,
-                            n_terms=nothing, λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    if periodicities isa Tuple{<:Tuple, <:Tuple}
-        perA, perB = periodicities
-        phA, phB = phases
-        ksA, ksB = ks
+        periodicities_pad = vcat(collect(periodicities), ones(Int, n_to_add))
+        phases_pad = vcat(collect(phases), zeros(T, n_to_add))
+        ks_pad = vcat(collect(ks), zeros(E, n_to_add))
     else
-        perA, perB = periodicities, periodicities
-        phA, phB = phases, phases
-        ksA, ksB = ks, ks
+        periodicities_pad, phases_pad, ks_pad = periodicities, phases, ks
     end
-
-    n_terms = n_terms === nothing ? length(perA) : n_terms
-
-    periodicities_padA, phases_padA, ks_padA = pad_torsion_terms(perA, phA, ksA, n_terms)
-    periodicities_padB, phases_padB, ks_padB = pad_torsion_terms(perB, phB, ksB, n_terms)
-
-    T, E = eltype(phases_padA), eltype(ks_padA)
-    return PeriodicTorsionλ(
-        (tuple(periodicities_padA...), tuple(periodicities_padB...)),
-        (tuple(phases_padA...), tuple(phases_padB...)),
-        (tuple(ks_padA...), tuple(ks_padB...)),
-        proper,
-        λ_mixing,
-        scheduler,
-    )
+    PeriodicTorsionλ{n_terms, T, E, LM, SCH}(tuple(periodicities_pad...), tuple(phases_pad...),
+                                    tuple(ks_pad...), proper, λ_mixing, scheduler)
 end
 
 function Base.zero(::PeriodicTorsionλ{N, T, E}) where {N, T, E}
@@ -269,13 +247,9 @@ end
 
     λ_glob = T(λ_mixing(d.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)))    
     pair_role = mix_roles(d.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role, atom_l.alch_role))
-    λ, λ_params = scale_torsion(d.scheduler, λ_glob, pair_role)
-    
-    ks = torsion_mixing(d.ks, λ_params, pair_role, args...)
-    phases = torsion_mixing(d.phases, λ_params, pair_role, args...)
-    periodicities = torsion_mixing(d.periodicities, λ_params, pair_role, args...)
+    λ = scale_torsion(d.scheduler, λ_glob, pair_role)
 
-    fs = sum(zip(periodicities, phases, ks)) do (periodicity, phase, k)
+    fs = sum(zip(d.periodicities, d.phases, d.ks)) do (periodicity, phase, k)
         fi, fj, fk, fl = periodic_torsion_force(periodicity, phase, k, ab, bc, cd, cross_ab_bc,
                                                 cross_bc_cd, bc_norm, θ)
         return SpecificForce4Atoms(λ*fi, λ*fj, λ*fk, λ*fl)
@@ -290,16 +264,12 @@ end
                                         coords_i, coords_j, coords_k, coords_l, boundary)
     λ_glob = T(λ_mixing(d.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)))    
     pair_role = mix_roles(d.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role, atom_l.alch_role))
-    λ, λ_params = scale_torsion(d.scheduler, λ_glob, pair_role)
-    
-    ks = torsion_mixing(d.ks, λ_params, pair_role)
-    phases = torsion_mixing(d.phases, λ_params, pair_role)
-    periodicities = torsion_mixing(d.periodicities, λ_params, pair_role)
+    λ = scale_torsion(d.scheduler, λ_glob, pair_role)
 
-    fi_sum, fj_sum, fk_sum, fl_sum = periodic_torsion_force(periodicities[1], phases[1],
-                                        ks[1], ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
+    fi_sum, fj_sum, fk_sum, fl_sum = periodic_torsion_force(d.periodicities[1], d.phases[1],
+                                        d.ks[1], ab, bc, cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
     for i in 2:N
-        fi, fj, fk, fl = periodic_torsion_force(periodicities[i], phases[i], ks[i], ab, bc,
+        fi, fj, fk, fl = periodic_torsion_force(d.periodicities[i], d.phases[i], d.ks[i], ab, bc,
                                                 cd, cross_ab_bc, cross_bc_cd, bc_norm, θ)
         fi_sum += fi
         fj_sum += fj
@@ -316,15 +286,11 @@ end
 
     λ_glob = T(λ_mixing(d.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ)))    
     pair_role = mix_roles(d.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role, atom_l.alch_role))
-    λ, λ_params = scale_torsion(d.scheduler, λ_glob, pair_role)
+    λ = scale_torsion(d.scheduler, λ_glob, pair_role)
     
-    ks = torsion_mixing(d.ks, λ_params, pair_role)
-    phases = torsion_mixing(d.phases, λ_params, pair_role)
-    periodicities = torsion_mixing(d.periodicities, λ_params, pair_role)
-    
-    pe = ks[1] + ks[1] * cos((periodicities[1] * θ) - phases[1])
+    pe = d.ks[1] + d.ks[1] * cos((d.periodicities[1] * θ) - d.phases[1])
     for i in 2:N
-        pe += ks[i] + ks[i] * cos((periodicities[i] * θ) - phases[i])
+        pe += d.ks[i] + d.ks[i] * cos((d.periodicities[i] * θ) - d.phases[i])
     end
     return λ * pe
 end
