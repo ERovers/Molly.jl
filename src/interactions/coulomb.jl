@@ -1482,24 +1482,33 @@ end
     end
 
     qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
-    R = inter.α * sqrt(cbrt(1 - λ)) * (oneunit(r) + inter.σQ * abs(qij))
-
-    if r >= R
-        pe_soft = λ * inter.coulomb_const * (qij / r)
-        f_soft = λ * inter.coulomb_const * (qij / r^2)
+    inv_r = inv(r)
+    inv_r2 = inv_r^2
+    
+    if λ >= 1
+        pe_soft = inter.coulomb_const * (qij * inv_r)
+        f_soft = inter.coulomb_const * (qij * inv_r2)
     else
-        pe_soft = λ * inter.coulomb_const * (((qij / R^3) * r^2) - (((3 * qij) / R^2) * r) +
-                  ((3 * qij) / R))
-        f_soft = λ * inter.coulomb_const * (-(((2 * qij) / R^3) * r) + ((3 * qij) / R^2))
+        R = inter.α * sqrt(cbrt(1 - λ)) * (oneunit(r) + inter.σQ * abs(qij))
+        if r >= R
+            pe_soft = λ * inter.coulomb_const * (qij * inv_r)
+            f_soft = λ * inter.coulomb_const * (qij * inv_r2)
+        else
+            R2 = R^2
+            R3 = R2 * R
+            pe_soft = λ * inter.coulomb_const * (((qij / R3) * r^2) - (((3 * qij) / R2) * r) +
+                    ((3 * qij) / R))
+            f_soft = λ * inter.coulomb_const * (-(((2 * qij) / R3) * r) + ((3 * qij) / R2))
+        end
     end
 
     if special
-        return (f_soft / r) * dr * inter.weight_special * (r <= inter.dist_cutoff)
+        return (f_soft * inv_r) * dr * inter.weight_special * (r <= inter.dist_cutoff)
     end
 
     erfc_αr, force_screen = softcore_ewald_screen(inter, r)
     f = (f_soft * erfc_αr) + (pe_soft * force_screen)
-    return (f / r) * dr * (r <= inter.dist_cutoff)
+    return f * inv_r * dr * (r <= inter.dist_cutoff)
 end
 
 @inline function potential_energy(inter::CoulombSoftCoreGapsysEwald,

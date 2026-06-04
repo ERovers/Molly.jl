@@ -642,7 +642,7 @@ end
         # Pass standard LJ params tuple (Length 2)
         params = (σ^2, ϵ, nothing, nothing)
         f = force_cutoff(cutoff, inter, r, params) * dr
-        fdr = f / r
+        fdr = f * inv(r)
         return special ? fdr * inter.weight_special : fdr
     end
 
@@ -655,7 +655,7 @@ end
     # Pass SoftCore params tuple (Length 4)
     params = (C12, C6, λ, R)
     f = force_cutoff(cutoff, inter, r, params)
-    fdr = (f / r) * dr
+    fdr = (f * inv(r)) * dr
     return special ? fdr * inter.weight_special : fdr
 end
 

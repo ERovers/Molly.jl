@@ -112,19 +112,19 @@ function ϵ_mixing(me::MixingException, atom_i, atom_j, args...)
     return get_pair(me.exceptions, atom_i.atom_type, atom_j.atom_type, default)
 end
 
-function λ_mixing(me::MixingException, atom_i, atom_j, args...)
+@inline function λ_mixing(me::MixingException, atom_i, atom_j, args...)
     default = λ_mixing(me.mixing, atom_i, atom_j, args...)
     return get_pair(me.exceptions, atom_i.atom_type, atom_j.atom_type, default)
 end
 
 struct MinimumMixing end
 
-function λ_mixing(m::MinimumMixing, lambdas::Tuple{Vararg{T}}, args...) where T
-    return min(T(1.0), min(lambdas...))
+@inline function λ_mixing(m::MinimumMixing, lambdas::Tuple{Vararg{T}}, args...) where T
+    return min(lambdas...)
 end
 
 struct ProductMixing end
 
-function λ_mixing(m::ProductMixing, (a, b), args...)
+@inline function λ_mixing(m::ProductMixing, (a, b), args...)
     return a.λ*b.λ
 end

@@ -74,7 +74,7 @@ end
     return λ * λ_params * atom.charge
 end
 
-@inline function effective_charge_sqrt(scheduler, atom::Atom, ::Val{T}) where T
+@inline function effective_charge_sqrt(atom::Atom, scheduler, ::Val{T}) where T
     λ, λ_params = electrostatic_lambda(scheduler, atom, Val(T))
     return sqrt(λ*λ_params)*atom.charge
 end
@@ -423,7 +423,7 @@ is based on the smooth PME algorithm from
 Only compatible with 3D systems.
 Not compatible with infinite boundaries.
 """
-struct PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, F, B, SCH} <: AbstractEwald
+struct PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, PB, P, F, B, SCH} <: AbstractEwald
     dist_cutoff::D
     error_tol::T
     order::Int
@@ -444,6 +444,7 @@ struct PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, F, B, SCH} <: Abstrac
     excluded_buffer_Es::EB
     recip_conv_buffer::RB
     virial_buffer::VB
+    partial_charge_buffer::PB
     pc_sum::P
     pc_abs2_sum::P
     fft_plan::F
@@ -524,22 +525,24 @@ function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5,
         excluded_buffer_Fs = to_device(zeros(T, 3, n_atoms), AT)
         excluded_buffer_Es = to_device(zeros(T, length(excluded_pairs)), AT)
         virial_buffer      = to_device(zeros(T, 3, 3), AT)
+        partial_charge_buffer = to_device(zeros(T, n_atoms), AT)
     elseif n_threads > 1
         charge_grid_buffer = [zero(charge_grid) for _ in 1:n_threads]
         recip_conv_buffer = zeros(T, n_threads)
         excluded_buffer_Fs, excluded_buffer_Es = nothing, nothing
         virial_buffer = [zeros(T, 3, 3) for _ in 1:n_threads]
+        partial_charge_buffer = zeros(T, n_atoms)
     else
         charge_grid_buffer, recip_conv_buffer = nothing, nothing
         excluded_buffer_Fs, excluded_buffer_Es = nothing, nothing
         virial_buffer = [zeros(T, 3, 3)]
+        partial_charge_buffer = zeros(T, n_atoms)
     end
 
     if fixed_charges && !grad_safe
-        atoms_cpu = from_device(atoms)
-        partial_charges = [effective_charge_sqrt(scheduler, atom, Val(T)) for atom in atoms_cpu]
-        pc_sum = sum(partial_charges)
-        pc_abs2_sum = sum(abs2, partial_charges)
+        partial_charge_buffer .= effective_charge_sqrt.(atoms, Ref(scheduler), Val(T))
+        pc_sum = sum(partial_charge_buffer)
+        pc_abs2_sum = sum(abs2, partial_charge_buffer)
     else
         pc_sum, pc_abs2_sum = nothing, nothing
     end
@@ -553,7 +556,7 @@ function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5,
     return PME(dist_cutoff, error_tol_T, order, T(ϵr), excluded_pairs, α, mesh_dims,
                grid_indices, grid_fractions, bsplines_θ, bsplines_dθ, bsm_x, bsm_y, bsm_z,
                charge_grid, charge_grid_buffer, excluded_buffer_Fs, excluded_buffer_Es,
-               recip_conv_buffer, virial_buffer, pc_sum, pc_abs2_sum, fft_plan,
+               recip_conv_buffer, virial_buffer, partial_charge_buffer, pc_sum, pc_abs2_sum, fft_plan,
                bfft_plan, scheduler, grad_safe)
 end
 
@@ -565,7 +568,7 @@ function configure_copied_plans!(fft_plan, bfft_plan, charge_grid)
     return nothing
 end
 
-function Base.deepcopy(pme::PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, F, B, SCH}) where {T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, F, B, SCH}
+function Base.deepcopy(pme::PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, PB, P, F, B, SCH}) where {T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, PB, P, F, B, SCH}
     # 1. Deepcopy standard immutable parameters and CPU buffers
     dist_cutoff    = pme.dist_cutoff
     error_tol      = pme.error_tol
@@ -587,7 +590,8 @@ function Base.deepcopy(pme::PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, 
     bsplines_moduli_x   = deepcopy(pme.bsplines_moduli_x)
     bsplines_moduli_y   = deepcopy(pme.bsplines_moduli_y)
     bsplines_moduli_z   = deepcopy(pme.bsplines_moduli_z)
-    
+    partial_charge_buffer = deepcopy(pme.partial_charge_buffer)
+
     # Critical allocations: Main charge grid and working buffers
     charge_grid         = deepcopy(pme.charge_grid)
     charge_grid_buffer  = deepcopy(pme.charge_grid_buffer)
@@ -609,7 +613,7 @@ function Base.deepcopy(pme::PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, P, 
         grid_indices, grid_fractions, bsplines_θ, bsplines_dθ, 
         bsplines_moduli_x, bsplines_moduli_y, bsplines_moduli_z,
         charge_grid, charge_grid_buffer, excluded_buffer_Fs, excluded_buffer_Es,
-        recip_conv_buffer, virial_buffer, pc_sum, pc_abs2_sum, 
+        recip_conv_buffer, virial_buffer, partial_charge_buffer, pc_sum, pc_abs2_sum, 
         fft_plan, bfft_plan, scheduler, grad_safe
     )
 end
@@ -641,6 +645,7 @@ function Base.zero(pme::PME)
         zero_or_nothing(pme.excluded_buffer_Es),
         zero_or_nothing(pme.recip_conv_buffer),
         zero_or_nothing(pme.virial_buffer),
+        zero_or_nothing(pme.partial_charge_buffer),
         zero_or_nothing(pme.pc_sum),
         zero_or_nothing(pme.pc_abs2_sum),
         pme.fft_plan,
@@ -1098,10 +1103,9 @@ function ewald_pe_forces!(Fs, vir, inter::PME{T}, atoms, coords, boundary, force
     end
 
     if isnothing(inter.pc_sum) || inter.grad_safe
-        partial_charges = [effective_charge_sqrt(inter.scheduler, atom, Val(T))
-                           for atom in from_device(atoms)]
-        pc_sum = sum(partial_charges)
-        pc_abs2_sum = sum(abs2, partial_charges)
+        inter.partial_charge_buffer .= effective_charge_sqrt.(atoms, Ref(inter.scheduler), Val(T))
+        pc_sum = sum(inter.partial_charge_buffer)
+        pc_abs2_sum = sum(abs2, inter.partial_charge_buffer)
     else
         pc_sum, pc_abs2_sum = inter.pc_sum, inter.pc_abs2_sum
     end
