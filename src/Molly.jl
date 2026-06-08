@@ -15,6 +15,7 @@ using Combinatorics
 using DataStructures
 using Distances
 using Distributions
+using Distributed
 using EzXML
 using FFTW
 using GPUArrays

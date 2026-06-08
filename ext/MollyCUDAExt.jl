@@ -19,10 +19,18 @@ module MollyCUDAExt
 
 using Molly
 using Molly: from_device, box_sides, sorted_morton_seq!, sum_pairwise_forces,
-             sum_pairwise_potentials, sum_pairwise_forces_λ, volume
+             sum_pairwise_potentials, sum_pairwise_forces_λ
 using CUDA
 using Atomix
 using KernelAbstractions
+
+function Molly.get_gpu_devices(::Val{true})
+    return collect(CUDA.devices())
+end
+
+function Molly.set_gpu_device!(gpu_id, ::Val{true})
+    CUDA.device!(gpu_id)
+end
 
 const WARPSIZE = UInt32(32)
 const MAX_BLOCK_Y = 32

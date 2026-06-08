@@ -560,15 +560,7 @@ function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5,
                bfft_plan, scheduler, grad_safe)
 end
 
-function Base.deepcopy(t::Tuple)
-    return map(deepcopy, t)
-end
-
-function configure_copied_plans!(fft_plan, bfft_plan, charge_grid)
-    return nothing
-end
-
-function Base.deepcopy(pme::PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, PB, P, F, B, SCH}) where {T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, PB, P, F, B, SCH}
+function Base.deepcopy(pme::PME)
     # 1. Deepcopy standard immutable parameters and CPU buffers
     dist_cutoff    = pme.dist_cutoff
     error_tol      = pme.error_tol
@@ -604,8 +596,6 @@ function Base.deepcopy(pme::PME{T, D, E, A, I, M, BM, C, CB, FB, EB, RB, VB, PB,
     # Do NOT copy the old fft_plan; it contains shared handles/streams.
     fft_plan  = plan_fft!(charge_grid)
     bfft_plan = plan_bfft!(charge_grid)
-
-    configure_copied_plans!(fft_plan, bfft_plan, charge_grid)
 
     # 4. Return the brand new, isolated PME struct
     return PME(

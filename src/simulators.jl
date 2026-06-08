@@ -1312,6 +1312,180 @@ end
     return n_parts
 end
 
+function get_gpu_devices(::Val{false})
+    return nothing
+end
+
+function set_gpu_device!(gpu_id, ::Val{false})
+    return nothing
+end
+
+function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
+                        remd_sim::ReplicaExchangeMD,
+                        n_steps_or_time;
+                        n_threads::Integer=Threads.nthreads(),
+                        run_loggers=true,
+                        shortcut=nothing, # Unused
+                        init_step::Integer=0, # Unused
+                        show_progress=default_show_progress(),
+                        rng=Random.default_rng(),
+                        strictness=default_strictness(),
+                        gpu_devices=get_gpu_devices(Val(true)))
+    check_strictness(strictness)
+    n_steps = calc_n_steps(n_steps_or_time, remd_sim.dt)
+    rep_id_proc, n_proc = divide_gpus((nprocs()-1), gpu_devices, sys.n_replicas, sys)
+
+    sys = ReplicaSystem(sys,
+                        replica_coords=Molly.from_device.(sys.replica_coords),
+                        replica_velocities=Molly.from_device.(sys.replica_velocities)
+        )
+
+    n_cycles = convert(Int, (n_steps * remd_sim.dt) ÷ remd_sim.exchange_time)
+    cycle_length = n_cycles > 0 ? n_steps ÷ n_cycles : 0
+    remaining_steps = n_cycles > 0 ? n_steps % n_cycles : n_steps
+    n_attempts = 0
+
+    progress = setup_progress(n_cycles, show_progress)
+    for cycle in 1:n_cycles
+        futures = Future[]
+        @sync for i in 1:n_proc
+            pid = workers()[i]
+            f = remotecall(pid, rep_id_proc[i], sys, cycle_length, run_loggers, rng, strictness) do rep_ids, sys, cycle_length, run_loggers, rng, strictness
+                results = Dict()
+                AT = array_type(local_sys[1].coords)
+                for (j,id) in enumerate(rep_ids)
+                    integrator = sys.integrators[id]
+
+                    state_idx = sys.state_indices[id]
+                    active_sys = System(local_sys[j];
+                        coords = Molly.to_device(sys.replica_coords[state_idx],AT),
+                        velocities = Molly.to_device(sys.replica_velocities[state_idx], AT),
+                        boundary = sys.replica_boundaries[state_idx],
+                        loggers = sys.replica_loggers[state_idx]
+                    )
+                    simulate!(active_sys, integrator, cycle_length;
+                                n_threads=1, run_loggers=run_loggers,
+                                rng=rng, strictness=strictness, show_progress=false)
+                    results[id] = (Molly.from_device(active_sys.coords), active_sys.boundary, Molly.from_device(active_sys.velocities), active_sys.loggers)
+                end
+                return results
+            end
+            push!(futures, f)
+        end
+
+        data = Base.merge(fetch.(futures)...)
+        for (i, (coords, boundaries, velocities, loggers)) in data
+            sys.replica_coords[i] = coords
+            sys.replica_boundaries[i] = boundaries
+            sys.replica_velocities[i] = velocities
+            sys.replica_loggers[i] = loggers
+        end
+
+        cycle_parity = cycle % 2
+        for n in (1 + cycle_parity):2:(sys.n_replicas - 1)
+            n_attempts += 1
+            m = n + 1
+            Δ, exchanged = remd_exchange!(sys, remd_sim, n, m; rng=rng)
+            
+            if run_loggers != false && exchanged && !isnothing(sys.exchange_logger)
+                log_property!(sys.exchange_logger, sys, nothing, nothing, cycle * cycle_length;
+                              indices=(n, m), delta=Δ, n_threads=n_threads)
+            end
+        end
+        next_nograd!(progress)
+    end
+
+    if remaining_steps > 0
+        futures = Future[]
+        @sync for i in 1:n_proc
+            pid = workers()[i]
+            f = remotecall(pid, rep_id_proc[i], sys, cycle_length, run_loggers, rng, strictness) do rep_ids, sys, cycle_length, run_loggers, rng, strictness
+                results = Dict()
+                AT = array_type(local_sys[1].coords)
+                for (j,id) in enumerate(rep_ids)
+                    integrator = sys.integrators[id]
+
+                    state_idx = sys.state_indices[id]
+                    active_sys = System(local_sys[j];
+                        coords = Molly.to_device(sys.replica_coords[state_idx],AT),
+                        velocities = Molly.to_device(sys.replica_velocities[state_idx], AT),
+                        boundary = sys.replica_boundaries[state_idx],
+                        loggers = sys.replica_loggers[state_idx]
+                    )
+                    simulate!(active_sys, integrator, cycle_length;
+                                n_threads=1, run_loggers=run_loggers,
+                                rng=rng, strictness=strictness, show_progress=false)
+                    results[id] = (Molly.from_device(active_sys.coords), active_sys.boundary, Molly.from_device(active_sys.velocities), active_sys.loggers)
+                end
+                return results
+            end
+            push!(futures, f)
+        end
+
+        data = Base.merge(fetch.(futures)...)
+        for (i, (coords, boundaries, velocities, loggers)) in data
+            sys.replica_coords[i] = coords
+            sys.replica_boundaries[i] = boundaries
+            sys.replica_velocities[i] = velocities
+            sys.replica_loggers[i] = loggers
+        end
+        next_nograd!(progress)
+    end
+
+    if run_loggers != false && !isnothing(sys.exchange_logger)
+        finish_logs!(sys.exchange_logger; n_steps=n_steps, n_attempts=n_attempts)
+    end
+
+    return sys
+end
+
+@inline function divide_gpus(n_proc, gpu_devices, k, sys)
+    if n_proc != length(gpu_devices)
+        throw(ArgumentError("Number of processes ($n_proc) must be equal to n_gpu ($(length(gpu_devices))) when simulating on GPU"))
+    end
+    if n_proc < k
+        @warn("Number of processes ($n_proc) less than the number of replicas ($k), some replicas will not be simulated in parallel, but sequentially")
+        num_per_proc = floor(Int, k / n_proc)
+        all_ids = collect(1:k)
+        rep_id_proc = [all_ids[((i-1)*num_per_proc + 1) : (i*num_per_proc)] for i in 1:n_proc]
+    elseif n_proc > k
+        @warn("Number of processes ($n_proc) greater than the number of replicas ($k), some processes will be idle during the simulation, 
+        consider reducing the number of processes to match the number of replicas for more efficient simulation")
+        rep_id_proc = [[i] for i in 1:k]
+    elseif n_proc == k
+        rep_id_proc = [[i] for i in 1:k]
+    end
+    @sync for (i, pid) in enumerate(workers())
+        remotecall_fetch(pid, gpu_devices) do gpu_devices
+            gpu_id = gpu_devices[i]
+            set_gpu_device!(gpu_id, Val(true))
+            println("Worker $pid initialized on GPU $gpu_id")
+        end
+    end
+
+    Distributed.@everywhere global local_sys
+    futures = []
+    @sync for (i, pid) in enumerate(workers())
+        remotecall_fetch(pid, rep_id_proc[i], sys) do rep_id, rep_sys
+            systems = []
+            for j in rep_id
+                new_sys = System(rep_sys.partition.master_sys,
+                                    atoms = rep_sys.partition.λ_atoms[j],
+                                    pairwise_inters = rep_sys.state_pairwise_inters[j],
+                                    specific_inter_lists = rep_sys.state_specific_inter_lists[j],
+                                    general_inters = rep_sys.state_general_inters[j],
+                                    neighbor_finder = rep_sys.replica_neighbor_finders[j],
+                                    loggers = rep_sys.replica_loggers[j]
+                                    )
+                push!(systems, deepcopy(new_sys))
+            end
+            global local_sys = systems
+        end
+    end
+
+    return rep_id_proc, n_proc
+end
+
 """
     MetropolisMonteCarlo(; <keyword arguments>)
 

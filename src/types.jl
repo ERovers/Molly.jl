@@ -1507,6 +1507,24 @@ function AtomsBase.atomic_number(s::ReplicaSystem)
     end
 end
 
+function ReplicaSystem(sys::ReplicaSystem;
+                        replica_coords=sys.replica_coords,
+                        replica_velocities=sys.replica_velocities,
+                )
+    D = AtomsBase.n_dimensions(sys.replica_boundaries[1])
+    T = float_type(sys.replica_boundaries[1])
+    AT = array_type(replica_coords[1])
+    return ReplicaSystem{D, AT, T, typeof(sys.partition), typeof(sys.betas), typeof(sys.integrators), 
+                         typeof(replica_coords), typeof(replica_velocities), 
+                         typeof(sys.replica_boundaries), typeof(sys.replica_neighbor_finders), 
+                         typeof(sys.replica_loggers), typeof(sys.state_pairwise_inters), 
+                         typeof(sys.state_specific_inter_lists), typeof(sys.state_general_inters),
+                         typeof(sys.exchange_logger), typeof(sys.data)}(sys.partition, sys.n_replicas, sys.betas, sys.integrators, replica_coords, replica_velocities, 
+        sys.replica_boundaries, sys.replica_neighbor_finders, sys.replica_loggers, 
+        sys.state_pairwise_inters, sys.state_specific_inter_lists, sys.state_general_inters,
+        sys.state_indices, sys.exchange_logger, sys.data
+    )
+end
 
 # Avoid unnecessary Array calls on CPU
 from_device(x::Array) = x
@@ -1514,6 +1532,18 @@ from_device(x) = Array(x)
 
 to_device(x::Array, ::Type{<:Array}) = x
 to_device(x, ::Type{AT}) where AT = AT(x)
+
+function Base.deepcopy(t::Tuple)
+    return map(deepcopy, t)
+end
+
+function to_device(t::Tuple)
+    return map(to_device, t)
+end
+
+function from_device(t::Tuple)
+    return map(from_device, t)
+end
 
 """
     array_type(sys)
