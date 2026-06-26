@@ -1355,8 +1355,7 @@ end
     end
 
     r = sqrt(sum(abs2, dr))
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
-    qi, qj = atom_i.charge, atom_j.charge
+    qi, qj = (λ_params*atom_i.charge), (λ_params*atom_j.charge)
     pe_soft = λ * inter.coulomb_const * ((qi * qj) / sqrt(cbrt(inter.α * (1 - λ) *
               σ_mixing(inter.σ_mixing, atom_i, atom_j)^6 + r^6)))
 
