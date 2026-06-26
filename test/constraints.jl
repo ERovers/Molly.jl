@@ -336,8 +336,8 @@ end
                     rigid_water=rigid_water, # No water present
                     constraint_algorithm=constraint_algorithm,    
                 )
-                if constraint_algorithm === LINCS
-                    # increase tolerances from default
+                if constraint_algorithm == LINCS
+                    # Increase tolerances from default
                     lincs = LINCS(
                         masses=Array(masses(sys)),
                         dist_constraints=sys.constraints[1].dist_constraints,
@@ -1086,5 +1086,33 @@ end
 
         allocs = @allocated Molly.lincs_solve!(xp, data, ws, 1.0)
         @test allocs == 0
+    end
+end
+
+@testset "Minimization with constraints" begin
+    ff = MolecularForceField(joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml"])...)
+    for AT in array_list
+        sys_nocons = System(
+            joinpath(data_dir, "6mrr_equil.pdb"),
+            ff;
+            array_type=AT,
+            nonbonded_method=:pme,
+        )
+        sys_cons = System(
+            joinpath(data_dir, "6mrr_equil.pdb"),
+            ff;
+            array_type=AT,
+            nonbonded_method=:pme,
+            constraints=:hbonds,
+            rigid_water=true,
+        )
+
+        sim = SteepestDescentMinimizer()
+        simulate!(sys_nocons, sim)
+        simulate!(sys_cons, sim)
+
+        @test rmsd(sys_nocons.coords[1:1170], sys_cons.coords[1:1170]) < 0.01u"nm"
+        @test potential_energy(sys_nocons) < -150_000u"kJ/mol"
+        @test potential_energy(sys_cons)   < -150_000u"kJ/mol"
     end
 end
