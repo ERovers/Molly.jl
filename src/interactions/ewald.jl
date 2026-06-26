@@ -69,7 +69,7 @@ end
     return scale_elec(scheduler, T(atom.λ), atom.alch_role)
 end
 
-@inline function effective_charge(scheduler, atom::Atom, ::Val{T}) where T
+@inline function effective_charge(atom::Atom, scheduler, ::Val{T}) where T
     λ, λ_params = electrostatic_lambda(scheduler, atom, Val(T))
     return λ * λ_params * atom.charge
 end
@@ -84,8 +84,8 @@ function excluded_interactions_inner!(Fs, vir, atoms, coords, boundary, α, f_di
                             i, j, vec_ij, r, calculate_forces, ::Val{T}, ::Val{atomic},
                             ::Val{needs_vir}) where {T, atomic, needs_vir}
     sqrt_π = sqrt(T(π))
-    charge_ij = effective_charge(scheduler, atoms[i], Val(T)) *
-                effective_charge(scheduler, atoms[j], Val(T))
+    charge_ij = effective_charge(atoms[i], scheduler, Val(T)) *
+                effective_charge(atoms[j], scheduler, Val(T))
     αr = α * r
     erf_αr = erf(αr)
     if erf_αr > T(1e-6)
@@ -266,7 +266,7 @@ function ewald_pe_forces!(Fs, vir, inter::Ewald{T}, atoms, coords, boundary, for
     if kmax < 1
         error("kmax for Ewald summation is $kmax, should be at least 1")
     end
-    partial_charges_cpu = [effective_charge(inter.scheduler, atom, Val(T)) for atom in atoms_cpu]
+    partial_charges_cpu = [effective_charge(atom, scheduler, Val(T)) for atom in atoms_cpu]
     V = volume(boundary)
     f = (energy_units == NoUnits ? ustrip(T(Molly.coulomb_const)) : T(Molly.coulomb_const))
     if AT <: AbstractGPUArray && calculate_forces
@@ -779,7 +779,7 @@ end
 @inline function spread_charge_inner!(charge_grid, grid_indices, bsplines_θ,
                               mesh_dims, order, atoms, scheduler, i, 
                               ::Val{T}, ::Val{atomic}) where {T, atomic}
-    q = effective_charge(scheduler, atoms[i], Val(T))
+    q = effective_charge(atoms[i], scheduler, Val(T))
     @inbounds x0index, y0index, z0index = grid_indices[1, i], grid_indices[2, i], grid_indices[3, i]
     @inbounds for ix in 0:(order-1)
         xindex = (x0index + ix) % mesh_dims[1]
@@ -993,7 +993,7 @@ function interpolate_force_inner!(Fs, charge_grid, grid_indices, bsplines_θ,
     nx, ny, nz = mesh_dims
     fx, fy, fz = zero(T), zero(T), zero(T)
     @inbounds begin
-        q = effective_charge(scheduler, atoms[i], Val(T))
+        q = effective_charge(atoms[i], scheduler, Val(T))
         x0index, y0index, z0index = grid_indices[1, i], grid_indices[2, i], grid_indices[3, i]
         for ix in 0:(order-1)
             xindex = (x0index + ix) % mesh_dims[1]
@@ -1102,6 +1102,10 @@ function ewald_pe_forces!(Fs, vir, inter::PME{T}, atoms, coords, boundary, force
     charge_E = -f_div_ϵr * T(π) * pc_sum^2 / (2 * V * α^2)
     self_E = f_div_ϵr * -pc_abs2_sum * α / sqrt(T(π)) + charge_E
     total_E = reciprocal_space_E + self_E + exclusion_E
+    println("Reciprocal: ", reciprocal_space_E)
+    println("Self: ", self_E)
+    println("SelfReciprocal+: ", self_E+reciprocal_space_E)
+    println("Exclusion: ", exclusion_E)
     return total_E
 end
 
@@ -1166,8 +1170,8 @@ end
 function excluded_interactions_inner_λ!(Fs, atoms, coords, boundary, α, f, 
                             scheduler, i, j, ::Val{T}, ::Val{atomic}) where {T, atomic}
     sqrt_π = sqrt(T(π))
-    charge_i = charge(atoms[i]) * effective_charge(scheduler, atoms[j], Val(T))
-    charge_j = effective_charge(scheduler, atoms[i], Val(T)) * charge(atoms[j])
+    charge_i = charge(atoms[i]) * effective_charge(atoms[j], scheduler, Val(T))
+    charge_j = effective_charge(atoms[i], scheduler, Val(T)) * charge(atoms[j])
     vec_ij = vector(coords[i], coords[j], boundary)
     r = norm(vec_ij)
     αr = α * r
@@ -1238,7 +1242,7 @@ function force_λ!(Fs, inter::PME{T}, atoms, coords, boundary, ::Val{energy_unit
                     mesh_dims, order, force_units, atoms, inter.scheduler, 1)
     
     #### Self ####
-    partial_charges = ustrip.([effective_charge(inter.scheduler, atom, Val(T))
+    partial_charges = ustrip.([effective_charge(atom, inter.scheduler, Val(T))
                         for atom in from_device(atoms)])
     lambdas = ustrip.([sqrt(electrostatic_lambda(inter.scheduler, atom, Val(T)))
                         for atom in from_device(atoms)])

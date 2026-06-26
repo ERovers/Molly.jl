@@ -365,6 +365,12 @@ function Base.:+(l1::LennardJonesSoftCoreBeutler, l2::LennardJonesSoftCoreBeutle
     )
 end
 
+function to_lambda_function(inter::LennardJones, gapsys::Val{false}; α=T(1.0), λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return LennardJonesSoftCoreBeutler(cutoff=inter.cutoff, α=α, use_neighbors=inter.use_neighbors, shortcut=inter.shortcut, 
+                                        σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing, λ_mixing=λ_mixing, scheduler=scheduler, 
+                                        weight_special=inter.weight_special)
+end
+
 @inline function force(inter::LennardJonesSoftCoreBeutler,
                        dr,
                        atom_i,
@@ -413,8 +419,9 @@ end
         return special ? fdr * inter.weight_special : fdr
     end
 
-    σ6 = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_glob, λ, pair_role)^6
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_glob, λ, pair_role)
+    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j)
+    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
+    σ6 = σ^6
 
     C6 = 4 * ϵ * σ6
     C12 = C6 * σ6
@@ -488,8 +495,9 @@ end
         end
     end
 
-    σ6 = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)^6
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
+    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j)
+    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
+    σ6 = σ^6
 
     cutoff = inter.cutoff
     r = norm(dr)
@@ -596,6 +604,12 @@ function Base.:+(l1::LennardJonesSoftCoreGapsys, l2::LennardJonesSoftCoreGapsys)
         l1.scheduler,
         l1.weight_special + l2.weight_special,
     )
+end
+
+function to_lambda_function(inter::LennardJones, gapsys::Val{true}; α=T(0.85), λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return LennardJonesSoftCoreGapsys(cutoff=inter.cutoff, α=α, use_neighbors=inter.use_neighbors, shortcut=inter.shortcut, 
+                                        σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing, λ_mixing=λ.mixing, scheduler=scheduler, 
+                                        weight_special=inter.weight_special)
 end
 
 @inline function force(inter::LennardJonesSoftCoreGapsys,
@@ -791,8 +805,9 @@ end
 
     cutoff = inter.cutoff
     r = norm(dr)
-    σ6 = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_glob, λ, pair_role)^6
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_glob, λ, pair_role)
+    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j)
+    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
+    σ6 = σ^6
 
     C6 = 4 * ϵ * σ6
     C12 = C6 * σ6
@@ -931,9 +946,14 @@ end
         return ustrip.(zero(dr)) * force_units
     end
 
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, special)
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, special)
-    λ = λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ), special)
+    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
+    role_i = atom_i.alch_role
+    role_j = atom_j.alch_role
+    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
+    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+
+    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j, special)
+    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, special)
 
     cutoff = inter.cutoff
     r = norm(dr)
@@ -970,9 +990,15 @@ end
     if shortcut_pair(inter.shortcut, atom_i, atom_j, special)
         return ustrip(zero(dr[1])) * energy_units
     end
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, special)
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, special)
-    λ = λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ), special)
+
+    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
+    role_i = atom_i.alch_role
+    role_j = atom_j.alch_role
+    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
+    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+
+    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j, special)
+    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, special)
 
     cutoff = inter.cutoff
     r = norm(dr)
@@ -1073,6 +1099,10 @@ function Base.:+(l1::LennardJones14SoftCoreGapsys, l2::LennardJones14SoftCoreGap
     )
 end
 
+function to_lambda_function(inter::LennardJones14, gapsys::Val{true}; α=T(0.85), λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return LennardJones14SoftCoreGapsys(σ14_mixed=inter.σ14_mixed, ϵ14_mixed=inter.ϵ14_mixed, weight_14=inter.weight_14, α=α, λ_mixing=λ.mixing, scheduler=scheduler)
+end
+
 @inline function force(inter::LennardJones14SoftCoreGapsys, coords_i, coords_l, boundary, atoms_i, atoms_l, force_units, args...)
     T = typeof(ustrip(atoms_i.σ))
     dr = vector(coords_i, coords_l, boundary)
@@ -1097,27 +1127,27 @@ end
     end
 
     if λ >= 1
-        σ2 = inter.σ14_mixed ^ 2
+        σ2 = (λ_params * inter.σ14_mixed) ^ 2
         dr = vector(coords_i, coords_l, boundary)
         r2 = sum(abs2, dr)
         six_term = (σ2 / r2) ^ 3
-        fl = inter.weight_14 * (24 * inter.ϵ14_mixed / r2) * (2 * six_term ^ 2 - six_term) * dr
+        fl = inter.weight_14 * (24 * λ_params * inter.ϵ14_mixed / r2) * (2 * six_term ^ 2 - six_term) * dr
         fi = -fl
         return SpecificForce2Atoms(fi, fl)
     else
-        σ6 = inter.σ14_mixed^6
+        σ6 = (λ_params*inter.σ14_mixed)^6
         r6 = r^6
-        C6 = 4 * inter.ϵ14_mixed * σ6
+        C6 = 4 * λ_params * inter.ϵ14_mixed * σ6
         C12 = C6 * σ6
         val = (26 * σ6 * (1 - λ)) / 7
         R = inter.α * sqrt(cbrt(val))
 
         if r >= R
-            σ2 = inter.σ14_mixed ^ 2
+            σ2 = (λ_params*inter.σ14_mixed) ^ 2
             dr = vector(coords_i, coords_l, boundary)
             r2 = sum(abs2, dr)
             six_term = (σ2 / r2) ^ 3
-            fl = λ * inter.weight_14 * (24 * inter.ϵ14_mixed / r2) * (2 * six_term ^ 2 - six_term) * dr
+            fl = λ * inter.weight_14 * (24 * λ_params * inter.ϵ14_mixed / r2) * (2 * six_term ^ 2 - six_term) * dr
             fi = -fl
             return SpecificForce2Atoms(fi, fl)
         else
@@ -1156,13 +1186,13 @@ end
     end
 
     if λ >= 1
-        σ2 = inter.σ14_mixed ^ 2
+        σ2 = (λ_params*inter.σ14_mixed) ^ 2
         r2 = r^2
         six_term = (σ2 / r2) ^ 3
-        return inter.weight_14 * 4 * inter.ϵ14_mixed * (six_term ^ 2 - six_term)
+        return inter.weight_14 * 4 * λ_params * inter.ϵ14_mixed * (six_term ^ 2 - six_term)
     else
-        σ6 = inter.σ14_mixed^6
-        C6 = 4 * inter.ϵ14_mixed * σ6
+        σ6 = (λ_params*inter.σ14_mixed)^6
+        C6 = 4 * λ_params * inter.ϵ14_mixed * σ6
         C12 = C6 * σ6
         val = (26 * σ6 * (1 - λ)) / 7
         R = inter.α * sqrt(cbrt(val))
@@ -1210,11 +1240,9 @@ end
         return SpecificForce2Atoms(zero_pairwise_force(dr, force_units),zero_pairwise_force(dr, force_units))
     end
 
-    σ6 = inter.σ14_mixed^6
-    ϵ = inter.ϵ14_mixed
+    σ6 = (λ_params*inter.σ14_mixed)^6
 
-    σ6 = inter.σ14_mixed^6
-    C6 = 4 * inter.ϵ14_mixed * σ6
+    C6 = 4 * λ_params* inter.ϵ14_mixed * σ6
     C12 = C6 * σ6
     val = (26 * σ6 * (1 - λ)) / 7
     R = inter.α * sqrt(cbrt(val))

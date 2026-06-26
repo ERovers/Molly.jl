@@ -61,8 +61,7 @@ end
 @doc raw"""
     HarmonicBondλ(; k, r0)
 
-A harmonic bond between two atoms that is scaled by λ for core atoms, it will 
-a normal HarmonicBond for any other type of atom.
+A harmonic bond between two atoms that is scaled by λ for core atoms.
 
 The potential energy is defined as
 ```math
@@ -101,6 +100,10 @@ function extract_parameters!(params_dic,
         end
     end
     return params_dic
+end
+
+function to_lambda_function(inter::HarmonicBond; λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return HarmonicBondλ(k=inter.k, r0=inter.r0, λ_mixing=λ_mixing, scheduler=scheduler)
 end
 
 @inline function force(b::HarmonicBondλ{K, D, LM, SCH},coord_i, coord_j, 

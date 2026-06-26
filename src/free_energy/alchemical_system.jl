@@ -21,27 +21,6 @@ const rotamer_dic = Dict("ARG" => [62,-177,-67,-62], "LYS" => [62,-177,-90,-67,-
                             "VAL" => [63,175,-60], "SER" => [62, -177,-65],
                             "CYS" => [62,-177,-65])
 
-const interaction_mapping = Dict(HarmonicBond => HarmonicBondλ,
-                                HarmonicAngle => HarmonicAngleλ,
-                                PeriodicTorsion => PeriodicTorsionλ)
-
-function to_lambda_param(inter::HarmonicBond)
-    return HarmonicBondλ(k=inter.k, r0=inter.r0)
-end
-
-function to_lambda_param(inter::HarmonicAngle)
-    return HarmonicAngleλ(k=inter.k, θ0=inter.θ0)
-end
-
-function to_lambda_param(inter::PeriodicTorsion)
-    return PeriodicTorsionλ(
-        periodicities=inter.periodicities,
-        phases       =inter.phases,
-        ks           =inter.ks,
-        proper       =inter.proper,
-    )
-end
-
 """
     Hybrid_system(T, AT, ff, sys, res_num, aminos)
 
@@ -58,7 +37,13 @@ original system and λ-mediated atoms.
 """
 
 
-function Hybrid_system(T, AT, ff, sys, traj_file, params_dic; direction=true, temp = T(298.0)u"K", units=true, aminos_d=aminos_dic)
+function Hybrid_system(T, AT, ff, sys, traj_file, params_dic; 
+                        direction=true, 
+                        temp = T(298.0)u"K", 
+                        units=true, 
+                        aminos_d=aminos_dic, 
+                        scheduler=DefaultLambdaScheduler(),
+                        )
     # initialize data groups for new system
     Atoms = []
     Data = []
@@ -420,14 +405,15 @@ function Hybrid_system(T, AT, ff, sys, traj_file, params_dic; direction=true, te
                                                     scheduler=ProbabilityLambdaScheduler(),
                                                     weight_special=T(1.0), 
                                                     coulomb_const=(units ? T(coulomb_const) : T(ustrip(coulomb_const))), 
-                                                    approximate_erfc=true)
+                                                    approximate_erfc=false)
                         )
 
     
     general_inters = (
                         PME((units ? T(1.0)u"nm" : T(1.0)), to_device(Atoms, AT), Boundary; error_tol=T(0.0005), 
                             eligible=to_device(eligible_PME, AT), 
-                            special=to_device(special, AT), grad_safe=true),
+                            special=to_device(special, AT), grad_safe=true,
+                            approximate_pme=false),
                         )
 
     # Set-up final system
@@ -456,7 +442,11 @@ end
 # System A is the main reference system from which the environment atoms are taken
 # System B is only used for the Unique system B atoms and the parameters for Core atoms
 
-function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, core_mapAB, traj_file; temp = T(298.0)u"K", units=true)
+function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, core_mapAB, traj_file; 
+                        temp = T(298.0)u"K", 
+                        units=true,
+                        scheduler=DefaultLambdaScheduler(),
+                        )
     # Collect correct datatypes and fill in missing gaps in the mappings
     S = typeof(sysA.atoms[1].σ)
     E = typeof(sysA.atoms[1].ϵ)
@@ -483,13 +473,25 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
     # Add all the atoms with new numbering (save a mapping to adjust the interactions list later)
     # Add first core, then unique and then environment atoms
     counter = 1
+    res_n = 0
+    res_number = 0
+    chain = ""
     for i in mapping["core"]
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
         push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                             λ=T(global_λ), alch_role=CoreDRole))
-        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
+        if chain!=d.chain_id
+            chain = d.chain_id
+            res_n = 0
+            res_number = 0
+        end
+        if d.res_number!=res_n
+            res_number +=1
+            res_n = d.res_number
+        end
+        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
         push!(Coords, c)
         mapping_A[i] = counter
@@ -515,7 +517,16 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         c = sysA.coords[i]
         push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                             λ=T(global_λ), alch_role=DeleteRole))
-        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
+        if chain!=d.chain_id
+            chain = d.chain_id
+            res_n = 0
+            res_number = 0
+        end
+        if d.res_number!=res_n
+            res_number +=1
+            res_n = d.res_number
+        end
+        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
         push!(Coords, c)
         mapping_A[i] = counter
@@ -528,7 +539,16 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         c = sysB.coords[i]
         push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                             λ=T(global_λ), alch_role=InsertRole))
-        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
+        if chain!=d.chain_id
+            chain = d.chain_id
+            res_n = 0
+            res_number = 0
+        end
+        if d.res_number!=res_n
+            res_number +=1
+            res_n = d.res_number
+        end
+        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
         push!(Coords, c)
         mapping_B[i] = counter
@@ -541,7 +561,16 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         c = sysA.coords[i]
         push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                             λ=T(1.0), alch_role=EnvRole))
-        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
+        if chain!=d.chain_id
+            chain = d.chain_id
+            res_n = 0
+            res_number = 0
+        end
+        if d.res_number!=res_n
+            res_number +=1
+            res_n = d.res_number
+        end
+        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=res_number,
                                     res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
         push!(Coords, c)
         mapping_A[i] = counter
@@ -554,7 +583,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         IT = typeof(interaction).name.wrapper
         field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
         field_types = fieldtypes(typeof(interaction))[1:end-1]
-        converted_type = typeof(to_lambda_param(interaction.inters[1]))
+        converted_type = typeof(to_lambda_function(interaction.inters[1]; scheduler=scheduler))
         field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
         tmp = [T() for T in field_types]
         for field_tuple in zip(field_names[1:end-1]...)
@@ -564,7 +593,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                 for i in 1:n_fields-2
                     tmp[i] = push!(tmp[i], mapping_A[field_tuple[i]])
                 end
-                tmp[n_fields-1] = push!(tmp[n_fields-1], to_lambda_param(field_tuple[end-1]))
+                tmp[n_fields-1] = push!(tmp[n_fields-1], to_lambda_function(field_tuple[end-1]; scheduler=scheduler))
                 tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
             end
         end
@@ -577,7 +606,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         IT = typeof(interaction).name.wrapper
         field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
         field_types = fieldtypes(typeof(interaction))[1:end-1]
-        converted_type = typeof(to_lambda_param(interaction.inters[1]))
+        converted_type = typeof(to_lambda_function(interaction.inters[1]; scheduler=scheduler))
         field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
         tmp = [T() for T in field_types]
         for field_tuple in zip(field_names[1:end-1]...)
@@ -596,7 +625,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                 for i in 1:n_fields-2
                     tmp[i] = push!(tmp[i], mapped[i])
                 end
-                tmp[n_fields-1] = push!(tmp[n_fields-1], to_lambda_param(field_tuple[end-1]))
+                tmp[n_fields-1] = push!(tmp[n_fields-1], to_lambda_function(field_tuple[end-1]; scheduler=scheduler))
                 tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
             end
         end
@@ -661,19 +690,19 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         if inter isa LennardJones
             push!(PairInteraction, LennardJonesSoftCoreGapsys(cutoff=inter.cutoff, α=T(0.85), use_neighbors=inter.use_neighbors,  
                                                     shortcut=inter.shortcut, σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing,
-                                                    λ_mixing=MinimumMixing(),scheduler=DefaultLambdaScheduler(), weight_special=inter.weight_special))
+                                                    λ_mixing=MinimumMixing(),scheduler=scheduler, weight_special=inter.weight_special))
         elseif inter isa Coulomb
             push!(PairInteraction, CoulombSoftCoreGapsys(cutoff=inter.cutoff,
                                                     α=T(0.6), σQ=units ? T(1.0)u"nm" : T(1.0),
                                                     use_neighbors=inter.use_neighbors, λ_mixing=MinimumMixing(),
-                                                    scheduler=DefaultLambdaScheduler(),
+                                                    scheduler=scheduler,
                                                     weight_special=inter.weight_special, 
                                                     coulomb_const=inter.coulomb_const))
         elseif inter isa CoulombEwald
             push!(PairInteraction, CoulombSoftCoreGapsysEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, 
                                                     α=T(0.6), σQ=units ? T(1.0)u"nm" : T(1.0),
                                                     use_neighbors=inter.use_neighbors, λ_mixing=MinimumMixing(),
-                                                    scheduler=DefaultLambdaScheduler(),
+                                                    scheduler=scheduler,
                                                     weight_special=inter.weight_special, 
                                                     coulomb_const=inter.coulomb_const, 
                                                     approximate_erfc=inter.approximate_erfc))
@@ -689,10 +718,10 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         if inter isa PME
             push!(GenerInteraction, PME(inter.dist_cutoff, to_device(Atoms, AT), Boundary; error_tol=inter.error_tol, 
                             fixed_charges=false, eligible=to_device(eligible_PME, AT), special=to_device(special, AT), 
-                            scheduler=DefaultLambdaScheduler(), grad_safe=inter.grad_safe),
+                            scheduler=scheduler, grad_safe=inter.grad_safe),
                         )
         elseif inter isa LJDispersionCorrection
-            push!(GenerInteraction, LJDispersionCorrectionλ(to_device(Atoms, AT), inter.dist_cutoff, DefaultLambdaScheduler(), 
+            push!(GenerInteraction, LJDispersionCorrectionλ(to_device(Atoms, AT), inter.dist_cutoff, scheduler, 
                             MinimumMixing(), LorentzMixing(), GeometricMixing()),
                             )
         end

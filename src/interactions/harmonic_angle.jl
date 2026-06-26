@@ -96,6 +96,10 @@ Base.zero(::HarmonicAngleλ{K, D}) where {K, D} = HarmonicAngleλ(k=zero(K), θ0
 
 Base.:+(a1::HarmonicAngleλ, a2::HarmonicAngleλ) = HarmonicAngleλ(k=(a1.k + a2.k), θ0=(a1.θ0 + a2.θ0))
 
+function Base.show(io::IO, x::HarmonicAngleλ)
+    println(io, "HarmonicAngleλ: (k: $(x.k)) - θ0: $(x.θ0) - λ_mixing: $(x.λ_mixing) - scheduler: $(x.scheduler)")
+end
+
 function inject_interaction(inter::HarmonicAngleλ, inter_type, params_dic)
     key_prefix = "inter_HA_$(inter_type)_"
     return HarmonicAngleλ(
@@ -117,6 +121,10 @@ function extract_parameters!(params_dic,
     return params_dic
 end
 
+function to_lambda_function(inter::HarmonicAngle; λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return HarmonicAngleλ(k=inter.k, θ0=inter.θ0, λ_mixing=λ_mixing, scheduler=scheduler)
+end
+
 @inline function force(a::HarmonicAngleλ, coords_i, coords_j, coords_k, boundary, 
                         atom_i, atom_j, atom_k, args...)
     T = typeof(ustrip(atom_i.λ))
@@ -134,7 +142,6 @@ end
     λ_glob = T(λ_mixing(a.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ)))    
     pair_role = mix_roles(a.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role))
     λ = scale(a.scheduler, λ_glob, pair_role)
-
     angle_term = -a.k * (acosbound(dot(ba, bc) / (norm(ba) * norm(bc))) - a.θ0)
     fa = (angle_term / norm(ba)) * pa
     fc = (angle_term / norm(bc)) * pc

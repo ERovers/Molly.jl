@@ -1,25 +1,7 @@
 export 
-    CMAPTorsion,
-    CMAPTorsion_L
+    CMAPTorsion
 
-"""
-    CMAPTorsion(index, size)
-
-Torsional correction map (CMAP) for sets of five atoms, for example protein ϕ and ψ
-backbone torsion angles.
-
-The CMAP data is stored in the `data` field of the associated [`InteractionList5Atoms`](@ref).
-
-Only compatible with 3D systems.
-"""
-struct CMAPTorsion
-    index::Int
-    size::Int
-end
-
-Base.zero(::CMAPTorsion) = CMAPTorsion(0, 0)
-
-Base.:+(c1::CMAPTorsion, c2::CMAPTorsion) = c1
+##### Helper functions for calculation CMAPS #####
 
 function cmap_coefficients(n, mp::Vector{E}) where E
     c = cmap_map_derivatives(n, mp)
@@ -276,6 +258,25 @@ function cmap_angles(inter, coords_i, coords_j, coords_k, coords_l, coords_m, bo
     return v0a, v1a, v2a, cp0a, cp1a, v0b, v1b, v2b, cp0b, cp1b, delta, idx, da, db
 end
 
+"""
+    CMAPTorsion(index, size)
+
+Torsional correction map (CMAP) for sets of five atoms, for example protein ϕ and ψ
+backbone torsion angles.
+
+The CMAP data is stored in the `data` field of the associated [`InteractionList5Atoms`](@ref).
+
+Only compatible with 3D systems.
+"""
+struct CMAPTorsion
+    index::Int
+    size::Int
+end
+
+Base.zero(::CMAPTorsion) = CMAPTorsion(0, 0)
+
+Base.:+(c1::CMAPTorsion, c2::CMAPTorsion) = c1
+
 @inline function force(inter::CMAPTorsion, coords_i, coords_j, coords_k, coords_l, 
                        coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, 
                        atoms_m, force_units, velocities_i, velocities_j,
@@ -346,28 +347,26 @@ end
 end
 
 """
-    CMAPTorsion_L(index, size, λ, res_num, res_id)
+    CMAPTorsionλ(index, size, λ, res_num, res_id)
 
 Torsional correction map (CMAP) for sets of five atoms, for example protein ϕ and ψ
-backbone torsion angles scaled by λ. ~~ ADD MORE DOCUMENTATION ABOUT IT ~~
+backbone torsion angles scaled by λ for core atoms.
 
 The CMAP data is stored in the `data` field of the associated [`InteractionList5Atoms`](@ref).
 
 Only compatible with 3D systems.
 """
 
-@kwdef struct CMAPTorsion_L{I,L}
+@kwdef struct CMAPTorsionλ{I,L,LM,SCH}
     index::I
     size::I
-    λ::L
-    res_num::I
-    res_id::I
-    λ_id::I
+    λ_mixing::LM = MinimumMixing()
+    scheduler::SCH = DefaultLambdaScheduler()
 end
 
-Base.zero(::CMAPTorsion_L) = CMAPTorsion_L(index=0, size=0, λ=0.0, res_num=0, res_id=0, λ_id=0)
+Base.zero(::CMAPTorsionλ) = CMAPTorsionλ(index=0, size=0)
 
-function dict_get(dic, key, inter::CMAPTorsion_L, default)
+function dict_get(dic, key, inter::CMAPTorsionλ, default)
     if haskey(dic, key)
         return dic[key][inter.res_id]
     else
@@ -375,19 +374,22 @@ function dict_get(dic, key, inter::CMAPTorsion_L, default)
     end
 end
 
-function inject_interaction(inter::CMAPTorsion_L{I,L}, inter_type, params_dic) where {I,L}
+function inject_interaction(inter::CMAPTorsionλ{I,L,LM,SCH}, inter_type, params_dic) where {I,L,LM,SCH}
     key_prefix = "residue_" * string(inter.res_num) * "_λ"
-    return CMAPTorsion_L{I,L}(
+    return CMAPTorsionλ{I,L}(
         inter.index,
         inter.size,
-        dict_get(params_dic, key_prefix, inter, inter.λ),
-        inter.res_num,
-        inter.res_id,
-        inter.λ_id,
+        inter.λ_mixing,
+        inter.scheduler,
     )
 end
 
-@inline function force(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
+function to_lambda_function(inter::CMAPTorsion; λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return CMAPTorsionλ(index=inter.index, size=inter.size, λ_mixing=λ_mixing, scheduler=scheduler)
+end
+
+
+@inline function force(inter::CMAPTorsionλ, coords_i, coords_j, coords_k, coords_l, 
                        coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, 
                        atoms_m, force_units, velocities_i, velocities_j,
                        velocities_k, velocities_l, velocities_m, step_n, data)
@@ -438,10 +440,15 @@ end
     fk = force3 + force6
     fl = force4 + force7
     fm =          force8
-    return SpecificForce5Atoms(inter.λ*fi, inter.λ*fj, inter.λ*fk, inter.λ*fl, inter.λ*fm)
+
+    λ_glob = T(λ_mixing(d.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ, atom_k.λ)))    
+    pair_role = mix_roles(d.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role, atom_l.alch_role, atom_k.alch_role))
+    λ = scale(d.scheduler, λ_glob, pair_role)
+
+    return SpecificForce5Atoms(λ*fi, λ*fj, λ*fk, λ*fl, λ*fm)
 end
 
-@inline function potential_energy(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
+@inline function potential_energy(inter::CMAPTorsionλ, coords_i, coords_j, coords_k, coords_l, 
                     coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, atoms_m, energy_units,
                     velocities_i, velocities_j, velocities_k, velocities_l, velocities_m,
                     step_n, data)
@@ -453,10 +460,15 @@ end
     pe = da*pe + ((data[idx+2,4]*db + data[idx+2,3])*db + data[idx+2,2])*db + data[idx+2,1]
     pe = da*pe + ((data[idx+1,4]*db + data[idx+1,3])*db + data[idx+1,2])*db + data[idx+1,1]
     pe = da*pe + ((data[idx,4]*db + data[idx,3])*db + data[idx,2])*db + data[idx,1]
-    return inter.λ*pe
+
+    λ_glob = T(λ_mixing(d.λ_mixing, (atom_i.λ, atom_j.λ, atom_k.λ, atom_l.λ, atom_k.λ)))    
+    pair_role = mix_roles(d.scheduler, (atom_i.alch_role, atom_j.alch_role, atom_k.alch_role, atom_l.alch_role, atom_k.alch_role))
+    λ = scale(d.scheduler, λ_glob, pair_role)
+
+    return λ*pe
 end
 
-@inline function force_λ(inter::CMAPTorsion_L, coords_i, coords_j, coords_k, coords_l, 
+@inline function force_λ(inter::CMAPTorsionλ, coords_i, coords_j, coords_k, coords_l, 
                        coords_m, boundary, atoms_i, atoms_j, atoms_k, atoms_l, 
                        atoms_m, force_units, velocities_i, velocities_j,
                        velocities_k, velocities_l, velocities_m, step_n, data)

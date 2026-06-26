@@ -142,14 +142,13 @@ the atom is fully turned on.
 If ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
-struct CoulombSoftCoreBeutler{C, A, S, E, LM, SC, SCH, W, T} <: PairwiseInteraction
+struct CoulombSoftCoreBeutler{C, A, S, E, LM, SCH, W, T} <: PairwiseInteraction
     cutoff::C
     α::A
     use_neighbors::Bool 
     σ_mixing::S 
     ϵ_mixing::E 
     λ_mixing::LM 
-    charge_scaling::SC 
     scheduler::SCH 
     weight_special::W 
     coulomb_const::T
@@ -157,13 +156,10 @@ end
 
 function CoulombSoftCoreBeutler(; cutoff=NoCutoff(), α=1.0, use_neighbors=false,
                                     σ_mixing=LorentzMixing(), ϵ_mixing=GeometricMixing(), 
-                                    λ_mixing=MinimumMixing(), charge_scaling=nothing,
+                                    λ_mixing=MinimumMixing(),
                                     scheduler=DefaultLambdaScheduler(), weight_special=1,
                                     coulomb_const=coulomb_const)
     T = typeof(ustrip(α))
-    if isnothing(charge_scaling)
-        charge_scaling = ParamsList(Dict(0=>SVector{2,T}(T(0),T(0))))
-    end
     return CoulombSoftCoreBeutler(
         cutoff,
         α,
@@ -171,7 +167,6 @@ function CoulombSoftCoreBeutler(; cutoff=NoCutoff(), α=1.0, use_neighbors=false
         σ_mixing,
         ϵ_mixing,
         λ_mixing,
-        charge_scaling,
         scheduler,
         weight_special,
         coulomb_const,
@@ -180,7 +175,7 @@ end
 
 use_neighbors(inter::CoulombSoftCoreBeutler) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreBeutler{C, A, S, E, LM, SC, SCH, W, T}) where {C, A, S, E, LM, SC, SCH, W, T}
+function Base.zero(coul::CoulombSoftCoreBeutler{C, A, S, E, LM, SCH, W, T}) where {C, A, S, E, LM, SCH, W, T}
     return CoulombSoftCoreBeutler(
         coul.cutoff,
         zero(A),
@@ -188,7 +183,6 @@ function Base.zero(coul::CoulombSoftCoreBeutler{C, A, S, E, LM, SC, SCH, W, T}) 
         coul.σ_mixing,
         coul.ϵ_mixing,
         coul.λ_mixing,
-        coul.charge_scaling,
         coul.scheduler,
         zero(W),
         zero(T),
@@ -203,11 +197,15 @@ function Base.:+(c1::CoulombSoftCoreBeutler, c2::CoulombSoftCoreBeutler)
         c1.σ_mixing,
         c1.ϵ_mixing,
         c1.λ_mixing,
-        c1.charge_scaling,
         c1.scheduler,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
     )
+end
+
+function to_lambda_function(inter::Coulomb, gapsys::Val{false}; α=1.0, λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return CoulombSoftCoreBeutler(cutoff=inter.cutoff, α=α, use_neighbors=inter.use_neighbors, σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing,
+                                        λ_mixing=λ_mixing, scheduler=scheduler, weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
 end
 
 @inline function force(inter::CoulombSoftCoreBeutler,
@@ -240,13 +238,13 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     cutoff = inter.cutoff
 
     # 2. Fast Path: Standard Coulomb (λ >= 1.0)
     # Use tuple padding (Nothing) to match length 5 of the alchemical path
     if λ >= 1
-        params = (ke, qi, qj, nothing, nothing)
+        params = (ke, qij, nothing, nothing)
         f = force_cutoff(cutoff, inter, r, params)
         fdr = radial_force_vector(f, r, dr, force_units)
         return special ? fdr * inter.weight_special : fdr
@@ -256,23 +254,23 @@ end
     σ6 = σ_mixing(inter.σ_mixing, atom_i, atom_j)^6
     σ6_fac = inter.α * (1 - λ) * σ6
 
-    params = (ke, qi, qj, σ6_fac, λ)
+    params = (ke, qij, σ6_fac, λ)
     f = force_cutoff(cutoff, inter, r, params)
     fdr = radial_force_vector(f, r, dr, force_units)
     return special ? fdr * inter.weight_special : fdr
 end
 
 # Dispatch 1: Standard Coulomb Logic (Matches Tuple length 5 with Nothings)
-@inline function pairwise_force(::CoulombSoftCoreBeutler, r, (ke, qi, qj, _, _)::Tuple{Any, Any, Any, Nothing, Nothing})
-    return (ke * qi * qj) / r^2
+@inline function pairwise_force(::CoulombSoftCoreBeutler, r, (ke, qij, _, _)::Tuple{Any, Any, Any, Nothing, Nothing})
+    return (ke * qij) / r^2
 end
 
 # Dispatch 2: Soft Core Logic (Matches Tuple length 5 with Real/Quantities)
-@inline function pairwise_force(::CoulombSoftCoreBeutler, r, (ke, qi, qj, σ6_fac, λ)::Tuple{Any, Any, Any, Any, Any})
+@inline function pairwise_force(::CoulombSoftCoreBeutler, r, (ke, qij, σ6_fac, λ)::Tuple{Any, Any, Any, Any, Any})
     r3 = r^3
     term = σ6_fac + (r3 * r3)
     R = term * sqrt(cbrt(term))
-    return λ * ke * ((qi * qj) / R) * (r3 * r * r)
+    return λ * ke * ((qij) / R) * (r3 * r * r)
 end
 
 @inline function potential_energy(inter::CoulombSoftCoreBeutler,
@@ -301,12 +299,12 @@ end
     end
 
     r = norm(dr)
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     cutoff = inter.cutoff
 
     # 2. Fast Path: Standard Coulomb (λ >= 1.0)
     if λ >= 1
-        params = (ke, qi, qj, nothing, nothing)
+        params = (ke, qij, nothing, nothing)
         pe = pe_cutoff(cutoff, inter, r, params)
         return special ? pe * inter.weight_special : pe
     end
@@ -315,20 +313,20 @@ end
     σ6 = σ_mixing(inter.σ_mixing, atom_i, atom_j)^6
     σ6_fac = inter.α * (1 - λ) * σ6
 
-    params = (ke, qi, qj, σ6_fac, λ)
+    params = (ke, qij, σ6_fac, λ)
     pe = pe_cutoff(cutoff, inter, r, params)
     return special ? pe * inter.weight_special : pe
 end
 
 # Dispatch 1: Standard Coulomb PE
-@inline function pairwise_pe(::CoulombSoftCoreBeutler, r, (ke, qi, qj, _, _)::Tuple{Any, Any, Any, Nothing, Nothing})
-    return (ke * qi * qj) * inv(r)
+@inline function pairwise_pe(::CoulombSoftCoreBeutler, r, (ke, qij, _, _)::Tuple{Any, Any, Any, Nothing, Nothing})
+    return (ke * qij) * inv(r)
 end
 
 # Dispatch 2: Soft Core PE
-@inline function pairwise_pe(::CoulombSoftCoreBeutler, r, (ke, qi, qj, σ6_fac, λ)::Tuple{Any, Any, Any, Any, Any})
+@inline function pairwise_pe(::CoulombSoftCoreBeutler, r, (ke, qij, σ6_fac, λ)::Tuple{Any, Any, Any, Any, Any})
     R = sqrt(cbrt(σ6_fac + r^6))
-    return λ * ke * ((qi * qj) / R)
+    return λ * ke * ((qij) / R)
 end
 
 @doc raw"""
@@ -362,26 +360,22 @@ the atom is fully turned on.
 If ``\lambda`` is zero the interaction is turned off.
 ``\alpha`` determines the strength of softening the function.
 """
-struct CoulombSoftCoreGapsys{C, A, S, LM, SC, SCH, W, T} <: PairwiseInteraction
+struct CoulombSoftCoreGapsys{C, A, S, LM, SCH, W, T} <: PairwiseInteraction
     cutoff::C
     α::A
     σQ::S
     use_neighbors::Bool
     λ_mixing::LM
-    charge_scaling::SC
     scheduler::SCH
     weight_special::W
     coulomb_const::T
 end
 
 function CoulombSoftCoreGapsys(; cutoff=NoCutoff(), α=1.0, σQ=1.0u"nm", use_neighbors=false,
-                                    λ_mixing=MinimumMixing(), charge_scaling=nothing,
+                                    λ_mixing=MinimumMixing(),
                                     scheduler=DefaultLambdaScheduler(), weight_special=1,
                                     coulomb_const=coulomb_const)
     T = typeof(ustrip(α))
-    if isnothing(charge_scaling)
-        charge_scaling = ParamsList(Dict(0=>SVector{2,T}(T(0),T(0))))
-    end
     return CoulombSoftCoreGapsys(
         cutoff,
         α,
@@ -389,7 +383,6 @@ function CoulombSoftCoreGapsys(; cutoff=NoCutoff(), α=1.0, σQ=1.0u"nm", use_ne
         σ_mixing,
         ϵ_mixing,
         λ_mixing,
-        charge_scaling,
         scheduler,
         weight_special,
         coulomb_const,
@@ -398,14 +391,13 @@ end
 
 use_neighbors(inter::CoulombSoftCoreGapsys) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreGapsys{C, A, S, LM, SC, SCH, W, T}) where {C, A, S, LM, SC, SCH, W, T}
+function Base.zero(coul::CoulombSoftCoreGapsys{C, A, S, LM, SCH, W, T}) where {C, A, S, LM, SCH, W, T}
     return CoulombSoftCoreGapsys(
         coul.cutoff,
         zero(A),
         coul.σQ,
         coul.use_neighbors,
         coul.λ_mixing,
-        coul.charge_scaling,
         coul.scheduler,
         zero(W),
         zero(T),
@@ -419,12 +411,15 @@ function Base.:+(c1::CoulombSoftCoreGapsys, c2::CoulombSoftCoreGapsys)
         c1.σQ + c2.σQ,
         c1.use_neighbors,
         c1.λ_mixing,
-        c1.charge_scaling,
         c1.scheduler,
-        c1.roles,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
     )
+end
+
+function to_lambda_function(inter::Coulomb, gapsys::Val{true}; α=1.0, σQ=1.0u"nm", λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return CoulombSoftCoreGapsys(cutoff=inter.cutoff, α=α, σQ=σQ, use_neighbors=inter.use_neighbors, λ_mixing=λ_mixing, scheduler=scheduler, 
+                                    weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
 end
 
 @inline function force(inter::CoulombSoftCoreGapsys, 
@@ -457,8 +452,7 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
-    qij = qi * qj 
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     cutoff = inter.cutoff
 
     # Fast Path: Standard Coulomb (Length 4)
@@ -518,8 +512,7 @@ end
     end
 
     r = norm(dr)
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
-    qij = qi * qj
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     cutoff = inter.cutoff
 
     if λ >= 1
@@ -702,7 +695,7 @@ At ``\lambda = 0`` the interaction is zero.
 Special (1-4) pairs disable the reaction field correction and use plain soft-core Coulomb
 scaled by `weight_special`.
 """
-struct CoulombSoftCoreBeutlerReactionField{D, S, A, SM, EM, LM, SC, SCH, W, T} <: PairwiseInteraction
+struct CoulombSoftCoreBeutlerReactionField{D, S, A, SM, EM, LM, SCH, W, T} <: PairwiseInteraction
     dist_cutoff::D
     solvent_dielectric::S 
     α::A 
@@ -710,7 +703,6 @@ struct CoulombSoftCoreBeutlerReactionField{D, S, A, SM, EM, LM, SC, SCH, W, T} <
     σ_mixing::SM 
     ϵ_mixing::EM 
     λ_mixing::LM 
-    charge_scaling::SC 
     scheduler::SCH 
     weight_special::W 
     coulomb_const::T
@@ -719,13 +711,9 @@ end
 function CoulombSoftCoreBeutlerReactionField(; dist_cutoff, solvent_dielectric=crf_solvent_dielectric, α=1.0,
                                               use_neighbors=false, σ_mixing=LorentzMixing(),
                                               ϵ_mixing=GeometricMixing(), λ_mixing=MinimumMixing(),
-                                              charge_scaling=nothing,
                                               scheduler=DefaultLambdaScheduler(), weight_special=1,
                                               coulomb_const=coulomb_const)
     T = typeof(ustrip(dist_cutoff))
-    if isnothing(charge_scaling)
-        charge_scaling = ParamsList(Dict(0=>SVector{2,T}(T(0),T(0))))
-    end
     return CoulombSoftCoreBeutlerReactionField(
         dist_cutoff,
         solvent_dielectric,
@@ -734,7 +722,6 @@ function CoulombSoftCoreBeutlerReactionField(; dist_cutoff, solvent_dielectric=c
         σ_mixing,
         ϵ_mixing,
         λ_mixing,
-        charge_scaling,
         scheduler,
         weight_special,
         coulomb_const,
@@ -743,7 +730,7 @@ end
 
 use_neighbors(inter::CoulombSoftCoreBeutlerReactionField) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreBeutlerReactionField{D, S, A, SM, EM, LM, SC, SCH, W, T}) where {D, S, A, SM, EM, LM, SC, SCH, W, T}
+function Base.zero(coul::CoulombSoftCoreBeutlerReactionField{D, S, A, SM, EM, LM, SCH, W, T}) where {D, S, A, SM, EM, LM, SCH, W, T}
     return CoulombSoftCoreBeutlerReactionField(
         zero(D),
         zero(S),
@@ -752,7 +739,6 @@ function Base.zero(coul::CoulombSoftCoreBeutlerReactionField{D, S, A, SM, EM, LM
         coul.σ_mixing,
         coul.ϵ_mixing,
         coul.λ_mixing,
-        coul.charge_scaling,
         coul.scheduler,
         zero(W),
         zero(T),
@@ -768,11 +754,16 @@ function Base.:+(c1::CoulombSoftCoreBeutlerReactionField, c2::CoulombSoftCoreBeu
         c1.σ_mixing,
         c1.ϵ_mixing,
         c1.λ_mixing,
-        c1.charge_scaling,
         c1.scheduler,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
     )
+end
+
+function to_lambda_function(inter::CoulombReactionField, gapsys::Val{false}; α=1.0, λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return CoulombSoftCoreBeutlerReactionField(dist_cutoff=inter.dist_cutoff, solvent_dielectric=inter.solvent_dielectric, α=α, 
+                                                use_neighbors=inter.use_neighbors, σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing,
+                                                λ_mixing=λ_mixing, scheduler=scheduler, weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
 end
 
 @inline function force(inter::CoulombSoftCoreBeutlerReactionField,
@@ -798,7 +789,7 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     rc = inter.dist_cutoff
 
     if special
@@ -808,7 +799,7 @@ end
     end
 
     if λ >= 1
-        f = (ke * qi * qj) * (inv(r) - 2 * krf * r2) * inv(r2)
+        f = (ke * qij) * (inv(r) - 2 * krf * r2) * inv(r2)
         if special
             return f * dr * inter.weight_special * (r <= rc)
         else
@@ -818,7 +809,7 @@ end
 
     σ6 = σ_mixing(inter.σ_mixing, atom_i, atom_j)^6
     term = inter.α * (1 - λ) * σ6 + r2^3
-    f = λ * (ke * qi * qj) * (r2^2 / (term * sqrt(cbrt(term))) - 2 * krf)
+    f = λ * (ke * qij) * (r2^2 / (term * sqrt(cbrt(term))) - 2 * krf)
 
     if special
         return f * dr * inter.weight_special * (r <= rc)
@@ -846,7 +837,7 @@ end
 
     r2 = sum(abs2, dr)
     r = sqrt(r2)
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     rc = inter.dist_cutoff
 
     if λ >= 1
@@ -857,7 +848,7 @@ end
             krf = inv(rc^3) * ((inter.solvent_dielectric - 1) / (2 * inter.solvent_dielectric + 1))
             crf = inv(rc) * ((3 * inter.solvent_dielectric) / (2 * inter.solvent_dielectric + 1))
         end
-        pe = (ke * qi * qj) * (inv(r) + krf * r2 - crf)
+        pe = (ke * qij) * (inv(r) + krf * r2 - crf)
         if special
             return pe * inter.weight_special * (r <= rc)
         else
@@ -870,12 +861,12 @@ end
     R_eff = sqrt(cbrt(term))
 
     if special
-        pe = λ * (ke * qi * qj) * inv(R_eff)
+        pe = λ * (ke * qij) * inv(R_eff)
         return pe * inter.weight_special * (r <= rc)
     else
         krf = inv(rc^3) * ((inter.solvent_dielectric - 1) / (2 * inter.solvent_dielectric + 1))
         crf_λ = inv(sqrt(cbrt(inter.α * (1 - λ) * σ6 + rc^6))) + krf * rc^2
-        pe = λ * (ke * qi * qj) * (inv(R_eff) + krf * r2 - crf_λ)
+        pe = λ * (ke * qij) * (inv(R_eff) + krf * r2 - crf_λ)
         return pe * (r <= rc)
     end
 end
@@ -893,14 +884,13 @@ At ``\lambda = 0`` the interaction is zero.
 Special (1-4) pairs disable the reaction field correction and use the standard Gapsys
 polynomial scaled by `weight_special`.
 """
-struct CoulombSoftCoreGapsysReactionField{D, S, A, SQ, LM, SC, SCH, W, T} <: PairwiseInteraction
+struct CoulombSoftCoreGapsysReactionField{D, S, A, SQ, LM, SCH, W, T} <: PairwiseInteraction
     dist_cutoff::D
     solvent_dielectric::S 
     α::A 
     σQ::SQ 
     use_neighbors::Bool 
     λ_mixing::LM 
-    charge_scaling::SC
     scheduler::SCH 
     weight_special::W 
     coulomb_const::T 
@@ -908,13 +898,9 @@ end
 
 function CoulombSoftCoreGapsysReactionField(; dist_cutoff, solvent_dielectric=crf_solvent_dielectric, α=1.0,
                                               σQ=1.0u"nm", use_neighbors=false, λ_mixing=MinimumMixing(),
-                                              charge_scaling=nothing,
                                               scheduler=DefaultLambdaScheduler(), weight_special=1,
                                               coulomb_const=coulomb_const)
     T = typeof(ustrip(dist_cutoff))
-    if isnothing(charge_scaling)
-        charge_scaling = ParamsList(Dict(0=>SVector{2,T}(T(0),T(0))))
-    end
     return CoulombSoftCoreBeutlerReactionField(
         dist_cutoff,
         solvent_dielectric,
@@ -923,7 +909,6 @@ function CoulombSoftCoreGapsysReactionField(; dist_cutoff, solvent_dielectric=cr
         σ_mixing,
         ϵ_mixing,
         λ_mixing,
-        charge_scaling,
         scheduler,
         weight_special,
         coulomb_const,
@@ -932,7 +917,7 @@ end
 
 use_neighbors(inter::CoulombSoftCoreGapsysReactionField) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreGapsysReactionField{D, S, A, SQ, LM, SC, SCH, W, T}) where {D, S, A, SQ, LM, SC, SCH, W, T}
+function Base.zero(coul::CoulombSoftCoreGapsysReactionField{D, S, A, SQ, LM, SCH, W, T}) where {D, S, A, SQ, LM, SCH, W, T}
     return CoulombSoftCoreGapsysReactionField(
         zero(D),
         zero(S),
@@ -940,7 +925,6 @@ function Base.zero(coul::CoulombSoftCoreGapsysReactionField{D, S, A, SQ, LM, SC,
         coul.σQ,
         coul.use_neighbors,
         coul.λ_mixing,
-        coul.charge_scaling,
         coul.scheduler,
         zero(W),
         zero(T),
@@ -955,11 +939,16 @@ function Base.:+(c1::CoulombSoftCoreGapsysReactionField, c2::CoulombSoftCoreGaps
         c1.σQ + c2.σQ,
         c1.use_neighbors,
         c1.λ_mixing,
-        c1.charge_scaling,
         c1.scheduler,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
     )
+end
+
+function to_lambda_function(inter::CoulombReactionField, gapsys::Val{true}; α=1.0, σQ=1.0u"nm", λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return CoulombSoftCoreGapsysReactionField(dist_cutoff=inter.dist_cutoff, solvent_dielectric=inter.solvent_dielectric, α=α, σQ=σQ, 
+                                    use_neighbors=inter.use_neighbors, λ_mixing=λ_mixing, scheduler=scheduler, 
+                                    weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
 end
 
 @inline function force(inter::CoulombSoftCoreGapsysReactionField,
@@ -985,8 +974,7 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
-    qij = qi * qj
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     rc = inter.dist_cutoff
 
     if special
@@ -1037,8 +1025,7 @@ end
 
     r2 = sum(abs2, dr)
     r = sqrt(r2)
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
-    qij = qi * qj
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     rc = inter.dist_cutoff
 
     if special
@@ -1242,7 +1229,7 @@ Should be used alongside [`Ewald`](@ref) or [`PME`](@ref) configured with the sa
 electrostatic scheduler. Special pairs are excluded from the reciprocal-space
 calculation, so their interaction uses the undamped soft-core form.
 """
-struct CoulombSoftCoreBeutlerEwald{ET, D, A, SM, EM, LM, SC, SCH, W, C, EA} <: PairwiseInteraction
+struct CoulombSoftCoreBeutlerEwald{ET, D, A, SM, EM, LM, SCH, W, C, EA} <: PairwiseInteraction
     dist_cutoff::D
     error_tol::ET
     α::A
@@ -1250,7 +1237,6 @@ struct CoulombSoftCoreBeutlerEwald{ET, D, A, SM, EM, LM, SC, SCH, W, C, EA} <: P
     σ_mixing::SM
     ϵ_mixing::EM
     λ_mixing::LM
-    charge_scaling::SC
     scheduler::SCH
     weight_special::W
     coulomb_const::C
@@ -1261,14 +1247,10 @@ end
 function CoulombSoftCoreBeutlerEwald(; dist_cutoff, error_tol=0.0005, α=1.0,
                                      use_neighbors=false, σ_mixing=LorentzMixing(),
                                      ϵ_mixing=GeometricMixing(), λ_mixing=MinimumMixing(),
-                                     charge_scaling=nothing,
                                      scheduler=DefaultLambdaScheduler(), weight_special=1,
                                      coulomb_const=coulomb_const, approximate_erfc=true)
     T = typeof(ustrip(dist_cutoff))
     α_ewald = inv(dist_cutoff) * sqrt(-log(2 * error_tol))
-    if isnothing(charge_scaling)
-        charge_scaling = ParamsList(Dict(0=>SVector{2,T}(T(0),T(0))))
-    end
     return CoulombSoftCoreBeutlerEwald(
         dist_cutoff,
         error_tol,
@@ -1277,7 +1259,6 @@ function CoulombSoftCoreBeutlerEwald(; dist_cutoff, error_tol=0.0005, α=1.0,
         σ_mixing,
         ϵ_mixing,
         λ_mixing,
-        charge_scaling,
         scheduler,
         weight_special,
         coulomb_const,
@@ -1288,7 +1269,7 @@ end
 
 use_neighbors(inter::CoulombSoftCoreBeutlerEwald) = inter.use_neighbors
 
-function Base.zero(coul::CoulombSoftCoreBeutlerEwald{ET, D, A, SM, EM, LM, SC, SCH, W, C, EA}) where {ET, D, A, SM, EM, LM, SC, SCH, W, C, EA}
+function Base.zero(coul::CoulombSoftCoreBeutlerEwald{ET, D, A, SM, EM, LM, SCH, W, C, EA}) where {ET, D, A, SM, EM, LM, SCH, W, C, EA}
     return CoulombSoftCoreBeutlerEwald(
         zero(D),
         zero(ET),
@@ -1297,7 +1278,6 @@ function Base.zero(coul::CoulombSoftCoreBeutlerEwald{ET, D, A, SM, EM, LM, SC, S
         coul.σ_mixing,
         coul.ϵ_mixing,
         coul.λ_mixing,
-        coul.charge_scaling,
         coul.scheduler,
         zero(W),
         zero(C),
@@ -1315,13 +1295,19 @@ function Base.:+(c1::CoulombSoftCoreBeutlerEwald, c2::CoulombSoftCoreBeutlerEwal
         c1.σ_mixing,
         c1.ϵ_mixing,
         c1.λ_mixing,
-        c1.charge_scaling,
         c1.scheduler,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
         c1.α_ewald + c2.α_ewald,
         c1.approximate_erfc,
     )
+end
+
+function to_lambda_function(inter::CoulombEwald, gapsys::Val{false}; α=1.0, λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return CoulombSoftCoreBeutlerEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, α=α, 
+                                                use_neighbors=inter.use_neighbors, σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing,
+                                                λ_mixing=λ_mixing, scheduler=scheduler, weight_special=inter.weight_special, coulomb_const=inter.coulomb_const,
+                                                α_ewald=inter.α_ewald, approximate_erfc=inter.approximate_erfc)
 end
 
 @inline function force(inter::CoulombSoftCoreBeutlerEwald,
@@ -1341,10 +1327,10 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     term = inter.α * (1 - λ) * σ_mixing(inter.σ_mixing, atom_i, atom_j)^6 + r^6
-    pe_soft = λ * inter.coulomb_const * ((qi * qj) / sqrt(cbrt(term)))
-    f_soft = λ * inter.coulomb_const * ((qi * qj) / (term * sqrt(cbrt(term)))) * r^5
+    pe_soft = λ * inter.coulomb_const * ((qij) / sqrt(cbrt(term)))
+    f_soft = λ * inter.coulomb_const * ((qij) / (term * sqrt(cbrt(term)))) * r^5
 
     if special
         return radial_force_vector(f_soft, r, dr, force_units) * inter.weight_special * (r <= inter.dist_cutoff)
@@ -1368,9 +1354,9 @@ end
     end
 
     r = norm(dr)
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     term = inter.α * (1 - λ) * σ_mixing(inter.σ_mixing, atom_i, atom_j)^6 + r^6
-    pe_soft = inter.coulomb_const * ((qi * qj) / sqrt(cbrt(term)))
+    pe_soft = inter.coulomb_const * ((qij) / sqrt(cbrt(term)))
 
     if special
         return pe_soft * inter.weight_special * (r <= inter.dist_cutoff)
@@ -1464,6 +1450,13 @@ function Base.:+(c1::CoulombSoftCoreGapsysEwald, c2::CoulombSoftCoreGapsysEwald)
     )
 end
 
+function to_lambda_function(inter::CoulombEwald, gapsys::Val{true}; α=1.0, σQ=1.0u"nm", λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return CoulombSoftCoreGapsysEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, α=α, σQ=σQ, 
+                                    use_neighbors=inter.use_neighbors, λ_mixing=λ_mixing, scheduler=scheduler, 
+                                    weight_special=inter.weight_special, coulomb_const=inter.coulomb_const,
+                                    α_ewald=inter.α_ewald, approximate_erfc=inter.approximate_erfc)
+end
+
 @inline function force(inter::CoulombSoftCoreGapsysEwald,
                        dr,
                        atom_i,
@@ -1539,7 +1532,8 @@ end
     end
 
     if special
-        return pe_soft * inter.weight_special * (r <= inter.dist_cutoff)
+        return 0*pe_soft
+        # return pe_soft * inter.weight_special * (r <= inter.dist_cutoff)
     end
 
     erfc_αr, _ = softcore_ewald_screen(inter, r)
@@ -1567,8 +1561,7 @@ end
         return d_λ
     end
 
-    qi, qj = scale_charge(inter.charge_scaling, atom_i, atom_j, λ_params, pair_role)
-    qij = qi * qj
+    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     R = inter.α * sqrt(cbrt(1 - λ)) * (oneunit(r) + inter.σQ * abs(qij))
 
     if r >= R

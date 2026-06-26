@@ -23,12 +23,23 @@ function print_interaction(interaction; start_idx=1, end_idx=1)
     end
 end
 
-function print_interaction(interaction, indexes)
+function print_interaction(interaction, indexes; idx_all=false)
     field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
-    for (i,ft) in enumerate(zip(field_names[1:end-1]...))
-        if any(x-> x in indexes, ft[1:end-2])
-            n_fields = length(ft)
-            println("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]), " -> $(ft[end-1])")
+    if idx_all
+        for (i,ft) in enumerate(zip(field_names[1:end-1]...))
+            if all(x-> x in indexes, ft[1:end-2])
+                n_fields = length(ft)
+                print("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]), " -> ")
+                println(ft[end-1])
+            end
+        end
+    else
+        for (i,ft) in enumerate(zip(field_names[1:end-1]...))
+            if any(x-> x in indexes, ft[1:end-2])
+                n_fields = length(ft)
+                print("i:",i,"   ",[string(ft[i])*"," for i in 1:n_fields-2]..., string(ft[end]), " -> ")
+                println(ft[end-1])
+            end
         end
     end
 end

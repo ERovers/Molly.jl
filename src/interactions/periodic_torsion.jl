@@ -144,7 +144,7 @@ end
 @doc raw"""
     PeriodicTorsionλ(; periodicities, phases, ks, proper)
 
-A periodic torsion angle between four atoms.
+A periodic torsion angle between four atoms scaled by λ for core atoms and alchemical groups.
 
 `phases` are in radians.
 The potential energy is defined as
@@ -235,6 +235,17 @@ function extract_parameters!(params_dic,
         end
     end
     return params_dic
+end
+
+function to_lambda_function(inter::PeriodicTorsion; λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return PeriodicTorsionλ(
+        periodicities=inter.periodicities,
+        phases       =inter.phases,
+        ks           =inter.ks,
+        proper       =inter.proper,
+        λ_mixing     =λ_mixing,
+        scheduler    =scheduler
+    )
 end
 
 # The summation gives different errors with Enzyme on CPU and GPU
