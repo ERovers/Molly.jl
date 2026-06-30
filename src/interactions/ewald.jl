@@ -142,7 +142,7 @@ function ewald_pe_forces!(Fs, vir, inter::Ewald{T}, atoms, coords, boundary, for
     if kmax < 1
         error("kmax for Ewald summation is $kmax, should be at least 1")
     end
-    partial_charges_cpu = [effective_charge(atom, scheduler, Val(T)) for atom in atoms_cpu]
+    partial_charges_cpu = [effective_charge(atom, scheduler, false, Val(T)) for atom in atoms_cpu]
     V = volume(boundary)
     f = (energy_units == NoUnits ? ustrip(T(Molly.coulomb_const)) : T(Molly.coulomb_const))
     if AT <: AbstractGPUArray && calculate_forces
@@ -289,7 +289,7 @@ is based on the smooth PME algorithm from
 Only compatible with 3D systems.
 Not compatible with infinite boundaries.
 """
-struct PME{T, D, A, I, M, BM, C, CB, RB, VB, P, F, B, SCH} <: AbstractEwald
+struct PME{T, D, A, I, M, BM, C, CB, RB, VB, PB, P, F, B, SCH} <: AbstractEwald
     dist_cutoff::D
     error_tol::T
     order::Int
@@ -412,7 +412,7 @@ function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5, ϵr=1.0,
 
     return PME(dist_cutoff, error_tol_T, order, T(ϵr), α, mesh_dims, grid_indices, grid_fractions,
                bsplines_θ, bsplines_dθ, bsm_x, bsm_y, bsm_z, charge_grid, charge_grid_buffer,
-               recip_conv_buffer, virial_buffer, pc_sum, pc_abs2_sum, fft_plan, bfft_plan,
+               recip_conv_buffer, virial_buffer, partial_charge_buffer, pc_sum, pc_abs2_sum, fft_plan, bfft_plan,
                scheduler, grad_safe)
 end
 
@@ -1046,14 +1046,20 @@ function Base.:+(i1::EwaldExclusionData, i2::EwaldExclusionData)
     )
 end
 
+to_device(x::EwaldExclusionData, ::Type{AT}) where AT = x
+
+function to_lambda_function(inter::EwaldExclusion; λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    return EwaldExclusion()
+end
+
 @inline function force(::EwaldExclusion, coord_i, coord_j, boundary, atom_i, atom_j,
                        force_units, velocities_i, velocities_j, step_n,
                        data::EwaldExclusionData{T}) where T
     vec_ij = vector(coord_i, coord_j, boundary)
     r = sqrt(sum(abs2, vec_ij))
     scheduler, α, f_div_ϵr = data.scheduler, data.α, data.f_div_ϵr
-    charge_ij = effective_charge(scheduler, atom_i, Val(T)) *
-                effective_charge(scheduler, atom_j, Val(T))
+    charge_ij = effective_charge(atom_i, scheduler, Val(T)) *
+                effective_charge(atom_j, scheduler, Val(T))
     αr = α * r
     erf_αr = erf(αr)
     if erf_αr > T(1e-6)
@@ -1073,8 +1079,8 @@ end
     vec_ij = vector(coord_i, coord_j, boundary)
     r = sqrt(sum(abs2, vec_ij))
     scheduler, α, f_div_ϵr = data.scheduler, data.α, data.f_div_ϵr
-    charge_ij = effective_charge(scheduler, atom_i, Val(T)) *
-                effective_charge(scheduler, atom_j, Val(T))
+    charge_ij = effective_charge(atom_i, scheduler, Val(T)) *
+                effective_charge(atom_j, scheduler, Val(T))
     erf_αr = erf(α * r)
     if erf_αr > T(1e-6)
         E = -f_div_ϵr * charge_ij * inv(r) * erf_αr

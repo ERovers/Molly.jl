@@ -460,7 +460,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
     mapping["env"] = env
     mapping_A = Dict()
     mapping_B = Dict()
-    unique_groups = Dict("sysA"=>[], "sysB"=>[])
+    unique_groups = Dict("sysA"=>[], "sysB"=>[],"coreA"=>[],"coreB"=>[])
 
     # Initialize data groups for new system
     Atoms        = []
@@ -577,12 +577,19 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         counter += 1
     end
 
+    # Ensure all arrays have correct typing
+    Atoms = Vector{typeof(Atoms[1])}(Atoms)
+    Virtual = Vector{typeof(Virtual[1])}(Virtual)
+    Coords = Vector{typeof(Coords[1])}(Coords)
+    Data = Vector{typeof(Data[1])}(Data)
+
     # Adding all the interactions
     # Interactions from System A
     for interaction in sysA.specific_inter_lists
         IT = typeof(interaction).name.wrapper
         field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
         field_types = fieldtypes(typeof(interaction))[1:end-1]
+        interaction.inters[1] isa EwaldExclusion && continue
         converted_type = typeof(to_lambda_function(interaction.inters[1]; scheduler=scheduler))
         field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
         tmp = [T() for T in field_types]
@@ -606,6 +613,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         IT = typeof(interaction).name.wrapper
         field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
         field_types = fieldtypes(typeof(interaction))[1:end-1]
+        interaction.inters[1] isa EwaldExclusion && continue
         converted_type = typeof(to_lambda_function(interaction.inters[1]; scheduler=scheduler))
         field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
         tmp = [T() for T in field_types]
@@ -634,35 +642,21 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
 
     Interactions = merge(Interactions)
 
-    # Ensure all arrays have correct typing
-    Atoms = Vector{typeof(Atoms[1])}(Atoms)
-    Virtual = Vector{typeof(Virtual[1])}(Virtual)
-    Coords = Vector{typeof(Coords[1])}(Coords)
-    Data = Vector{typeof(Data[1])}(Data)
-    specific_inter_lists = tuple(Interactions...)
-
     # Pairwise Interactions
     n_atoms = length(Coords)
     eligible = trues(n_atoms, n_atoms)
-    eligible_PME = trues(n_atoms, n_atoms)
     for i in 1:n_atoms
         eligible[i, i] = false
-        
-        eligible_PME[i, i] = false
     end
-    for (i, j) in zip(specific_inter_lists[1].is, specific_inter_lists[1].js)
+
+    for (i, j) in zip(Interactions[1].is, Interactions[1].js)
         eligible[i, j] = false
         eligible[j, i] = false
-
-        eligible_PME[i, j] = false
-        eligible_PME[j, i] = false
     end
-    for (i, k) in zip(specific_inter_lists[2].is, specific_inter_lists[2].ks)
+
+    for (i, k) in zip(Interactions[2].is, Interactions[2].ks)
         eligible[i, k] = false
         eligible[k, i] = false
-
-        eligible_PME[i, k] = false
-        eligible_PME[k, i] = false
     end
 
     pairs = collect(Iterators.product(unique_groups["sysA"], unique_groups["sysB"]))
@@ -678,11 +672,12 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
     end
 
     if AT <:AbstractGPUArray
-        nf = GPUNeighborFinder(eligible=to_device(eligible, AT), dist_cutoff=sysA.neighbor_finder.dist_cutoff, 
-                                special=to_device(special, AT), n_steps_reorder=10)
+        nf = GPUNeighborFinder(eligible=to_device(eligible, AT), special=to_device(special, AT), n_steps_reorder=10,
+                                dist_cutoff=sysA.neighbor_finder.dist_cutoff)
     else
-        nf = CellListMapNeighborFinder(eligible=to_device(eligible, AT), dist_cutoff=sysA.neighbor_finder.dist_cutoff, 
-                                        special=to_device(special, AT), n_steps=10)
+        nf = CellListMapNeighborFinder(eligible=to_device(eligible, AT), special=to_device(special, AT),
+                                        n_steps=10, boundary=Boundary, x0=Coords,
+                                        dist_cutoff=sysA.neighbor_finder.dist_cutoff)
     end
 
     PairInteraction = []
@@ -710,22 +705,35 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
             error("Currently {$inter} is not yet implemented for relative binding free energy")
         end
     end
-    pairwise_inters = tuple(PairInteraction...)
 
     # General interactions
     GenerInteraction = []
     for inter in sysA.general_inters
         if inter isa PME
-            push!(GenerInteraction, PME(inter.dist_cutoff, to_device(Atoms, AT), Boundary; error_tol=inter.error_tol, 
-                            fixed_charges=false, eligible=to_device(eligible_PME, AT), special=to_device(special, AT), 
-                            scheduler=scheduler, grad_safe=inter.grad_safe),
+            push!(GenerInteraction, PME(inter.dist_cutoff, to_device(Atoms, AT), Boundary, grad_safe=inter.grad_safe; 
+                                        error_tol=inter.error_tol, fixed_charges=false, scheduler=scheduler),
                         )
-        elseif inter isa LJDispersionCorrection
-            push!(GenerInteraction, LJDispersionCorrectionλ(to_device(Atoms, AT), inter.dist_cutoff, scheduler, 
-                            MinimumMixing(), LorentzMixing(), GeometricMixing()),
-                            )
+            excluded_pairs = find_excluded_pairs(eligible, special)
+            exclusion_data = EwaldExclusionData(T(inter.dist_cutoff); error_tol=T(inter.error_tol))
+            ewald_exclusions = InteractionList2Atoms(
+                to_device([ep[1] for ep in excluded_pairs], AT),
+                to_device([ep[2] for ep in excluded_pairs], AT),
+                to_device(fill(EwaldExclusion(), length(excluded_pairs)), AT),
+                fill("", length(excluded_pairs)),
+                exclusion_data,
+            )
+            push!(Interactions, ewald_exclusions)
+
+        # elseif inter isa LJDispersionCorrection
+        #     push!(GenerInteraction, LJDispersionCorrectionλ(to_device(Atoms, AT), inter.dist_cutoff, scheduler, 
+        #                     MinimumMixing(), LorentzMixing(), GeometricMixing()),
+        #                     )
         end
     end
+
+    # Create all interaction tuples
+    specific_inter_lists = tuple(Interactions...)
+    pairwise_inters = tuple(PairInteraction...)
     general_inters = tuple(GenerInteraction...)
 
     # Setup new system

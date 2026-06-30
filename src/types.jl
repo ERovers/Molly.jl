@@ -515,7 +515,7 @@ function to_device(il1::InteractionList1Atoms{I, T, D}, ::Type{AT}) where {I, T,
         to_device(il1.is, AT),
         to_device(il1.inters,AT),
         il1.types,
-        nothing,
+        to_device(il1.data, AT),
     )
 end
 
@@ -525,7 +525,7 @@ function to_device(il1::InteractionList2Atoms{I, T, D}, ::Type{AT}) where {I, T,
         to_device(il1.js, AT),
         to_device(il1.inters,AT),
         il1.types,
-        nothing,
+        to_device(il1.data, AT),
     )
 end
 
@@ -536,7 +536,7 @@ function to_device(il1::InteractionList3Atoms{I, T, D}, ::Type{AT}) where {I, T,
         to_device(il1.ks, AT),
         to_device(il1.inters,AT),
         il1.types,
-        nothing,
+        to_device(il1.data, AT),
     )
 end
 
@@ -548,7 +548,7 @@ function to_device(il1::InteractionList4Atoms{I, T, D}, ::Type{AT}) where {I, T,
         to_device(il1.ls, AT),
         to_device(il1.inters,AT),
         il1.types,
-        nothing,
+        to_device(il1.data, AT),
     )
 end
 
@@ -1539,6 +1539,7 @@ from_device(x::Array) = x
 from_device(x) = Array(x)
 from_device(x::StructArray) = replace_storage(Array, x)
 
+to_device(x::Nothing, ::Type{AT}) where AT = nothing
 to_device(x::Array, ::Type{<:Array}) = x
 to_device(x, ::Type{AT}) where AT = AT(x)
 

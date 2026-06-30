@@ -1533,8 +1533,7 @@ end
     end
 
     if special
-        return 0*pe_soft
-        # return pe_soft * inter.weight_special * (r <= inter.dist_cutoff)
+        return pe_soft * inter.weight_special * (r <= inter.dist_cutoff)
     end
 
     erfc_αr, _ = softcore_ewald_screen(inter, r)

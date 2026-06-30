@@ -102,6 +102,7 @@ end
 const data_dir = normpath(@__DIR__, "..", "data")
 const ff_dir     = joinpath(data_dir, "force_fields")
 const openmm_dir = joinpath(data_dir, "openmm_6mrr")
+const tyk2_dir   = joinpath(data_dir, "openmm_tyk2")
 
 const temp_fp_dcd  = tempname(cleanup=true) * ".dcd"
 const temp_fp_trr  = tempname(cleanup=true) * ".trr"

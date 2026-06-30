@@ -254,3 +254,30 @@ end
     
     return pe
 end
+
+function inject_lambda(sys::System, λ, AT)
+    Atoms = []
+    for (i,a) in enumerate(sys.atoms)
+        if a.alch_role == Molly.InsertRole || a.alch_role == Molly.DeleteRole || a.alch_role == Molly.CoreIRole || a.alch_role == Molly.CoreDRole
+            push!(Atoms, Atom(index=a.index, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, λ=λ, alch_role=a.alch_role))
+        else
+            push!(Atoms, Atom(index=a.index, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, λ=a.λ, alch_role=a.alch_role))
+        end
+    end
+    Atoms = Vector{typeof(Atoms[1])}(Atoms)
+    GenerInteraction = []
+    for inter in sys.general_inters
+        # if inter isa PME
+        #     push!(GenerInteraction, inter)
+        # elseif inter isa LJDispersionCorrectionλ
+        #     @time push!(GenerInteraction, LJDispersionCorrectionλ(Molly.to_device(Atoms, AT), inter.dist_cutoff, Molly.DefaultLambdaScheduler(), 
+        #                     Molly.MinimumMixing(), inter.p_σ, inter.p_ϵ)
+        #                     )
+        # end
+        push!(GenerInteraction, inter)
+    end
+    general_inters = tuple(GenerInteraction...)
+    return System(sys, 
+                    atoms=Molly.to_device(Atoms, AT),
+                    general_inters=general_inters,)
+end
