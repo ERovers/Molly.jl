@@ -67,7 +67,7 @@ def calc_energies_and_forces(openmm_system, openmm_positions, lammie):
     platform = openmm.Platform.getPlatformByName('Reference')
 
     # Create Context
-    integrator = openmm.VerletIntegrator(0.001*unit.picoseconds) 
+    integrator = openmm.openmm.VerletIntegrator(0.001*openmm.unit.picoseconds) 
     context = openmm.Context(openmm_system, integrator, platform)
     context.setPositions(openmm_positions)
 
@@ -96,6 +96,13 @@ out_dir = os.path.join(data_dir, "openmm_tyk2", "openfe")
 os.chdir(out_dir)
 pdb_file = os.path.join(data_dir, "tyk2_openmm.pdb")
 lig_file = os.path.join(data_dir, "tyk2_ligands.sdf")
+
+output_prefix = {"bond_only":["CustomBondForce","HarmonicBondForce"], "angle_only":["CustomAngleForce","HarmonicAngleForce"], 
+                 "torsion_only":["CustomTorsionForce","PeriodicTorsionForce"], 
+                 "nonbonded":["NonbondedForce","CustomNonbondedForce","CustomBondForce_exceptions"], "PME":["PME"], 
+                 "all":["CustomBondForce","HarmonicBondForce","CustomAngleForce","HarmonicAngleForce",
+                        "CustomTorsionForce","PeriodicTorsionForce","NonbondedForce","CustomNonbondedForce",
+                        "CustomBondForce_exceptions","PME"]}
 
 #### MAIN PIPELINE ####
 # 1. Load ligands + create network + extract edge
@@ -151,6 +158,7 @@ complex_rbfe_settings.engine_settings.compute_platform = None
 complex_rbfe_settings.forcefield_settings.constraints = None
 complex_rbfe_settings.forcefield_settings.rigid_water = False
 complex_rbfe_settings.forcefield_settings.hydrogen_mass = 1.007947
+complex_rbfe_settings.integrator_settings.timestep = 1.0 * unit.femtosecond
 complex_rbfe_settings.solvation_settings.box_shape = None
 complex_rbfe_settings.solvation_settings.box_size = [8.0382, 8.0382, 8.0382] * unit.nanometers
 complex_rbfe_settings.solvation_settings.solvent_padding = None
@@ -194,11 +202,18 @@ positions = results["hybrid_positions"]
 system = results["hybrid_system"]
 lines = []
 for (a,coor) in zip(top.atoms(), positions):
-    line = (a.name+","+a.residue.chain.id+","+a.residue.name+","+
-            str(a.residue.index+1)+","+
-          str(coor[0].value_in_unit(unit.nanometers))+","+
-          str(coor[1].value_in_unit(unit.nanometers))+","+
-          str(coor[2].value_in_unit(unit.nanometers))+"\n")
+    if a.name=="H11x" and a.residue.chain.id=="5":
+        line = ("H12x,"+a.residue.chain.id+","+a.residue.name+","+
+                str(a.residue.index+1)+","+
+            str(coor[0].value_in_unit(openmm.unit.nanometers))+","+
+            str(coor[1].value_in_unit(openmm.unit.nanometers))+","+
+            str(coor[2].value_in_unit(openmm.unit.nanometers))+"\n")
+    else:
+        line = (a.name+","+a.residue.chain.id+","+a.residue.name+","+
+                str(a.residue.index+1)+","+
+            str(coor[0].value_in_unit(openmm.unit.nanometers))+","+
+            str(coor[1].value_in_unit(openmm.unit.nanometers))+","+
+            str(coor[2].value_in_unit(openmm.unit.nanometers))+"\n")
     lines.append(line)
 
 with open(os.path.join(out_dir, "positions_openmm.txt"), "w") as f:
@@ -207,25 +222,53 @@ with open(os.path.join(out_dir, "positions_openmm.txt"), "w") as f:
 #### Step 8 ####
 λ = 0.0
 e,f = calc_energies_and_forces(system, positions, λ)
-for key in f.keys():
-    with open(os.path.join(out_dir, f"forces_openfe_{key}_l{int(λ)}.txt"), "w") as of:
-        for force in f[key]:
-            of.write(f"{force.x} {force.y} {force.z}\n")
+for key in output_prefix.keys():
+    total = 0.0
+    for sub in output_prefix[key]:
+        total += e[sub].value_in_unit(e[sub].unit)
+    with open(os.path.join(out_dir, f"energy_openfe_{key}_l{int(λ)}.txt"), "w") as of:
+            of.write(f"{total}\n")
 
-with open(os.path.join(out_dir, f"energy_openfe_{key}_l{int(λ)}.txt"), "w") as of:
-    for key in e.keys():
-        of.write(f"{e[key].value_in_unit(e[key].unit)}\n")
+for key in output_prefix.keys():
+    total_forces = np.zeros_like(f["NonbondedForce"])
+    for sub in output_prefix[key]:
+        total_forces += f[sub].value_in_unit(f[sub].unit)
+    with open(os.path.join(out_dir, f"forces_openfe_{key}_l{int(λ)}.txt"), "w") as of:
+        for force in total_forces:
+            of.write(f"{force[0]} {force[1]} {force[2]}\n")
 
 #### Step 9 ####
 λ = 1.0
 e,f = calc_energies_and_forces(system, positions, λ)
-for key in f.keys():
-    with open(os.path.join(out_dir, f"forces_openfe_{key}_l{int(λ)}.txt"), "w") as of:
-        for force in f[key]:
-            of.write(f"{force.x} {force.y} {force.z}\n")
-
-for key in e.keys():
+for key in output_prefix.keys():
+    total = 0.0
+    for sub in output_prefix[key]:
+        total += e[sub].value_in_unit(e[sub].unit)
     with open(os.path.join(out_dir, f"energy_openfe_{key}_l{int(λ)}.txt"), "w") as of:
-            of.write(f"{e[key].value_in_unit(e[key].unit)}\n")
+            of.write(f"{total}\n")
+
+for key in output_prefix.keys():
+    total_forces = np.zeros_like(f["NonbondedForce"])
+    for sub in output_prefix[key]:
+        total_forces += f[sub].value_in_unit(f[sub].unit)
+    with open(os.path.join(out_dir, f"forces_openfe_{key}_l{int(λ)}.txt"), "w") as of:
+        for force in total_forces:
+            of.write(f"{force[0]} {force[1]} {force[2]}\n")
 
 #### Step 10 ####
+λ = 0.5
+e,f = calc_energies_and_forces(system, positions, λ)
+for key in output_prefix.keys():
+    total = 0.0
+    for sub in output_prefix[key]:
+        total += e[sub].value_in_unit(e[sub].unit)
+    with open(os.path.join(out_dir, f"energy_openfe_{key}_l5.txt"), "w") as of:
+            of.write(f"{total}\n")
+
+for key in output_prefix.keys():
+    total_forces = np.zeros_like(f["NonbondedForce"])
+    for sub in output_prefix[key]:
+        total_forces += f[sub].value_in_unit(f[sub].unit)
+    with open(os.path.join(out_dir, f"forces_openfe_{key}_l5.txt"), "w") as of:
+        for force in total_forces:
+            of.write(f"{force[0]} {force[1]} {force[2]}\n")
