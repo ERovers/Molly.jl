@@ -227,7 +227,7 @@ function distribute_forces!(fs, sys::System{D, <:Any, T}, buffers,
                             virtual_sites=sys.virtual_sites) where {D, T}
     # Assumes that each virtual site is only defined once
     if length(virtual_sites) > 0
-        buffers.fs_mat .= reshape(reinterpret(T, ustrip_vec.(fs)), D, length(sys))
+        buffers.fs_mat .= reshape(reinterpret(T, fs), D, length(sys))
         backend = get_backend(sys.coords)
         n_threads_dev = 128
         kernel! = distribute_forces_kernel!(backend, n_threads_dev)
