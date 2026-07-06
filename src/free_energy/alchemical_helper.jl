@@ -44,6 +44,45 @@ function print_interaction(interaction, indexes; idx_all=false)
     end
 end
 
+function get_interaction(interaction, indexes; idx_all=false)
+    list = []
+    field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
+    if idx_all
+        for (i,ft) in enumerate(zip(field_names[1:end-1]...))
+            if all(x-> x in indexes, ft[1:end-2])
+                n_fields = length(ft)
+                line = "i:"*string(i)*"   "
+                for i in 1:n_fields-2
+                    line *= string(ft[i])*","
+                end
+                for f in ft[end]
+                    line *= string(f)
+                end
+                line *= " -> "
+                line *= string(ft[end-1])
+                push!(list, line)
+            end
+        end
+    else
+        for (i,ft) in enumerate(zip(field_names[1:end-1]...))
+            if any(x-> x in indexes, ft[1:end-2])
+                n_fields = length(ft)
+                line = "i:"*string(i)*"   "
+                for i in 1:n_fields-2
+                    line *= string(ft[i])*","
+                end
+                # for f in ft[end]
+                #     line *= string(f)
+                # end
+                line *= " -> "
+                line *= string(ft[end-1])
+                push!(list, line)
+            end
+        end
+    end
+    return list
+end
+
 function print_yaml(data; indent=0)
     if typeof(data) == Dict{Any,Any}
         for (key, value) in data
@@ -267,13 +306,15 @@ function inject_lambda(sys::System, λ, AT)
     Atoms = Vector{typeof(Atoms[1])}(Atoms)
     GenerInteraction = []
     for inter in sys.general_inters
-        # if inter isa PME
-        #     push!(GenerInteraction, inter)
+        if inter isa PME
+            push!(GenerInteraction, PME(inter.dist_cutoff, to_device(Atoms, AT), sys.boundary, grad_safe=inter.grad_safe; 
+                                        error_tol=inter.error_tol, fixed_charges=false, scheduler=inter.scheduler),
+                        )
         # elseif inter isa LJDispersionCorrectionλ
         #     @time push!(GenerInteraction, LJDispersionCorrectionλ(Molly.to_device(Atoms, AT), inter.dist_cutoff, Molly.DefaultLambdaScheduler(), 
         #                     Molly.MinimumMixing(), inter.p_σ, inter.p_ϵ)
         #                     )
-        # end
+        end
         push!(GenerInteraction, inter)
     end
     general_inters = tuple(GenerInteraction...)

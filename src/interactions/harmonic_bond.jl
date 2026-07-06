@@ -106,14 +106,35 @@ function to_lambda_function(inter::HarmonicBond; λ_mixing=MinimumMixing(), sche
     return HarmonicBondλ(k=inter.k, r0=inter.r0, λ_mixing=λ_mixing, scheduler=scheduler)
 end
 
+function to_lambda_function_single(interA::Union{HarmonicBond, Nothing}, interB::Union{HarmonicBond, Nothing}; 
+                                   λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
+    ref = isnothing(interA) ? interB : interA
+    
+    k_A  = isnothing(interA) ? ref.k  : interA.k
+    k_B  = isnothing(interB) ? ref.k  : interB.k
+    r0_A = isnothing(interA) ? ref.r0 : interA.r0
+    r0_B = isnothing(interB) ? ref.r0 : interB.r0
+    
+    return HarmonicBondλ(k=(k_A, k_B), r0=(r0_A, r0_B), λ_mixing=λ_mixing, scheduler=scheduler)
+end
+
+function update_lambda_function(existing_lambda::HarmonicBondλ, interB::HarmonicBond)
+    return HarmonicBondλ(k=(existing_lambda.k[1], interB.k), 
+                         r0=(existing_lambda.r0[1], interB.r0), 
+                         λ_mixing=existing_lambda.λ_mixing, 
+                         scheduler=existing_lambda.scheduler)
+end
+
 @inline function force(b::HarmonicBondλ{K, D, LM, SCH},coord_i, coord_j, 
                                     boundary, atom_i, atom_j, args...) where {K, D, LM, SCH}
     T = typeof(ustrip(atom_i.λ))
     ab = vector(coord_i, coord_j, boundary)
     λ_glob = T(λ_mixing(b.λ_mixing, (atom_i.λ, atom_j.λ)))    
     pair_role = mix_roles(b.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ = scale(b.scheduler, λ_glob, pair_role)
-    c = b.k * (norm(ab) - b.r0)
+    λ, λ_params = scale(b.scheduler, λ_glob, pair_role, Val(b.scheduler.dual))
+    k = params_mixing(λ_params, b.k)
+    r0 = params_mixing(λ_params, b.r0)
+    c = k * (norm(ab) - r0)
     f = c * normalize(ab)
     return SpecificForce2Atoms(λ*f, λ*-f)
 end
@@ -123,10 +144,14 @@ end
     T = typeof(ustrip(atom_i.λ))
     dr = vector(coord_i, coord_j, boundary)
     r = norm(dr)
-    λ_glob = T(λ_mixing(b.λ_mixing, (atom_i.λ, atom_j.λ)))    
+    λ_glob = T(λ_mixing(b.λ_mixing, (atom_i.λ, atom_j.λ)))  
     pair_role = mix_roles(b.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ = scale(b.scheduler, λ_glob, pair_role)
-    return λ * (b.k / 2) * (r - b.r0) ^ 2
+    λ, λ_params = scale(b.scheduler, λ_glob, pair_role, Val(b.scheduler.dual))
+    k = params_mixing(λ_params, b.k)
+
+    r0 = params_mixing(λ_params, b.r0)
+    E = λ * (k / 2) * (r - r0) ^ 2
+    return E
 end
 
 @inline function force_λ(b::HarmonicBondλ, coord_i, coord_j, boundary, atoms_i, atoms_j, F, args...)

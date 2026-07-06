@@ -16,9 +16,28 @@ function shortcut_pair(::BuckinghamZeroShortcut, atom_i, atom_j, args...)
            (iszero_value(atom_i.C) || iszero_value(atom_j.C))
 end
 
+function params_mixing(λ_params, params, args...)
+    return params
+end
+
+function params_mixing(λ_params, params::Tuple, args...)
+    return sum(((1-λ_params),λ_params) .* params)
+end
+
 struct LorentzMixing end
 
-xy_mixing(::LorentzMixing, x, y, args...) = (x + y) / 2
+function xy_mixing(::LorentzMixing, x, y, args...) 
+    return (x + y) / 2
+end
+
+function xy_mixing(::LorentzMixing, x::Tuple, y::Tuple, λ_params, args...) 
+    xA, xB = x
+    yA, yB = y
+    A = (xA + yA) / 2
+    B = (xB + yB) / 2
+    return (1-λ_params)*A + λ_params*B
+end
+
 σ_mixing(m::LorentzMixing, atom_i, atom_j, args...) = xy_mixing(m, atom_i.σ , atom_j.σ, args...)
 ϵ_mixing(m::LorentzMixing, atom_i, atom_j, args...) = xy_mixing(m, atom_i.ϵ , atom_j.ϵ, args...)
 λ_mixing(m::LorentzMixing, atom_i, atom_j, args...) = xy_mixing(m, atom_i.λ , atom_j.λ, args...)
@@ -28,7 +47,18 @@ C_mixing(m::LorentzMixing, atom_i, atom_j, args...) = xy_mixing(m, atom_i.C , at
 
 struct GeometricMixing end
 
-xy_mixing(::GeometricMixing, x, y, args...) = sqrt(x * y)
+function xy_mixing(::GeometricMixing, x, y, args...) 
+    return sqrt(x * y)
+end
+
+function xy_mixing(::GeometricMixing, x::Tuple, y::Tuple, λ_params, args...) 
+    xA,xB = x
+    yA,yB = y
+    A = sqrt(xA*yA)
+    B = sqrt(xB*yB)
+    return (1-λ_params)*A + λ_params*B
+end
+
 σ_mixing(m::GeometricMixing, atom_i, atom_j, args...) = xy_mixing(m, atom_i.σ, atom_j.σ, args...)
 ϵ_mixing(m::GeometricMixing, atom_i, atom_j, args...) = xy_mixing(m, atom_i.ϵ, atom_j.ϵ, args...)
 λ_mixing(m::GeometricMixing, atom_i, atom_j, args...) = xy_mixing(m, atom_i.λ, atom_j.λ, args...)

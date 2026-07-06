@@ -446,6 +446,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                         temp = T(298.0)u"K", 
                         units=true,
                         scheduler=DefaultLambdaScheduler(),
+                        dual=true,
                         )
     # Collect correct datatypes and fill in missing gaps in the mappings
     S = typeof(sysA.atoms[1].σ)
@@ -460,7 +461,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
     mapping["env"] = env
     mapping_A = Dict()
     mapping_B = Dict()
-    unique_groups = Dict("sysA"=>[], "sysB"=>[],"coreA"=>[],"coreB"=>[])
+    unique_groups = Dict("sysA"=>[], "sysB"=>[],"core"=>[])
 
     # Initialize data groups for new system
     Atoms        = []
@@ -476,47 +477,76 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
     res_n = 0
     res_number = 0
     chain = ""
+    # Add core atoms
     for i in mapping["core"]
-        a = sysA.atoms[i]
-        d = sysA.atoms_data[i]
-        c = sysA.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                            λ=T(global_λ), alch_role=CoreDRole))
-        if chain!=d.chain_id
-            chain = d.chain_id
-            res_n = 0
-            res_number = 0
-        end
-        if d.res_number!=res_n
-            res_number +=1
-            res_n = d.res_number
-        end
-        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=res_number,
-                                    res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
-        push!(Coords, c)
-        mapping_A[i] = counter
-        push!(unique_groups["sysA"], counter)
-        counter += 1
+        aA = sysA.atoms[i]
+        dA = sysA.atoms_data[i]
+        cA = sysA.coords[i]
+        aB = sysB.atoms[core_mapAB[i]]
+        dB = sysB.atoms_data[core_mapAB[i]]
+        cB = sysB.coords[core_mapAB[i]]
+        if dual
+            push!(Atoms, Atom(index=counter, atom_type=aA.atom_type, mass=aA.mass, charge=aA.charge, σ=aA.σ, ϵ=aA.ϵ, 
+                                                λ=T(global_λ), alch_role=CoreDRole))
+            if chain!=d.chain_id
+                chain = d.chain_id
+                res_n = 0
+                res_number = 0
+            end
+            if d.res_number!=res_n
+                res_number +=1
+                res_n = d.res_number
+            end
+            push!(Data, AtomData(atom_type=dA.atom_type, atom_name=dA.atom_name, res_number=res_number,
+                                        res_name=dA.res_name, chain_id=dA.chain_id, element=dA.element, hetero_atom=dA.hetero_atom))
+            push!(Coords, cA)
+            mapping_A[i] = counter
+            push!(unique_groups["sysA"], counter)
+            counter += 1
 
-        a = sysB.atoms[core_mapAB[i]]
-        d = sysB.atoms_data[core_mapAB[i]]
-        c = sysB.coords[core_mapAB[i]]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=(units ? T(0.0)u"g/mol" : T(0.0)), charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                            λ=T(global_λ), alch_role=CoreIRole))
-        push!(Virtual, OneParticleSite(counter, counter-1))
-        push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=d.res_number,
-                                    res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
-        push!(Coords, zero(c))
-        mapping_B[core_mapAB[i]] = counter
-        push!(unique_groups["sysB"], counter)
-        counter += 1
+            push!(Atoms, Atom(index=counter, atom_type=aB.atom_type, mass=(units ? T(0.0)u"g/mol" : T(0.0)), charge=aB.charge, σ=aB.σ, ϵ=aB.ϵ, 
+                                                λ=T(global_λ), alch_role=CoreIRole))
+            push!(Virtual, OneParticleSite(counter, counter-1))
+            push!(Data, AtomData(atom_type=dB.atom_type, atom_name=dB.atom_name, res_number=dB.res_number,
+                                        res_name=dB.res_name, chain_id=dB.chain_id, element=dB.element, hetero_atom=dB.hetero_atom))
+            push!(Coords, zero(cB))
+            mapping_B[core_mapAB[i]] = counter
+            push!(unique_groups["sysB"], counter)
+            counter += 1
+        else
+            push!(Atoms, Atom(index=counter, atom_type=aA.atom_type, mass=aA.mass, charge=(aA.charge, aB.charge), σ=(aA.σ, aB.σ), ϵ=(aA.ϵ, aB.ϵ),
+                                                λ=T(global_λ), alch_role=CoreRole))
+            if chain!=dA.chain_id
+                chain = dA.chain_id
+                res_n = 0
+                res_number = 0
+            end
+            if dA.res_number!=res_n
+                res_number +=1
+                res_n = dA.res_number
+            end
+            push!(Data, AtomData(atom_type=dA.atom_type, atom_name=dA.atom_name, res_number=res_number,
+                                        res_name=dA.res_name, chain_id=dA.chain_id, element=dA.element, hetero_atom=dA.hetero_atom))
+            push!(Coords, cA)
+            mapping_A[i] = counter
+            mapping_B[core_mapAB[i]] = counter
+            push!(unique_groups["core"], counter)
+            counter += 1
+        end
     end
+    # Add unique atoms from system A
     for i in mapping["unique_A"]
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                            λ=T(global_λ), alch_role=DeleteRole))
+        if dual
+            push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
+                                                λ=T(global_λ), alch_role=DeleteRole))
+        else
+            push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(a.charge, zero(a.charge)), 
+                                    σ=(a.σ, zero(a.σ)), ϵ=(a.ϵ, zero(a.ϵ)), 
+                                    λ=T(global_λ), alch_role=DeleteRole))
+        end
         if chain!=d.chain_id
             chain = d.chain_id
             res_n = 0
@@ -533,12 +563,20 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         push!(unique_groups["sysA"], counter)
         counter += 1
     end
+
+    # Add unique atoms from system B
     for i in mapping["unique_B"]
         a = sysB.atoms[i]
         d = sysB.atoms_data[i]
         c = sysB.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                            λ=T(global_λ), alch_role=InsertRole))
+        if dual
+            push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
+                                                λ=T(global_λ), alch_role=InsertRole))
+        else
+            push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(zero(a.charge), a.charge), 
+                                    σ=(zero(a.σ), a.σ), ϵ=(zero(a.ϵ),   a.ϵ),
+                                    λ=T(global_λ), alch_role=InsertRole))
+        end
         if chain!=d.chain_id
             chain = d.chain_id
             res_n = 0
@@ -555,12 +593,19 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         push!(unique_groups["sysB"], counter)
         counter += 1
     end
+
+    # Add environment atoms from system A
     for i in mapping["env"]
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
-        push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                            λ=T(1.0), alch_role=EnvRole))
+        if dual
+            push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
+                                                λ=T(1.0), alch_role=EnvRole))
+        else
+            push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(a.charge, a.charge), σ=(a.σ, a.σ), ϵ=(a.ϵ, a.ϵ),
+                                    λ=T(1.0), alch_role=EnvRole))
+        end
         if chain!=d.chain_id
             chain = d.chain_id
             res_n = 0
@@ -579,65 +624,140 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
 
     # Ensure all arrays have correct typing
     Atoms = Vector{typeof(Atoms[1])}(Atoms)
-    Virtual = Vector{typeof(Virtual[1])}(Virtual)
+    if dual
+        Virtual = Vector{typeof(Virtual[1])}(Virtual)
+    end
     Coords = Vector{typeof(Coords[1])}(Coords)
     Data = Vector{typeof(Data[1])}(Data)
 
-    # Adding all the interactions
-    # Interactions from System A
+    # Trackers for interactions for single Topology
+    if !dual
+        single_top_lambda_arrays = Dict{Any, Any}() 
+        single_top_atom_maps = Dict{Any, Dict{Tuple, Int}}()
+    end
+
+    # Loop through interactions in system A and add them to new system
+    # for dual topology the variables are floats
+    # for single topology the variables are tuples with (A,nothing)
     for interaction in sysA.specific_inter_lists
         IT = typeof(interaction).name.wrapper
+        IIT = typeof(interaction.inters[1]).name.wrapper
+        P = hasfield(typeof(interaction.inters[1]), :proper) ? interaction.inters[1].proper : nothing
         field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
         field_types = fieldtypes(typeof(interaction))[1:end-1]
         interaction.inters[1] isa EwaldExclusion && continue
-        converted_type = typeof(to_lambda_function(interaction.inters[1]; scheduler=scheduler))
+        
+        if dual
+            converted_type = typeof(to_lambda_function(interaction.inters[1]; scheduler=scheduler))
+        else
+            converted_type = typeof(to_lambda_function_single(interaction.inters[1], nothing; scheduler=scheduler))
+        end
+        
         field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
         tmp = [T() for T in field_types]
+        
+        if !dual && !haskey(single_top_lambda_arrays,(IT,IIT,P))
+            single_top_lambda_arrays[(IT,IIT,P)] = tmp[end-1]
+            single_top_atom_maps[(IT,IIT,P)] = Dict{Tuple, Int}()
+        end
+        
         for field_tuple in zip(field_names[1:end-1]...)
             n_fields = length(field_tuple)
-            name = typeof(field_tuple[end-1]).name.name
             if all(haskey(mapping_A, field_tuple[i]) for i in 1:n_fields-2)
+                mapped_atoms = Int[]
+
                 for i in 1:n_fields-2
-                    tmp[i] = push!(tmp[i], mapping_A[field_tuple[i]])
+                    val = mapping_A[field_tuple[i]]
+                    push!(tmp[i], val)
+                    push!(mapped_atoms, val) # Track mapped atoms for sysB lookup
                 end
-                tmp[n_fields-1] = push!(tmp[n_fields-1], to_lambda_function(field_tuple[end-1]; scheduler=scheduler))
-                tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
+                
+                if dual
+                    push!(tmp[n_fields-1], to_lambda_function(field_tuple[end-1]; scheduler=scheduler))
+                else
+                    push!(tmp[n_fields-1], to_lambda_function_single(field_tuple[end-1], nothing; scheduler=scheduler))
+                    single_top_atom_maps[(IT,IIT,P)][Tuple(mapped_atoms)] = length(tmp[n_fields-1])
+                end
+                
+                push!(tmp[n_fields], field_tuple[end])
             end
         end
         Interactions = push!(Interactions, IT(tmp..., nothing))
-
     end
 
-    # Interactions from System B
+    # Loop through interactions in system A and add them to new system
+    # for dual topology the variables are floats
+    # for single topology the variables are tuples that are either updated (A,B) or (0,B) is only occuring in system B
     for interaction in sysB.specific_inter_lists
         IT = typeof(interaction).name.wrapper
+        IIT = typeof(interaction.inters[1]).name.wrapper
+        P = hasfield(typeof(interaction.inters[1]), :proper) ? interaction.inters[1].proper : nothing
         field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
         field_types = fieldtypes(typeof(interaction))[1:end-1]
         interaction.inters[1] isa EwaldExclusion && continue
-        converted_type = typeof(to_lambda_function(interaction.inters[1]; scheduler=scheduler))
-        field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
-        tmp = [T() for T in field_types]
-        for field_tuple in zip(field_names[1:end-1]...)
-            n_fields = length(field_tuple)
-            name = typeof(field_tuple[end-1]).name.name
-            if all(haskey(mapping_B, field_tuple[i]) for i in 1:n_fields-2)
-                mapped = Vector{Int}(undef, n_fields-2)
+        
+        if dual
+            converted_type = typeof(to_lambda_function(interaction.inters[1]; scheduler=scheduler))
+            field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
+            tmp = [T() for T in field_types]
+            
+            for field_tuple in zip(field_names[1:end-1]...)
+                n_fields = length(field_tuple)
+                if all(haskey(mapping_B, field_tuple[i]) for i in 1:n_fields-2)
+                    for i in 1:n_fields-2
+                        idx = haskey(mapping_B, field_tuple[i]) ? mapping_B[field_tuple[i]] : mapping_A[field_tuple[i]]
+                        push!(tmp[i], idx)
+                    end
+                    push!(tmp[n_fields-1], to_lambda_function(field_tuple[end-1]; scheduler=scheduler))
+                    push!(tmp[n_fields], field_tuple[end])
+                end
+            end
+            Interactions = push!(Interactions, IT(tmp..., nothing))
+        else
+            converted_type = typeof(to_lambda_function_single(nothing, interaction.inters[1]; scheduler=scheduler))
+            field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
+            
+            tmp_unique_B = [T() for T in field_types]
+            has_unique = false
+            
+            lambda_array_A = get(single_top_lambda_arrays, (IT,IIT,P), nothing)
+            atom_map_A = get(single_top_atom_maps, (IT,IIT,P), Dict{Tuple, Int}())
+            
+            for field_tuple in zip(field_names[1:end-1]...)
+                n_fields = length(field_tuple)
+                mapped_atoms = Int[]
+                
+                if !any(haskey(mapping_B, field_tuple[i]) for i in 1:n_fields-2)
+                    continue
+                end
                 for i in 1:n_fields-2
                     if haskey(mapping_B, field_tuple[i])
-                        mapped[i] = mapping_B[field_tuple[i]]
-                    else
-                        mapped[i] = mapping_A[field_tuple[i]]
+                        push!(mapped_atoms, mapping_B[field_tuple[i]])
+                    elseif haskey(mapping_A, field_tuple[i])
+                        push!(mapped_atoms, mapping_A[field_tuple[i]])
                     end
                 end
 
-                for i in 1:n_fields-2
-                    tmp[i] = push!(tmp[i], mapped[i])
+                mapped_tuple = Tuple(mapped_atoms)
+                
+                if haskey(atom_map_A, mapped_tuple)
+                    idx = atom_map_A[mapped_tuple]
+                    lambda_array_A[idx] = update_lambda_function(lambda_array_A[idx], field_tuple[end-1])
+                else
+                    has_unique = true
+                    for i in 1:n_fields-2
+                        push!(tmp_unique_B[i], mapped_tuple[i])
+                    end
+                    push!(tmp_unique_B[n_fields-1], to_lambda_function_single(nothing, field_tuple[end-1]; scheduler=scheduler))
+                    push!(tmp_unique_B[n_fields], field_tuple[end])
                 end
-                tmp[n_fields-1] = push!(tmp[n_fields-1], to_lambda_function(field_tuple[end-1]; scheduler=scheduler))
-                tmp[n_fields] = push!(tmp[n_fields], field_tuple[end])
+
+            end
+            
+            if has_unique
+                Interactions = push!(Interactions, IT(tmp_unique_B..., nothing))
             end
         end
-        Interactions = push!(Interactions, IT(tmp..., nothing))
     end
 
     Interactions = merge(Interactions)
@@ -714,7 +834,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                                         error_tol=inter.error_tol, fixed_charges=false, scheduler=scheduler),
                         )
             excluded_pairs = find_excluded_pairs(eligible, special)
-            exclusion_data = EwaldExclusionData(T(inter.dist_cutoff); error_tol=T(inter.error_tol))
+            exclusion_data = EwaldExclusionData(T(inter.dist_cutoff); error_tol=T(inter.error_tol), scheduler=scheduler)
             ewald_exclusions = InteractionList2Atoms(
                 to_device([ep[1] for ep in excluded_pairs], AT),
                 to_device([ep[2] for ep in excluded_pairs], AT),

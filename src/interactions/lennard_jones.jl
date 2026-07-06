@@ -630,7 +630,7 @@ end
 
     # 2. Dispatch to the scheduler for the effective sterics lambda
     # Changed scale_elec to scale_sterics
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
@@ -646,8 +646,8 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j)
-    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
     σ2 = σ^2
     σ6 = σ2^3
 
@@ -711,7 +711,7 @@ end
 
     # 2. Dispatch to the scheduler for the effective sterics lambda
     # Changed scale_elec to scale_sterics
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     if λ <= 0
         return ustrip(zero(dr[1])) * energy_units
@@ -723,8 +723,8 @@ end
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
-    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j)
-    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
     σ6 = σ^6
 
     # 3. Fast Path: Standard Lennard Jones

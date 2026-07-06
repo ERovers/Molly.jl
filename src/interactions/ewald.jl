@@ -50,17 +50,25 @@ end
 @inline electrostatic_lambda(::Any, atom, ::Val{T}) where T = one(T)
 
 @inline function electrostatic_lambda(scheduler, atom::Atom, ::Val{T}) where T
-    return scale_elec(scheduler, T(atom.λ), atom.alch_role)
+    return scale_elec(scheduler, T(atom.λ), atom.alch_role, Val(scheduler.dual))
 end
 
 @inline function effective_charge(atom::Atom, scheduler, ::Val{T}) where T
     λ, λ_params = electrostatic_lambda(scheduler, atom, Val(T))
-    return λ * λ_params * atom.charge
+    if scheduler.dual
+        return λ*atom.charge
+    else
+        return params_mixing(λ_params, atom.charge)
+    end
 end
 
 @inline function effective_charge_sqrt(atom::Atom, scheduler, ::Val{T}) where T
     λ, λ_params = electrostatic_lambda(scheduler, atom, Val(T))
-    return sqrt(λ*λ_params)*atom.charge
+    if scheduler.dual
+        return sqrt(λ)*atom.charge
+    else
+        return params_mixing(λ_params, atom.charge)
+    end
 end
 """
     Ewald(dist_cutoff; error_tol=0.0005, scheduler=DefaultLambdaScheduler())
