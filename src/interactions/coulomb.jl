@@ -465,7 +465,7 @@ end
         if iszero_value(r)
             return zero_pairwise_energy(dr, energy_units)
         end
-        params = (ke, qi, qj, nothing, nothing)
+        params = (ke, qij, nothing, nothing)
         pe = pe_cutoff(cutoff, inter, r, params)
         return special ? pe * inter.weight_special : pe
     end
@@ -479,7 +479,7 @@ end
         return special ? pe * inter.weight_special : pe
     end
 
-    params = (ke, qi, qj, σ6_fac, λ)
+    params = (ke, qij, σ6_fac, λ)
     pe = pe_cutoff(cutoff, inter, r, params)
     return special ? pe * inter.weight_special : pe
 end
@@ -1792,13 +1792,13 @@ end
     end
 
     qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
-    if λ_soft >= 1
-        pe_soft = λ_elec * inter.coulomb_const * (qij / r)
-        f_soft = λ_elec * inter.coulomb_const * (qij / r^2)
+    if λ >= 1
+        pe_soft = λ * inter.coulomb_const * (qij / r)
+        f_soft = λ * inter.coulomb_const * (qij / r^2)
     else
-        term = inter.α * (1 - λ_soft) * σ_mixing(inter.σ_mixing, atom_i, atom_j)^6 + r^6
-        pe_soft = λ_elec * inter.coulomb_const * (qij / sqrt(cbrt(term)))
-        f_soft = λ_elec * inter.coulomb_const * (qij / (term * sqrt(cbrt(term)))) * r^5
+        term = inter.α * (1 - λ) * σ_mixing(inter.σ_mixing, atom_i, atom_j)^6 + r^6
+        pe_soft = λ * inter.coulomb_const * (qij / sqrt(cbrt(term)))
+        f_soft = λ * inter.coulomb_const * (qij / (term * sqrt(cbrt(term)))) * r^5
     end
 
     if special
@@ -1825,24 +1825,24 @@ end
     r = sqrt(sum(abs2, dr))
     qi, qj = (λ_params*atom_i.charge), (λ_params*atom_j.charge)
     if iszero_value(r)
-        if λ_soft >= 1
+        if λ >= 1
             pe_soft = zero_pairwise_energy(dr, energy_units)
         else
-            σ6_fac = inter.α * (1 - λ_soft) * σ_mixing(inter.σ_mixing, atom_i, atom_j)^6
+            σ6_fac = inter.α * (1 - λ) * σ_mixing(inter.σ_mixing, atom_i, atom_j)^6
             pe_soft = overlap_pe_coulomb_softcore_beutler(
                 dr,
                 inter.coulomb_const,
                 energy_units,
                 qij,
-                λ_elec,
+                λ,
                 σ6_fac,
             )
         end
-        pe_soft = λ_elec * inter.coulomb_const * (qij / r)
-    elseif λ_soft >= 1
+        pe_soft = λ * inter.coulomb_const * (qij / r)
+    elseif λ >= 1
     else
-        σ6_fac = inter.α * (1 - λ_soft) * σ_mixing(inter.σ_mixing, atom_i, atom_j)^6
-        pe_soft = λ_elec * inter.coulomb_const * (qij / sqrt(cbrt(σ6_fac + r^6)))
+        σ6_fac = inter.α * (1 - λ) * σ_mixing(inter.σ_mixing, atom_i, atom_j)^6
+        pe_soft = λ * inter.coulomb_const * (qij / sqrt(cbrt(σ6_fac + r^6)))
     end
 
     if special
@@ -1963,18 +1963,18 @@ end
     qi = params_mixing(λ_params, atom_i.charge)
     qj = params_mixing(λ_params, atom_j.charge)
     qij = qi*qj
-    if λ_soft >= 1
-        pe_soft = λ_elec * inter.coulomb_const * (qij / r)
-        f_soft = λ_elec * inter.coulomb_const * (qij / r^2)
+    if λ >= 1
+        pe_soft = λ * inter.coulomb_const * (qij / r)
+        f_soft = λ * inter.coulomb_const * (qij / r^2)
     else
-        R = inter.α * sqrt(cbrt(1 - λ_soft)) * (oneunit(r) + inter.σQ * abs(qij))
+        R = inter.α * sqrt(cbrt(1 - λ)) * (oneunit(r) + inter.σQ * abs(qij))
         if !(r < R)
-            pe_soft = λ_elec * inter.coulomb_const * (qij / r)
-            f_soft = λ_elec * inter.coulomb_const * (qij / r^2)
-            pe_soft = λ_elec * inter.coulomb_const * (((qij / R^3) * r^2) - (((3 * qij) / R^2) * r) +
+            pe_soft = λ * inter.coulomb_const * (qij / r)
+            f_soft = λ * inter.coulomb_const * (qij / r^2)
+            pe_soft = λ * inter.coulomb_const * (((qij / R^3) * r^2) - (((3 * qij) / R^2) * r) +
         else
                       ((3 * qij) / R))
-            f_soft = λ_elec * inter.coulomb_const * (-(((2 * qij) / R^3) * r) + ((3 * qij) / R^2))
+            f_soft = λ * inter.coulomb_const * (-(((2 * qij) / R^3) * r) + ((3 * qij) / R^2))
         end
     end
 
@@ -2004,27 +2004,27 @@ end
     qj = params_mixing(λ_params, atom_j.charge)
     qij = qi*qj
     if iszero_value(r)
-        if λ_soft >= 1
+        if λ >= 1
         else
             pe_soft = zero_pairwise_energy(dr, energy_units)
-            R = inter.α * sqrt(cbrt(1 - λ_soft)) * (oneunit(r) + inter.σQ * abs(qij))
+            R = inter.α * sqrt(cbrt(1 - λ)) * (oneunit(r) + inter.σQ * abs(qij))
             pe_soft = overlap_pe_coulomb_softcore_gapsys(
                 dr,
                 energy_units,
                 inter.coulomb_const,
                 qij,
                 R,
-                λ_elec,
+                λ,
             )
         end
-    elseif λ_soft >= 1
-        pe_soft = λ_elec * inter.coulomb_const * (qij / r)
+    elseif λ >= 1
+        pe_soft = λ * inter.coulomb_const * (qij / r)
     else
-        R = inter.α * sqrt(cbrt(1 - λ_soft)) * (oneunit(r) + inter.σQ * abs(qij))
+        R = inter.α * sqrt(cbrt(1 - λ)) * (oneunit(r) + inter.σQ * abs(qij))
         if !(r < R)
-            pe_soft = λ_elec * inter.coulomb_const * (qij / r)
+            pe_soft = λ * inter.coulomb_const * (qij / r)
         else
-            pe_soft = λ_elec * inter.coulomb_const * (((qij / R^3) * r^2) - (((3 * qij) / R^2) * r) +
+            pe_soft = λ * inter.coulomb_const * (((qij / R^3) * r^2) - (((3 * qij) / R^2) * r) +
                       ((3 * qij) / R))
         end
     end

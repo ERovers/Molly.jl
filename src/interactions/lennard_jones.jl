@@ -163,9 +163,12 @@ volume can change).
 Only compatible with 3D systems.
 Not compatible with cutoffs other than [`DistanceCutoff`](@ref).
 """
-struct LJDispersionCorrection{F6, F12}
+struct LJDispersionCorrection{F6, F12, D, S, E}
     factor_6::F6
     factor_12::F12
+    dist_cutoff::D
+    σ_mix::S
+    ϵ_mix::E
 end
 
 function LJDispersionCorrection(atoms::AbstractArray, dist_cutoff,
@@ -227,6 +230,9 @@ function LJDispersionCorrection(atoms::AbstractArray, dist_cutoff,
     return LJDispersionCorrection(
         convert(F6, factor_6_acc),
         convert(F12, factor_12_acc),
+        dist_cutoff,
+        σ_mix,
+        ϵ_mix,
     )
 end
 
@@ -237,6 +243,9 @@ function Base.:+(dc1::LJDispersionCorrection, dc2::LJDispersionCorrection)
     return LJDispersionCorrection(
         dc1.factor_6  + dc2.factor_6,
         dc1.factor_12 + dc2.factor_12,
+        dc1.cutoff + dc2.cutoff, 
+        dc1.p_σ, 
+        dc1.p_ϵ,
     )
 end
 
@@ -277,22 +286,6 @@ AtomsCalculators.@generate_interface function AtomsCalculators.forces!(
     return fs
 end
 
-@inline function overlap_pe_lj_softcore_beutler(dr, energy_units, C12, C6, λ, σ6_shift)
-    if iszero_value(σ6_shift)
-        return zero_pairwise_energy(dr, energy_units)
-    end
-    return λ * ((C12 / (σ6_shift * σ6_shift)) - (C6 / σ6_shift))
-end
-
-@inline function overlap_pe_lj_softcore_gapsys(dr, energy_units, C12, C6, λ, R)
-    if iszero_value(R)
-        return zero_pairwise_energy(dr, energy_units)
-    end
-    invR = inv(R)
-    invR6 = invR^6
-    return λ * ((91 * C12 * (invR6 * invR6)) - (28 * C6 * invR6))
-end
-
 @doc raw"""
     LJDispersionCorrectionλ(atoms, dist_cutoff, σ_mixing=LorentzMixing(),
                            ϵ_mixing=GeometricMixing())
@@ -313,11 +306,12 @@ volume can change).
 Only compatible with 3D systems.
 Not compatible with cutoffs other than [`DistanceCutoff`](@ref).
 """
-struct LJDispersionCorrectionλ{F,D,PS,PE}
-    factor::F
+struct LJDispersionCorrectionλ{F,D,S,E}
+    factor_6::F6
+    factor_12::F12
     dist_cutoff::D
-    p_σ::PS
-    p_ϵ::PE
+    σ_mix::S
+    ϵ_mix::E
 end
 
 function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix, ϵ_mix)
@@ -325,7 +319,22 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     n_atoms = length(atoms)
     atoms_cpu = from_device(atoms)
     at = atoms_cpu[1]
-    ϵσ12_sum, ϵσ6_sum = zero(at.ϵ * at.σ^12), zero(at.ϵ * at.σ^6)
+
+    # Representative terms for units and final factor types.
+    term_6_example  = at.ϵ * at.σ^6
+    term_12_example = at.ϵ * at.σ^12
+
+    # Accumulate pair sums in Float64 for precision.
+    Tacc = Float64
+
+    ϵσ6_unit  = unit(term_6_example)
+    ϵσ12_unit = unit(term_12_example)
+
+    # Accumulate with units, but keep the numerical values in Float64.
+    ϵσ6_sum  = zero(Tacc) * ϵσ6_unit
+    ϵσ12_sum = zero(Tacc) * ϵσ12_unit
+
+    # Counter for number of atoms if scaled by λ, it's counted by the λ value
     nλ_atoms = T(0)
     for i in 1:n_atoms
         atom_i = atoms_cpu[i]
@@ -353,30 +362,98 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
             ϵσ6_sum  += λ * ϵ * σ^6
         end
     end
-    n_pairs = (nλ_atoms * (nλ_atoms + 1)) ÷ 2
-    ϵσ12_mean = ϵσ12_sum / n_pairs
-    ϵσ6_mean  = ϵσ6_sum  / n_pairs
-    inner_term = (ϵσ12_mean / (9 * dist_cutoff^9) - ϵσ6_mean / (3 * dist_cutoff^3))
-    factor = 8 * T(π) * nλ_atoms^2 * inner_term
-    return LJDispersionCorrectionλ(factor, dist_cutoff, σ_mix, ϵ_mix)
+
+    nλ_pairs_acc = Tacc((nλ_atoms * (nλ_atoms + 1)) ÷ 2)
+
+    ϵσ12_mean = ϵσ12_sum / nλ_pairs_acc
+    ϵσ6_mean  = ϵσ6_sum  / nλ_pairs_acc
+
+    # Factors are divided by volume when evaluating the correction.
+    nλ_atoms_acc = Tacc(nλ_atoms)
+    π_acc = Tacc(π)
+
+    factor_6_acc =
+        8 * π_acc * nλ_atoms_acc^2 *
+        (-ϵσ6_mean / (Tacc(3) * dist_cutoff^3))
+
+    factor_12_acc =
+        8 * π_acc * nλ_atoms_acc^2 *
+        (ϵσ12_mean / (Tacc(9) * dist_cutoff^9))
+
+    F6 = typeof(-(term_6_example / dist_cutoff^3))
+    F12 = typeof(term_12_example / dist_cutoff^9)
+
+    return LJDispersionCorrectionλ(
+        convert(F6, factor_6_acc),
+        convert(F12, factor_12_acc),
+    )
 end
 
-Base.zero(dc::LJDispersionCorrectionλ) = LJDispersionCorrectionλ(zero(dc.factor), zero(dc.cutoff), dc.p_σ, dc.p_ϵ)
+Base.zero(dc::LJDispersionCorrectionλ) = LJDispersionCorrectionλ(zero(dc.factor_6), zero(dc.factor_12), 
+                                                                    zero(dc.cutoff), dc.p_σ, dc.p_ϵ)
 
 function Base.:+(dc1::LJDispersionCorrectionλ, dc2::LJDispersionCorrectionλ)
-    return LJDispersionCorrectionλ(dc1.factor + dc2.factor, dc1.cutoff + dc2.cutoff, dc1.p_σ, dc1.p_ϵ)
+    return LJDispersionCorrectionλ(
+                dc1.factor_6  + dc2.factor_6,
+                dc1.factor_12 + dc2.factor_12,
+                dc1.cutoff + dc2.cutoff, 
+                dc1.p_σ, 
+                dc1.p_ϵ
+                )
 end
+
+Unitful.ustrip(dc::LJDispersionCorrectionλ) =
+    LJDispersionCorrectionλ(ustrip(dc.factor_6), ustrip(dc.factor_12), ustrip(dc.cutoff), dc.p_σ, dc.p_ϵ)
 
 AtomsCalculators.@generate_interface function AtomsCalculators.potential_energy(sys,
                                                         inter::LJDispersionCorrectionλ; kwargs...)
-    return inter.factor / volume(sys)
+    return (inter.factor_6 + inter.factor_12) / volume(sys)
 end
 
-AtomsCalculators.@generate_interface function AtomsCalculators.forces!(fs, sys,
-                                                        inter::LJDispersionCorrectionλ; kwargs...)
+# The omitted LJ pairs have nonzero forces, but their isotropic average gives
+# no net force on any atom. Their virial contributions, however, do not cancel.
+#
+# For a term u(r) ∝ r^-n, r ⋅ f(r) = n ⋅ u(r), where f(r) = ∂u(r)/∂r so each
+# diagonal component of the isotropic tail virial is (n / 3)U_n. The r^-6 and 
+# r^-12 terms therefore contribute 2U6 and 4U12, respectively.
+#
+# This is the "mechanical" tail virial.
+AtomsCalculators.@generate_interface function AtomsCalculators.forces!(
+        fs, sys, inter::LJDispersionCorrectionλ;
+        buffers=nothing,
+        needs_vir=false,
+        kwargs...)
+
+    if needs_vir
+        vol = volume(sys)
+        U6  = inter.factor_6  / vol
+        U12 = inter.factor_12 / vol
+
+        w = 2 * U6 + 4 * U12
+
+        for d in axes(buffers.virial, 1)
+            buffers.virial[d, d] += w
+        end
+    end
+
     return fs
 end
 
+@inline function overlap_pe_lj_softcore_beutler(dr, energy_units, C12, C6, λ, σ6_shift)
+    if iszero_value(σ6_shift)
+        return zero_pairwise_energy(dr, energy_units)
+    end
+    return λ * ((C12 / (σ6_shift * σ6_shift)) - (C6 / σ6_shift))
+end
+
+@inline function overlap_pe_lj_softcore_gapsys(dr, energy_units, C12, C6, λ, R)
+    if iszero_value(R)
+        return zero_pairwise_energy(dr, energy_units)
+    end
+    invR = inv(R)
+    invR6 = invR^6
+    return λ * ((91 * C12 * (invR6 * invR6)) - (28 * C6 * invR6))
+end
 
 @doc raw"""
     LennardJonesSoftCoreBeutler(; cutoff, α, λ, use_neighbors, shortcut, σ_mixing,
@@ -777,7 +854,7 @@ end
 # Dispatch 2: Soft Core Logic (Matches Tuple length 4)
 @inline function pairwise_force(::LennardJonesSoftCoreGapsys, r, (C12, C6, λ, R)::Tuple{Any, Any, Any, Any})
     r2 = r^2
-    r6 = r^6
+    r6 = r2^3
     if !(r < R)
         return λ * (((12*C12)/(r6*r6*r)) - ((6*C6)/(r6*r)))
     else
