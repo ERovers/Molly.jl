@@ -544,13 +544,7 @@ end
     # Mix Lambda
     T = typeof(ustrip(atom_i.λ))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
+    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
     λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
     if λ <= 0
@@ -570,8 +564,8 @@ end
     # We explicity branch to save compute.
     if λ >= 1
 
-        σ = σ_mixing(inter.σ_mixing, atom_i, atom_j)
-        ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
+        σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
+        ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
         σ2 = σ^2
         params = (σ2, ϵ, nothing, nothing)
         
@@ -582,8 +576,8 @@ end
         return special ? fdr * inter.weight_special : fdr
     end
 
-    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j)
-    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
     σ6 = σ^6
 
     C6 = 4 * ϵ * σ6
@@ -620,13 +614,7 @@ end
     # Mix Lambda
     T = typeof(ustrip(atom_i.λ))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
+    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
     λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
     if λ <= 0
@@ -645,8 +633,8 @@ end
             return zero_pairwise_energy(dr, energy_units)
         end
 
-        σ = σ_mixing(inter.σ_mixing, atom_i, atom_j)
-        ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
+        σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
+        ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
 
         r = sqrt(sum(abs2, dr))
         σ2 = σ^2
@@ -661,8 +649,8 @@ end
         end
     end
 
-    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j)
-    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
     σ6 = σ^6
 
     cutoff = inter.cutoff
@@ -794,14 +782,7 @@ end
 
     T = typeof(ustrip(atom_i.mass))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
-    # Changed scale_elec to scale_sterics
+    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
     λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     if λ <= 0
@@ -875,15 +856,8 @@ end
                                   args...)
     T = typeof(ustrip(atom_i.mass))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
-    # Changed scale_elec to scale_sterics
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
+    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
@@ -948,90 +922,6 @@ end
             ((168 * C12 * (invR6 * invR6 * invR)) - (48 * C6 * (invR6 * invR))) * r +
             (91 * C12 * (invR6 * invR6)) - (28 * C6 * invR6)
         )
-    end
-end
-
-@inline function force_λ(inter::LennardJonesSoftCoreGapsys,
-                       dr,
-                       atom_i,
-                       atom_j,
-                       force_units=u"kJ * mol^-1 * nm^-1",
-                       special=false,
-                       args...)
-
-    T = typeof(ustrip(atom_i.λ))
-    if !isa(inter.λ_mixing, typeof(Molly.ProductMixing()))
-        error("force with respect to λ only possible with ProductMixing(), currently using: ", typeof(inter.λ_mixing))
-    end
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    d_λ = zero_pairwise_force(dr, force_units)
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
-    di = atom_i.alch_role==ProbRole
-    dj = atom_j.alch_role==ProbRole
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
-    # Changed scale_elec to scale_sterics
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
-
-    if λ <= 0
-        return d_λ
-    end
-
-    if shortcut_pair(inter.shortcut, atom_i, atom_j)
-        return d_λ
-    end
-
-    cutoff = inter.cutoff
-    r = norm(dr)
-    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j)
-    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
-    σ6 = σ^6
-
-    C6 = 4 * ϵ * σ6
-    C12 = C6 * σ6
-    val = (26 * σ6 * (1 - λ)) / 7
-    R = inter.α * sqrt(cbrt(val))
-    
-    if r >= R
-        r6 = r^6
-        pe_i = atom_j.λ * ((C12/(r6*r6)) - (C6/(r6)))
-        pe_j = atom_i.λ * ((C12/(r6*r6)) - (C6/(r6)))
-    else
-        α_term = inter.α * sqrt(cbrt((26*(C12/C6)/7)))
-        α_term2 = α_term^2
-        α_term6 = α_term2^3
-        r2 = r^2
-        A1 = (78*C12*r2) / (α_term6*α_term6*α_term2)
-        B1 = (-21*C6*r2) / (α_term6*α_term2)
-        C1 = (-168*C12*r) / (α_term6*α_term6*α_term)
-        D1 = (48*C6*r) / (α_term6*α_term)
-        E1 = (91*C12) / (α_term6*α_term6)
-        F1 = (-28*C6) / α_term6
-        λ1 = (1-λ)
-        λ13 = cbrt(λ1)
-        λ16 = sqrt(λ13)
-        pe_i = A1*((atom_j.λ*((4*λ)+3))/(3*λ1^3*λ13)) + B1*((atom_j.λ*(λ+3))/(3*λ1^2*λ13)) +
-                C1*((atom_j.λ*((7*λ)+6))/(6*λ1^3*λ16)) + D1*((atom_j.λ*(λ+6))/(6*λ1^2*λ16)) +
-                E1*((atom_j.λ*(λ+1))/(λ1^3)) + F1*(atom_j.λ/(λ1^2))
-        pe_j = A1*((atom_i.λ*((4*λ)+3))/(3*λ1^3*λ13)) + B1*((atom_i.λ*(λ+3))/(3*λ1^2*λ13)) +
-                C1*((atom_i.λ*((7*λ)+6))/(6*λ1^3*λ16)) + D1*((atom_i.λ*(λ+6))/(6*λ1^2*λ16)) +
-                E1*((atom_i.λ*(λ+1))/(λ1^3)) + F1*(atom_i.λ/(λ1^2))
-    end
-
-    if special
-        pe_i = pe_i * inter.weight_special * (r <= inter.cutoff.dist_cutoff) * di
-        pe_j = pe_j * inter.weight_special * (r <= inter.cutoff.dist_cutoff) * dj
-        tmp = SVector{3,T}(ustrip(pe_i),ustrip(pe_j),0.0)
-        return d_λ .+ (tmp*force_units)
-    else
-        pe_i = pe_i * (r <= inter.cutoff.dist_cutoff) * di
-        pe_j = pe_j * (r <= inter.cutoff.dist_cutoff) * dj
-        tmp = SVector{3,T}(ustrip(pe_i),ustrip(pe_j),0.0)
-        return d_λ .+ (tmp*force_units)
     end
 end
 
@@ -1129,13 +1019,11 @@ end
     end
 
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
+    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
     λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
-    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j, special)
-    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, special)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
@@ -1174,13 +1062,11 @@ end
     end
 
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
+    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
     λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
-    σ = λ_params*σ_mixing(inter.σ_mixing, atom_i, atom_j, special)
-    ϵ = λ_params*ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, special)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
@@ -1243,10 +1129,6 @@ end
     return inter.weight_14 * 4 * inter.ϵ14_mixed * (six_term ^ 2 - six_term)
 end
 
-@inline function force_λ(b::LennardJones14, coord_i, coord_j, boundary, atoms_i, atoms_j, F, args...)
-    dr = vector(coord_i, coord_j, boundary)
-    return SpecificForce2Atoms(zero_pairwise_force(dr, F), zero_pairwise_force(dr, F))
-end
 
 # Specific interaction used to allow different σ/ϵ for 1-4 interactions
 # Assumes no 1-4 Lennard-Jones interaction via the pairwise interactions (weight_special = 0)
@@ -1288,15 +1170,8 @@ end
 @inline function force(inter::LennardJones14SoftCoreGapsys, coords_i, coords_l, boundary, atoms_i, atoms_l, force_units, args...)
     T = typeof(ustrip(atoms_i.σ))
     dr = vector(coords_i, coords_l, boundary)
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atoms_i.λ, atoms_l.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atoms_i.alch_role
-    role_l = atoms_l.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_l))
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
-    # Changed scale_elec to scale_sterics
+    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
+    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
     λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
     if λ <= 0
@@ -1347,15 +1222,8 @@ end
 @inline function potential_energy(inter::LennardJones14SoftCoreGapsys, coords_i, coords_l, boundary, atoms_i, atoms_l, energy_units, args...)
     T = typeof(ustrip(atoms_i.σ))
     dr = vector(coords_i, coords_l, boundary)
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atoms_i.λ, atoms_l.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atoms_i.alch_role
-    role_l = atoms_l.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_l))
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
-    # Changed scale_elec to scale_sterics
+    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
+    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
     λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
     if λ <= 0
@@ -1391,70 +1259,4 @@ end
                     (91*C12*(invR6*invR6)) - (28*C6*(invR6)))
         end
     end
-end
-
-@inline function force_λ(inter::LennardJones14SoftCoreGapsys, coords_i, coords_l, boundary, atoms_i, atoms_l, force_units, args...)
-    T = typeof(ustrip(atoms_i.σ))
-    if !isa(inter.λ_mixing, typeof(ProductMixing()))
-        error("force with respect to λ only possible with ProductMixing(), currently using: ", typeof(inter.λ_mixing))
-    end
-    dr = vector(coords_i, coords_l, boundary)
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atoms_i.λ, atoms_l.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atoms_i.alch_role
-    role_j = atoms_l.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
-    di = atoms_i.alch_role==ProbRole
-    dj = atoms_l.alch_role==ProbRole
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
-    # Changed scale_elec to scale_sterics
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
-
-    # Different cutoffs
-    if λ <= 0
-        return SpecificForce2Atoms(zero_pairwise_force(dr, force_units),zero_pairwise_force(dr, force_units))
-    end
-
-    r = norm(dr)
-    if iszero_value(r)
-        return SpecificForce2Atoms(zero_pairwise_force(dr, force_units),zero_pairwise_force(dr, force_units))
-    end
-
-    σ6 = (λ_params*inter.σ14_mixed)^6
-
-    C6 = 4 * λ_params* inter.ϵ14_mixed * σ6
-    C12 = C6 * σ6
-    val = (26 * σ6 * (1 - λ)) / 7
-    R = inter.α * sqrt(cbrt(val))
-    
-    if r >= R
-        r6 = r^6
-        pe_i = inter.weight_14 * ((C12/(r6*r6))-(C6/(r6))) * atoms_l.λ
-        pe_l = inter.weight_14 * ((C12/(r6*r6))-(C6/(r6))) * atoms_i.λ
-    else
-        α_term = inter.α * sqrt(cbrt((26*(C12/C6)/7)))
-        α_term2 = α_term^2
-        α_term6 = α_term2^3
-        r2 = r^2
-        A1 = (78*C12*r2) / (α_term6*α_term6*α_term2)
-        B1 = (-21*C6*r2) / (α_term6*α_term2)
-        C1 = (-168*C12*r) / (α_term6*α_term6*α_term)
-        D1 = (48*C6*r) / (α_term6*α_term)
-        E1 = (91*C12) / (α_term6*α_term6)
-        F1 = (-28*C6) / α_term6
-        λ1 = (1-λ)
-        λ13 = cbrt(λ1)
-        λ16 = sqrt(λ13)
-        pe_i = inter.weight_14 * (A1*((atoms_l.λ*((4*λ)+3))/(3*λ1^3*λ13)) + B1*((atoms_l.λ*(λ+3))/(3*λ1^2*λ13)) +
-                C1*((atoms_l.λ*((7*λ)+6))/(6*λ1^3*λ16)) + D1*((atoms_l.λ*(λ+6))/(6*λ1^2*λ16)) +
-                E1*((atoms_l.λ*(λ+1))/(λ1^3)) + F1*(atoms_l.λ/(λ1^2)))
-        pe_l = inter.weight_14 * (A1*((atoms_i.λ*((4*λ)+3))/(3*λ1^3*λ13)) + B1*((atoms_i.λ*(λ+3))/(3*λ1^2*λ13)) +
-                C1*((atoms_i.λ*((7*λ)+6))/(6*λ1^3*λ16)) + D1*((atoms_i.λ*(λ+6))/(6*λ1^2*λ16)) +
-                E1*((atoms_i.λ*(λ+1))/(λ1^3)) + F1*(atoms_i.λ/(λ1^2)))
-    end
-    fi = SVector{3,T}(ustrip(pe_i),0.0,0.0)*force_units
-    fl = SVector{3,T}(ustrip(pe_l),0.0,0.0)*force_units
-    return SpecificForce2Atoms(fi, fl)
 end

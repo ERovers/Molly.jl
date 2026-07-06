@@ -15,10 +15,6 @@ export
 
 const coulomb_const = 138.93545764u"kJ * mol^-1 * nm" # 1 / 4πϵ0
 
-@inline function scaled_charge(scheduler, atom, ::Val{T}) where T
-    return atom.charge * T(scale_elec(scheduler, T(atom.λ), atom.alch_role))
-end
-
 @doc raw"""
     Coulomb(; cutoff, use_neighbors, weight_special, coulomb_const)
 
@@ -164,8 +160,13 @@ end
                        args...) where C
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    qi = scaled_charge(inter.scheduler, atom_i, Val(T))
-    qj = scaled_charge(inter.scheduler, atom_j, Val(T))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
+    if λ <= 0
+        return zero_pairwise_force(dr, force_units)
+    end
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+
     if iszero_value(qi) || iszero_value(qj)
         return zero_pairwise_force(dr, force_units)
     end
@@ -196,8 +197,13 @@ end
                                   args...) where C
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    qi = scaled_charge(inter.scheduler, atom_i, Val(T))
-    qj = scaled_charge(inter.scheduler, atom_j, Val(T))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
+    if λ <= 0
+        return zero_pairwise_force(dr, force_units)
+    end
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+
     if iszero_value(qi) || iszero_value(qj)
         return zero_pairwise_energy(dr, energy_units)
     end
@@ -376,17 +382,8 @@ end
     # 1. Type stability
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
-    # Changed scale_elec to scale_sterics
-    λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
-
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
+    
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
     end
@@ -395,9 +392,11 @@ end
     if iszero_value(r)
         return zero_pairwise_force(dr, force_units)
     end
-
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     cutoff = inter.cutoff
+
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
 
     # 2. Fast Path: Standard Coulomb (λ >= 1.0)
     # Use tuple padding (Nothing) to match length 5 of the alchemical path
@@ -441,24 +440,18 @@ end
     # 1. Type stability
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
-    # Changed scale_elec to scale_sterics
-    λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
 
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
     end
 
     r = sqrt(sum(abs2, dr))
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     cutoff = inter.cutoff
+
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
 
     # 2. Fast Path: Standard Coulomb (λ >= 1.0)
     if λ >= 1
@@ -598,17 +591,8 @@ end
 
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
-    # Changed scale_elec to scale_sterics
-    λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
-
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
+    
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
     end
@@ -617,9 +601,11 @@ end
     if iszero_value(r)
         return zero_pairwise_force(dr, force_units)
     end
-
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     cutoff = inter.cutoff
+
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
 
     # Fast Path: Standard Coulomb (Length 4)
     if λ >= 1
@@ -662,24 +648,18 @@ end
 
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-
-    # 1. Fetch alchemical roles from the contiguous array
-    role_i = atom_i.alch_role
-    role_j = atom_j.alch_role
-    pair_role = mix_roles(inter.scheduler, (role_i, role_j))
-
-    # 2. Dispatch to the scheduler for the effective sterics lambda
-    # Changed scale_elec to scale_sterics
-    λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
 
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
     end
 
     r = sqrt(sum(abs2, dr))
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     cutoff = inter.cutoff
+
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
 
     if λ >= 1
         if iszero_value(r)
@@ -906,8 +886,13 @@ end
                        args...)
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    qij = scaled_charge(inter.scheduler, atom_i, Val(T)) *
-          scaled_charge(inter.scheduler, atom_j, Val(T))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
+    if λ <= 0
+        return zero_pairwise_force(dr, force_units)
+    end
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
     if iszero_value(qij)
         return zero_pairwise_force(dr, force_units)
     end
@@ -940,8 +925,10 @@ end
                                   args...)
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    qij = scaled_charge(inter.scheduler, atom_i, Val(T)) *
-          scaled_charge(inter.scheduler, atom_j, Val(T))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
     if iszero_value(qij)
         return zero_pairwise_energy(dr, energy_units)
     end
@@ -1061,9 +1048,7 @@ end
                        args...)
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
 
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
@@ -1074,9 +1059,11 @@ end
     if iszero_value(r)
         return zero_pairwise_force(dr, force_units)
     end
-
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     rc = inter.dist_cutoff
+
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
 
     if special
         krf = inv(rc^3) * zero(T)
@@ -1115,9 +1102,7 @@ end
                                   args...)
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
 
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
@@ -1125,8 +1110,11 @@ end
 
     r2 = sum(abs2, dr)
     r = sqrt(r2)
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     rc = inter.dist_cutoff
+
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
 
     if λ >= 1
         if iszero_value(r)
@@ -1277,9 +1265,7 @@ end
                        args...)
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
 
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
@@ -1291,7 +1277,9 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
     rc = inter.dist_cutoff
 
     if special
@@ -1334,18 +1322,18 @@ end
                                   args...)
     ke = inter.coulomb_const
     T = typeof(ustrip(ke))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
-
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
     end
 
     r2 = sum(abs2, dr)
     r = sqrt(r2)
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
     rc = inter.dist_cutoff
+
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
 
     if special
         krf = inv(rc^3) * zero(T)
@@ -1597,8 +1585,15 @@ end
                        special=false,
                        args...) where T
     ke, α = inter.coulomb_const, inter.α
-    qij = scaled_charge(inter.scheduler, atom_i, Val(T)) *
-          scaled_charge(inter.scheduler, atom_j, Val(T))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
+    if λ <= 0
+        return zero_pairwise_force(dr, force_units)
+    end
+
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
+
     if iszero_value(qij)
         return zero_pairwise_force(dr, force_units)
     end
@@ -1629,8 +1624,10 @@ end
                                   special=false,
                                   args...) where T
     ke, α = inter.coulomb_const, inter.α
-    qij = scaled_charge(inter.scheduler, atom_i, Val(T)) *
-          scaled_charge(inter.scheduler, atom_j, Val(T))
+    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
     if iszero_value(qij)
         return zero_pairwise_energy(dr, energy_units)
     end
@@ -1791,7 +1788,9 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
     if λ >= 1
         pe_soft = λ * inter.coulomb_const * (qij / r)
         f_soft = λ * inter.coulomb_const * (qij / r^2)
@@ -1823,7 +1822,9 @@ end
     end
 
     r = sqrt(sum(abs2, dr))
-    qi, qj = (λ_params*atom_i.charge), (λ_params*atom_j.charge)
+    qi = params_mixing(λ_params, atom_i.charge)
+    qj = params_mixing(λ_params, atom_j.charge)
+    qij = qi*qj
     if iszero_value(r)
         if λ >= 1
             pe_soft = zero_pairwise_energy(dr, energy_units)
@@ -2035,59 +2036,6 @@ end
 
     erfc_αr, _ = softcore_ewald_screen(inter, r)
     return pe_soft * erfc_αr * (r <= inter.dist_cutoff)
-end
-
-@inline function force_λ(inter::CoulombSoftCoreGapsysEwald,
-                       dr,
-                       atom_i,
-                       atom_j,
-                       force_units=u"kJ * mol^-1 * nm^-1",
-                       special=false,
-                       args...)
-    T = typeof(ustrip(atom_i.λ))
-    if !isa(inter.λ_mixing, typeof(Molly.ProductMixing()))
-        error("force with respect to λ only possible with ProductMixing(), currently using: ", typeof(inter.λ_mixing))
-    end
-    d_λ = zero_pairwise_force(dr, force_units)
-    pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
-    di = atom_i.alch_role==ProbRole
-    dj = atom_j.alch_role==ProbRole
-
-    r = norm(dr)
-    if iszero_value(r)
-        return d_λ
-    end
-
-    qij = (λ_params*atom_i.charge) * (λ_params*atom_j.charge)
-    R = inter.α * sqrt(cbrt(1 - λ)) * (oneunit(r) + inter.σQ * abs(qij))
-
-    if r >= R
-        pe_i = (inter.coulomb_const * (qij/r)) * atom_j.λ
-        pe_j = (inter.coulomb_const * (qij/r)) * atom_i.λ
-    else
-        σ_term = inter.α*(oneunit(r)+(inter.σQ*abs(qij))) 
-        kqij = inter.coulomb_const * qij
-        A = (kqij*r^2)/(σ_term^3)
-        B = (-3*kqij*r)/(σ_term^2)
-        C = (3*kqij)/σ_term
-        pe_i = (2-λ)/(2*(1-λ)*sqrt(1-λ))*A*atom_j.λ  + (3-2*λ)/(3*(1-λ)*cbrt(1-λ)) * B * atom_j.λ + 
-                (6-5*λ)/(6*(1-λ)*sqrt(cbrt(1-λ))) * C * atom_j.λ
-        pe_j = (2-λ)/(2*(1-λ)*sqrt(1-λ))*A*atom_i.λ  + (3-2*λ)/(3*(1-λ)*cbrt(1-λ)) * B * atom_i.λ + 
-                (6-5*λ)/(6*(1-λ)*sqrt(cbrt(1-λ))) * C * atom_i.λ
-    end
-
-    if special
-        pe_i = pe_i * inter.weight_special * (r <= inter.dist_cutoff) * di
-        pe_j = pe_j * inter.weight_special * (r <= inter.dist_cutoff) * dj
-        tmp = SVector{3,T}(ustrip(pe_i),ustrip(pe_j),0.0)
-        return d_λ .+ (tmp*force_units)
-    else
-        erfc_αr, _ = softcore_ewald_screen(inter, r)
-        pe_i = pe_i * erfc_αr * (r <= inter.dist_cutoff) * di
-        pe_j = pe_j * erfc_αr * (r <= inter.dist_cutoff) * dj
-        tmp = SVector{3,T}(ustrip(pe_i),ustrip(pe_j),0.0)
-        return d_λ .+ (tmp*force_units)
-    end
 end
 
 @doc raw"""
