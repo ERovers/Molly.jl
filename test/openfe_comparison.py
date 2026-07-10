@@ -272,3 +272,21 @@ for key in output_prefix.keys():
     with open(os.path.join(out_dir, f"forces_openfe_{key}_l5.txt"), "w") as of:
         for force in total_forces:
             of.write(f"{force[0]} {force[1]} {force[2]}\n")
+
+#### Step 10 ####
+λ = 0.25
+e,f = calc_energies_and_forces(system, positions, λ)
+for key in output_prefix.keys():
+    total = 0.0
+    for sub in output_prefix[key]:
+        total += e[sub].value_in_unit(e[sub].unit)
+    with open(os.path.join(out_dir, f"energy_openfe_{key}_l25.txt"), "w") as of:
+            of.write(f"{total}\n")
+
+for key in output_prefix.keys():
+    total_forces = np.zeros_like(f["NonbondedForce"])
+    for sub in output_prefix[key]:
+        total_forces += f[sub].value_in_unit(f[sub].unit)
+    with open(os.path.join(out_dir, f"forces_openfe_{key}_l25.txt"), "w") as of:
+        for force in total_forces:
+            of.write(f"{force[0]} {force[1]} {force[2]}\n")

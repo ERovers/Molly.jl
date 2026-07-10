@@ -544,7 +544,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                                                 λ=T(global_λ), alch_role=DeleteRole))
         else
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(a.charge, zero(a.charge)), 
-                                    σ=(a.σ, zero(a.σ)), ϵ=(a.ϵ, zero(a.ϵ)), 
+                                    σ=(a.σ, a.σ), ϵ=(a.ϵ, zero(a.ϵ)), 
                                     λ=T(global_λ), alch_role=DeleteRole))
         end
         if chain!=d.chain_id
@@ -574,7 +574,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                                                 λ=T(global_λ), alch_role=InsertRole))
         else
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(zero(a.charge), a.charge), 
-                                    σ=(zero(a.σ), a.σ), ϵ=(zero(a.ϵ),   a.ϵ),
+                                    σ=(a.σ, a.σ), ϵ=(zero(a.ϵ),   a.ϵ),
                                     λ=T(global_λ), alch_role=InsertRole))
         end
         if chain!=d.chain_id
@@ -813,11 +813,18 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                                                     scheduler=scheduler,
                                                     weight_special=inter.weight_special, 
                                                     coulomb_const=inter.coulomb_const))
-        elseif inter isa CoulombEwald
+        elseif inter isa CoulombEwald && scheduler isa DefaultLambdaScheduler
             push!(PairInteraction, CoulombSoftCoreGapsysEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, 
                                                     α=T(0.6), σQ=units ? T(1.0)u"nm" : T(1.0),
                                                     use_neighbors=inter.use_neighbors, λ_mixing=MinimumMixing(),
                                                     scheduler=scheduler,
+                                                    weight_special=inter.weight_special, 
+                                                    coulomb_const=inter.coulomb_const, 
+                                                    approximate_erfc=inter.approximate_erfc))
+        elseif inter isa CoulombEwald && scheduler isa OpenMMTestScheduler
+            push!(PairInteraction, CoulombEwaldScaled(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol,
+                                                    use_neighbors=inter.use_neighbors, 
+                                                    λ_mixing=MinimumMixing(), scheduler=scheduler,
                                                     weight_special=inter.weight_special, 
                                                     coulomb_const=inter.coulomb_const, 
                                                     approximate_erfc=inter.approximate_erfc))

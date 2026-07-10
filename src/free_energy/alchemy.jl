@@ -10,6 +10,16 @@ const ProbRole::AlchemicalRole   = 6
 
 # Rule for combining roles during a pairwise interaction.
 # Dispatched on the scheduler to allow custom overriding by users.
+@inline function mix_roles(::Any, role_i::AlchemicalRole, role_j::AlchemicalRole)
+    if role_i == InsertRole || role_j == InsertRole
+        return InsertRole
+    elseif role_i == DeleteRole || role_j == DeleteRole
+        return DeleteRole
+    else
+        return CoreRole
+    end
+end
+
 @inline function mix_roles(::Any, roles::Tuple{Vararg{AlchemicalRole}})
     if any(x->x==InsertRole, roles)
         return InsertRole

@@ -306,7 +306,7 @@ volume can change).
 Only compatible with 3D systems.
 Not compatible with cutoffs other than [`DistanceCutoff`](@ref).
 """
-struct LJDispersionCorrectionλ{F,D,S,E}
+struct LJDispersionCorrectionλ{F6,F12, D,S,E}
     factor_6::F6
     factor_12::F12
     dist_cutoff::D
@@ -783,8 +783,7 @@ end
     T = typeof(ustrip(atom_i.mass))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
-
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
     end
@@ -801,29 +800,53 @@ end
 
     σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
     ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
-    σ2 = σ^2
-    σ6 = σ2^3
 
     # 3. Fast Path: Standard Lennard Jones
-    if λ >= 1
+    if λ >= 1 && λR>=1
         # Pass standard LJ params tuple (Length 2)
         params = (σ^2, ϵ, nothing, nothing)
         f = force_cutoff(cutoff, inter, r, params) * dr
         fdr = f * inv(r)
-        return special ? fdr * inter.weight_special : fdr
+        if (atom_i.index<=34 && atom_i.index>=32) && atom_j.index<=31
+            if special
+                println(atom_i.index, ",", atom_j.index)
+            end
+            return special ? fdr * inter.weight_special : zero(fdr)
+        elseif  (atom_j.index<=34 && atom_j.index>=32) && atom_i.index<=31
+            if special
+                println(atom_i.index, ",", atom_j.index)
+            end
+            return special ? fdr * inter.weight_special : zero(fdr)
+        else
+            return zero(fdr)
+        end
     end
 
     # 4. Alchemical Path: Soft Core Gapsys
+    σ2 = σ^2
+    σ6 = σ2^3
     C6 = 4 * ϵ * σ6
     C12 = C6 * σ6
-    val = (26 * σ6 * (1 - λ)) / 7
+    val = (26 * σ6 * (1 - (λ*λR))) / 7
     R = inter.α * sqrt(cbrt(val))
 
     # Pass SoftCore params tuple (Length 4)
     params = (C12, C6, λ, R)
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f * inv(r)) * dr
-    return special ? fdr * inter.weight_special : fdr
+    if (atom_i.index<=34 && atom_i.index>=32) && atom_j.index<=31
+        if special
+            println(atom_i.index, ",", atom_j.index)
+        end
+        return special ? fdr * inter.weight_special : zero(fdr)
+    elseif  (atom_j.index<=34 && atom_j.index>=32) && atom_i.index<=31
+        if special
+            println(atom_i.index, ",", atom_j.index)
+        end
+        return special ? fdr * inter.weight_special : zero(fdr)
+    else
+        return zero(fdr)
+    end
 end
 
 # Dispatch 1: Standard LJ Logic (Matches Tuple length 2)
@@ -857,7 +880,7 @@ end
     T = typeof(ustrip(atom_i.mass))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
@@ -871,10 +894,9 @@ end
     r = sqrt(sum(abs2, dr))
     σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
     ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
-    σ6 = σ^6
 
     # 3. Fast Path: Standard Lennard Jones
-    if λ >= 1
+    if λ >= 1 && λR>=1
         if iszero_value(r)
             return zero_pairwise_energy(dr, energy_units)
         end
@@ -885,9 +907,10 @@ end
     end
 
     # 4. Alchemical Path: Soft Core Gapsys
+    σ6 = σ^6
     C6 = 4 * ϵ * σ6
     C12 = C6 * σ6
-    val = (26 * σ6 * (1 - λ)) / 7
+    val = (26 * σ6 * (1 - (λ*λR))) / 7
     R = inter.α * sqrt(cbrt(val))
 
     if iszero_value(r)
