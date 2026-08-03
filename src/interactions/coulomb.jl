@@ -1591,6 +1591,9 @@ end
                        special=false,
                        args...) where T
     ke, α = inter.coulomb_const, inter.α
+
+    # Logic based on the OpenFE implementation
+    # Should be implemented everywhere or not?
     if inter.scheduler.dual
         pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
         qij = atom_i.charge * atom_j.charge

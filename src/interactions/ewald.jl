@@ -1107,14 +1107,8 @@ end
     erf_αr = erf(α * r)
     if erf_αr > T(1e-6)
         E = -f_div_ϵr * charge_ij * inv(r) * erf_αr
-        open("excl_mol.txt", "a") do file
-            println(file,atom_i.index, ",", atom_j.index, ": ", qi, ",", qj, ",", α, ",", r, ",", erf(α * r), ",", -E, ",", f_div_ϵr, ",", inv(r))
-        end
     else
         E = -α * 2 * f_div_ϵr * charge_ij / sqrt(T(π))
-        open("excl_mol.txt", "a") do file
-            println(file,atom_i.index, ",", atom_j.index, ": ", qi, ",", qj, ",", α, ",", r, ",", erf(α * r), ",", -E, f_div_ϵr, ",", inv(r))
-        end
     end
     return E
 end
