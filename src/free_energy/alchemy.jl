@@ -36,6 +36,14 @@ end
     end
 end
 
+function switchAB(alch_role::Val{DeleteRole}, A, B)
+    return A,A
+end
+
+function switchAB(alch_role::Val{InsertRole}, A, B)
+    return B,B
+end
+
 @kwdef struct DefaultLambdaScheduler
     dual::Bool = true
 end

@@ -797,9 +797,9 @@ end
     if iszero_value(r)
         return zero_pairwise_force(dr, force_units)
     end
-
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
+    
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
 
     # 3. Fast Path: Standard Lennard Jones
     if λ >= 1 && λR>=1
@@ -807,19 +807,7 @@ end
         params = (σ^2, ϵ, nothing, nothing)
         f = force_cutoff(cutoff, inter, r, params) * dr
         fdr = f * inv(r)
-        if (atom_i.index<=34 && atom_i.index>=32) && atom_j.index<=31
-            if special
-                println(atom_i.index, ",", atom_j.index)
-            end
-            return special ? fdr * inter.weight_special : zero(fdr)
-        elseif  (atom_j.index<=34 && atom_j.index>=32) && atom_i.index<=31
-            if special
-                println(atom_i.index, ",", atom_j.index)
-            end
-            return special ? fdr * inter.weight_special : zero(fdr)
-        else
-            return zero(fdr)
-        end
+        return special ? fdr * inter.weight_special : fdr
     end
 
     # 4. Alchemical Path: Soft Core Gapsys
@@ -834,19 +822,7 @@ end
     params = (C12, C6, λ, R)
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f * inv(r)) * dr
-    if (atom_i.index<=34 && atom_i.index>=32) && atom_j.index<=31
-        if special
-            println(atom_i.index, ",", atom_j.index)
-        end
-        return special ? fdr * inter.weight_special : zero(fdr)
-    elseif  (atom_j.index<=34 && atom_j.index>=32) && atom_i.index<=31
-        if special
-            println(atom_i.index, ",", atom_j.index)
-        end
-        return special ? fdr * inter.weight_special : zero(fdr)
-    else
-        return zero(fdr)
-    end
+    return special ? fdr * inter.weight_special : fdr
 end
 
 # Dispatch 1: Standard LJ Logic (Matches Tuple length 2)
@@ -892,8 +868,8 @@ end
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
 
     # 3. Fast Path: Standard Lennard Jones
     if λ >= 1 && λR>=1
