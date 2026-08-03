@@ -89,8 +89,8 @@ end
     if shortcut_pair(inter.shortcut, atom_i, atom_j, special)
         return zero_pairwise_force(dr, force_units)
     end
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, special)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, special)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
@@ -121,8 +121,8 @@ end
     if shortcut_pair(inter.shortcut, atom_i, atom_j, special)
         return ustrip(zero(dr[1])) * energy_units
     end
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, special)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, special)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
@@ -200,8 +200,8 @@ function LJDispersionCorrection(atoms::AbstractArray, dist_cutoff,
         atom_i = atoms_cpu[i]
         for j in 1:i
             atom_j = atoms_cpu[j]
-            σ = σ_mixing(σ_mix, atom_i, atom_j, false)
-            ϵ = ϵ_mixing(ϵ_mix, atom_i, atom_j, false)
+            σ = σ_mixing(σ_mix, atom_i, atom_j)
+            ϵ = ϵ_mixing(ϵ_mix, atom_i, atom_j)
             ϵσ6_sum  += Tacc(ustrip(ϵσ6_unit, ϵ * σ^6)) * ϵσ6_unit
             ϵσ12_sum += Tacc(ustrip(ϵσ12_unit, ϵ * σ^12)) * ϵσ12_unit
         end
@@ -338,7 +338,7 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     nλ_atoms = T(0)
     for i in 1:n_atoms
         atom_i = atoms_cpu[i]
-        λ, λ_params = scale_sterics(scheduler, atom_i.λ, atom_i.alch_role)
+        λ, λR, λ_params = scale_sterics(scheduler, atom_i.λ, atom_i.alch_role)
         nλ_atoms += (atom_i.alch_role==CoreIRole || atom_i.alch_role==CoreDRole ? λ_params : λ)
         for j in 1:i
             atom_j = atoms_cpu[j]
@@ -354,10 +354,10 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
             role_i = atom_i.alch_role
             role_j = atom_j.alch_role
             pair_role = mix_roles(scheduler, (role_i, role_j))
-            λ, λ_params = scale_sterics(scheduler, λ_glob, pair_role)
+            λ, λR, λ_params = scale_sterics(scheduler, λ_glob, pair_role)
 
-            σ = λ_params * σ_mixing(σ_mix, atom_i, atom_j)
-            ϵ = λ_params * ϵ_mixing(ϵ_mix, atom_i, atom_j)
+            σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
+            ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
             ϵσ12_sum += λ * ϵ * σ^12
             ϵσ6_sum  += λ * ϵ * σ^6
         end
@@ -545,7 +545,7 @@ end
     T = typeof(ustrip(atom_i.λ))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
@@ -564,8 +564,8 @@ end
     # We explicity branch to save compute.
     if λ >= 1
 
-        σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
-        ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
+        σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
+        ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
         σ2 = σ^2
         params = (σ2, ϵ, nothing, nothing)
         
@@ -576,13 +576,13 @@ end
         return special ? fdr * inter.weight_special : fdr
     end
 
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
     σ6 = σ^6
 
     C6 = 4 * ϵ * σ6
     C12 = C6 * σ6
-    σ6_shift = inter.α * (1 - λ) * σ6
+    σ6_shift = inter.α * (1 - (λ*λR)) * σ6
     params = (C12, C6, λ, σ6_shift)
 
     f = force_cutoff(inter.cutoff, inter, r, params)
@@ -615,7 +615,7 @@ end
     T = typeof(ustrip(atom_i.λ))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
@@ -633,8 +633,8 @@ end
             return zero_pairwise_energy(dr, energy_units)
         end
 
-        σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
-        ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
+        σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
+        ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
 
         r = sqrt(sum(abs2, dr))
         σ2 = σ^2
@@ -649,15 +649,15 @@ end
         end
     end
 
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
     σ6 = σ^6
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
     C6 = 4 * ϵ * σ6
     C12 = C6 * σ6
-    σ6_shift = inter.α * (1 - λ) * σ6
+    σ6_shift = inter.α * (1 - (λ*λR)) * σ6
 
     if iszero_value(r)
         pe = overlap_pe_lj_softcore_beutler(dr, energy_units, C12, C6, λ, σ6_shift)
@@ -1019,10 +1019,10 @@ end
 
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
@@ -1062,10 +1062,10 @@ end
 
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params)
+    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
+    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
@@ -1171,7 +1171,7 @@ end
     dr = vector(coords_i, coords_l, boundary)
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
     if λ <= 0
         return SpecificForce2Atoms(zero(dr)*force_units, zero(dr)*force_units)
@@ -1182,7 +1182,7 @@ end
         return SpecificForce2Atoms(zero_pairwise_force(dr, force_units), zero_pairwise_force(dr, force_units))
     end
 
-    if λ >= 1
+    if λ >= 1 && λR >= 1
         σ2 = (λ_params * inter.σ14_mixed) ^ 2
         dr = vector(coords_i, coords_l, boundary)
         r2 = sum(abs2, dr)
@@ -1195,7 +1195,7 @@ end
         r6 = r^6
         C6 = 4 * λ_params * inter.ϵ14_mixed * σ6
         C12 = C6 * σ6
-        val = (26 * σ6 * (1 - λ)) / 7
+        val = (26 * σ6 * (1 - (λ*λR))) / 7
         R = inter.α * sqrt(cbrt(val))
 
         if r >= R
@@ -1203,14 +1203,14 @@ end
             dr = vector(coords_i, coords_l, boundary)
             r2 = sum(abs2, dr)
             six_term = (σ2 / r2) ^ 3
-            fl = λ * inter.weight_14 * (24 * λ_params * inter.ϵ14_mixed / r2) * (2 * six_term ^ 2 - six_term) * dr
+            fl = λ * λR * inter.weight_14 * (24 * λ_params * inter.ϵ14_mixed / r2) * (2 * six_term ^ 2 - six_term) * dr
             fi = -fl
             return SpecificForce2Atoms(fi, fl)
         else
             invR = inv(R)
             invR2 = invR^2
             invR6 = invR^6
-            fl = λ * inter.weight_14 * (((-156*C12*(invR6*invR6*invR2)) + (42*C6*(invR2*invR6)))*r +
+            fl = λ * λR * inter.weight_14 * (((-156*C12*(invR6*invR6*invR2)) + (42*C6*(invR2*invR6)))*r +
                         (168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR))) / r * dr
             fi = -fl
             return SpecificForce2Atoms(fi, fl)
@@ -1223,7 +1223,7 @@ end
     dr = vector(coords_i, coords_l, boundary)
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
 
     if λ <= 0
         return ustrip(zero(dr[1])) * energy_units
@@ -1234,7 +1234,7 @@ end
         return ustrip(zero(dr[1])) * energy_units
     end
 
-    if λ >= 1
+    if λ >= 1 && λR >= 1
         σ2 = (λ_params*inter.σ14_mixed) ^ 2
         r2 = r^2
         six_term = (σ2 / r2) ^ 3
@@ -1243,17 +1243,17 @@ end
         σ6 = (λ_params*inter.σ14_mixed)^6
         C6 = 4 * λ_params * inter.ϵ14_mixed * σ6
         C12 = C6 * σ6
-        val = (26 * σ6 * (1 - λ)) / 7
+        val = (26 * σ6 * (1 - (λ*λR))) / 7
         R = inter.α * sqrt(cbrt(val))
 
         r6 = r^6
         if r >= R
-            return λ * inter.weight_14 * ((C12/(r6*r6)) - (C6/(r6)))
+            return λ * λR * inter.weight_14 * ((C12/(r6*r6)) - (C6/(r6)))
         else
             invR = inv(R)
             invR2 = invR^2
             invR6 = invR^6
-            return λ * inter.weight_14 * (((78*C12*(invR6*invR6*invR2)) - (21*C6*(invR2*invR6)))*(r^2) -
+            return λ * λR * inter.weight_14 * (((78*C12*(invR6*invR6*invR2)) - (21*C6*(invR2*invR6)))*(r^2) -
                     ((168*C12*(invR6*invR6*invR)) - (48*C6*(invR6*invR)))*r +
                     (91*C12*(invR6*invR6)) - (28*C6*(invR6)))
         end
