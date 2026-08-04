@@ -321,8 +321,13 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     at = atoms_cpu[1]
 
     # Representative terms for units and final factor types.
-    term_6_example  = at.ϵ * at.σ^6
-    term_12_example = at.ϵ * at.σ^12
+    if scheduler.dual
+        term_6_example  = at.ϵ * at.σ^6
+        term_12_example = at.ϵ * at.σ^12
+    else
+        term_6_example  = at.ϵ[1] * at.σ[1]^6
+        term_12_example = at.ϵ[1] * at.σ[1]^12
+    end
 
     # Accumulate pair sums in Float64 for precision.
     Tacc = Float64
@@ -336,30 +341,41 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
 
     # Counter for number of atoms if scaled by λ, it's counted by the λ value
     nλ_atoms = T(0)
+    nλ_pairs_acc = T(0)
     for i in 1:n_atoms
         atom_i = atoms_cpu[i]
-        λ, λR, λ_params = scale_sterics(scheduler, atom_i.λ, atom_i.alch_role)
-        nλ_atoms += (atom_i.alch_role==CoreIRole || atom_i.alch_role==CoreDRole ? λ_params : λ)
+        λ, λR, λ_params = scale_sterics(scheduler, atom_i.λ, atom_i.alch_role, Val(scheduler.dual))
+        if scheduler.dual
+            nλ_atoms += (atom_i.alch_role==CoreIRole || atom_i.alch_role==CoreDRole ? λ_params : λ)
+        else
+            nλ_atoms += λ
+        end
         for j in 1:i
             atom_j = atoms_cpu[j]
-            # Still have to figure out a better way of doing this, maybe include an 
-            # eligibility matrix where the alchemical groups = false and rest true
-            if atom_i.alch_role in [InsertRole, CoreIRole] && atom_j.alch_role in [DeleteRole, CoreDRole]
-                continue
-            elseif atom_i.alch_role in [DeleteRole, CoreDRole] && atom_j.alch_role in [InsertRole, CoreIRole]
+            if atom_j.alch_role in [InsertRole, DeleteRole, CoreRole, CoreIRole, CoreDRole] #&& schedule isa OpenMMTestScheduler
                 continue
             end
+            if atom_i.alch_role in [InsertRole, DeleteRole, CoreRole, CoreIRole, CoreDRole] #&& schedule isa OpenMMTestScheduler
+                continue
+            end
+            # Still have to figure out a better way of doing this, maybe include an 
+            # eligibility matrix where the alchemical groups = false and rest true
+            # if atom_i.alch_role in [InsertRole, CoreIRole] && atom_j.alch_role in [DeleteRole, CoreDRole]
+            #     continue
+            # elseif atom_i.alch_role in [DeleteRole, CoreDRole] && atom_j.alch_role in [InsertRole, CoreIRole]
+            #     continue
+            # end
 
             λ_glob = T(λ_mixing(λ_mix, (atom_i.λ, atom_j.λ)))
             role_i = atom_i.alch_role
             role_j = atom_j.alch_role
             pair_role = mix_roles(scheduler, (role_i, role_j))
-            λ, λR, λ_params = scale_sterics(scheduler, λ_glob, pair_role)
+            λ, λR, λ_params = scale_sterics(scheduler, λ_glob, pair_role, Val(scheduler.dual))
 
-            σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
-            ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
-            ϵσ12_sum += λ * ϵ * σ^12
-            ϵσ6_sum  += λ * ϵ * σ^6
+            σ = σ_mixing(σ_mix, atom_i, atom_j, λ_params, pair_role)
+            ϵ = ϵ_mixing(ϵ_mix, atom_i, atom_j, λ_params, pair_role)
+            ϵσ12_sum += λ * λR * ϵ * σ^12
+            ϵσ6_sum  += λ * λR * ϵ * σ^6
         end
     end
 
@@ -383,9 +399,15 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     F6 = typeof(-(term_6_example / dist_cutoff^3))
     F12 = typeof(term_12_example / dist_cutoff^9)
 
+    println("numInt: ", nλ_pairs_acc, ", numPar: ", nλ_atoms_acc)
+    println("Coeff: ", (factor_6_acc + factor_12_acc))
+
     return LJDispersionCorrectionλ(
         convert(F6, factor_6_acc),
         convert(F12, factor_12_acc),
+        dist_cutoff,
+        σ_mix,
+        ϵ_mix,
     )
 end
 

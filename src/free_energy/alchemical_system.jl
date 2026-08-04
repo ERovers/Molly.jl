@@ -851,10 +851,10 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
             )
             push!(Interactions, ewald_exclusions)
 
-        # elseif inter isa LJDispersionCorrection
-        #     push!(GenerInteraction, LJDispersionCorrectionλ(to_device(Atoms, AT), inter.dist_cutoff, scheduler, 
-        #                     MinimumMixing(), LorentzMixing(), GeometricMixing()),
-        #                     )
+        elseif inter isa LJDispersionCorrection
+            push!(GenerInteraction, LJDispersionCorrectionλ(to_device(Atoms, AT), inter.dist_cutoff, scheduler, 
+                            MinimumMixing(), LorentzMixing(), GeometricMixing()),
+                            )
         end
     end
 

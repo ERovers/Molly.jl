@@ -1,3 +1,12 @@
+#= 
+The logic found in this file is a reinterpretation of how OpenFE deals
+with alchemical transformations. The original logic can be found in:
+
+https://github.com/OpenFreeEnergy/openfe/blob/main/src/openfe/protocols/openmm_rfe/_rfe_utils/lambdaprotocol.py
+
+Adjusted to support dual topology transformations, which are not supported in OpenFE.
+
+=#
 
 @inline function scale(::Any, λ::T, role::AlchemicalRole, dual::Val{true}, args...) where T
     if role == CoreIRole

@@ -60,7 +60,6 @@ def calc_energies_and_forces(openmm_system, openmm_positions, lammie):
         f.setForceGroup(i)
 
     f = openmm_system.getForces()[7]
-    f.setUseDispersionCorrection(False)
     f.setReciprocalSpaceForceGroup(11)
 
     # Use the reference platform for testing
