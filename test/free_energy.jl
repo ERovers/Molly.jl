@@ -52,8 +52,11 @@
     core_mapAB[4702] = 4702
 
     # --- Hybrid System Setup ---
-    sys, mappingA, mappingB = Hybrid_system(FT, AT, sysA, sysB, FT(0.0), mapping, core_mapAB, "";
-                                    scheduler=Molly.OpenMMTestScheduler(false), dual=false)
+    sys = Hybrid_system(sysA, sysB, FT(0.0), mapping, core_mapAB;
+                            scheduler=Molly.OpenMMTestScheduler(dual=false),
+                            array_type=AT, 
+                            float_type=FT, 
+                            )
 
     #--- Load Positions ---
     openmm_coords_fp = joinpath(tyk2_dir, "openfe", "positions_openmm.txt")

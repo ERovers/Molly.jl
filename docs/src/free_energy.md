@@ -639,6 +639,7 @@ Now one can put this into a graph, for example using a scatter for the free ener
 
 Relative Binding Free Energy (RBFE) calculations estimate the difference in binding affinity between two chemically related ligands ($\Delta\Delta G_{bind}$) bound to a target protein. Rather than simulating the physical unbinding process directly, RBFE employs a thermodynamic cycle that transforms Ligand A into Ligand B in both the bound state (complexed with the protein in solvent) and the unbound state (ligand in solvent alone).          
 
+```
                       ΔG_bind(A)
   Protein + Ligand A  ─────────►  Complex A
           │                            │
@@ -646,6 +647,7 @@ Relative Binding Free Energy (RBFE) calculations estimate the difference in bind
           ▼                            ▼
   Protein + Ligand B  ─────────►  Complex B
                       ΔG_bind(B)
+```
 
 The relative binding free energy is calculated using the thermodynamic cycle closure:
 
@@ -657,31 +659,32 @@ To transform Ligand A into Ligand B along a single continuous coordinate, the sy
 
 The mathematical difference between single vs dual topology is in the difference between parameter scaling or energy scaling. In single topology parameter scaling is used and the energy for LennardJones is calculated as:
 
-$$E^{LJ}_{ij} = 4\epsilon_{AB}\left[ \frac{\sigma_{AB}}{r_{ij}}^12 - \frac{\sigma_{AB}}{r_{ij}}^12\right]$$
+$$E^{LJ}_{ij} = 4\epsilon_{AB}\left[ \left(\frac{\sigma_{AB}}{r_{ij}}\right)^{12} - \left(\frac{\sigma_{AB}}{r_{ij}}\right)^6\right]$$
 where
-$$\epsilon_{AB} = (1-\lambda) * \sqrt{\epsilon^{A}_{i}*\epsilon^{A}_{j}} + \lambda * \sqrt{\epsilon^{B}_{i}*\epsilon^{B}_{j}}\\
-\sigma_{AB} = (1-\lambda) * \frac{\sigma^{A}_{i}+\sigma^{A}_{j}}{2} + \lambda * \frac{\sigma^{B}_{i}*\sigma^{B}_{j}}{2}$$
+$$\epsilon_{AB} = (1-\lambda)\sqrt{\epsilon^{A}_{i}\cdot\epsilon^{A}_{j}} + \lambda\sqrt{\epsilon^{B}_{i}\cdot\epsilon^{B}_{j}}$$
+and
+$$\sigma_{AB} = (1-\lambda)\frac{\sigma^{A}_{i}+\sigma^{A}_{j}}{2} + \lambda\frac{\sigma^{B}_{i}+\sigma^{B}_{j}}{2}$$
 
 whereas in dual topology the energy is scaled, so the energy for dual topology is calculated as:
 
-$$E^{LJ}_{ij} = (1-\lambda)*4\epsilon_{A}\left[ \frac{\sigma_{A}}{r_{ij}}^12 - \frac{\sigma_{A}}{r_{ij}}^12\right] + \lambda * 4\epsilon_{B}\left[ \frac{\sigma_{B}}{r_{ij}}^12 - \frac{\sigma_{B}}{r_{ij}}^12\right]$$
+$$E^{LJ}_{ij} = (1-\lambda)4\epsilon_{A}\left[ \left(\frac{\sigma_{A}}{r_{ij}}\right)^{12} - \left(\frac{\sigma_{A}}{r_{ij}}\right)^6\right] + \lambda4\epsilon_{B}\left[ \left(\frac{\sigma_{B}}{r_{ij}}\right)^{12} - \left(\frac{\sigma_{B}}{r_{ij}}\right)^6\right]$$
 where
-$$\epsilon_{X} = \sqrt{\epsilon^{X}_{i}*\epsilon^{X}_{j}}\\
-\sigma_{X} = \frac{\sigma^{X}_{i}+\sigma^{X}_{j}}{2}$$
+$$\epsilon_{X} = \sqrt{\epsilon^{X}_{i}\cdot\epsilon^{X}_{j}}$$ and 
+$$\sigma_{X} = \frac{\sigma^{X}_{i}+\sigma^{X}_{j}}{2}$$
 
-In Molly both representations can be used and is set during hybrid system setup using the lambda scheduler,
-```python
-Molly.OpenMMTestScheduler(true) # Dual topology
-Molly.OpenMMTestScheduler(false) # Single topology
+In Molly, both representations can be used and is set during hybrid system setup using the lambda scheduler,
+```julia
+Molly.OpenMMTestScheduler(dual=true) # Dual topology
+Molly.OpenMMTestScheduler(dual=false) # Single topology
 ```
-the default is dual topology.
+the default is dual topology while in OpenFE single topology is used.
 
 ### Replica Exchange Molecular Dynamics (REMD)
 
 To enhance sampling across free energy barriers along the alchemical path, Molly runs $N$ simultaneous replicas across a discrete ladder of $\lambda$-states:
 $$\lambda_0 = 0.0 < \lambda_1 < \lambda_2 < \dots < \lambda_{N-1} = 1.0$$
 
-At fixed intervals (exchange_freq), Molly attempts exchanges between adjacent thermodynamic states $i$ and $j$ occupied by configurations $x_i$ and $x_j$. Swaps are accepted according to the Metropolis-Hastings criterion:
+At fixed intervals (`exchange_freq`), Molly attempts exchanges between adjacent thermodynamic states $i$ and $j$ occupied by configurations $x_i$ and $x_j$. Swaps are accepted according to the Metropolis-Hastings criterion:
 
 $$P_{\text{acc}}(i \leftrightarrow j) = \min\left(1, \exp\left(-\Delta \Delta u\right)\right)$$
 
@@ -694,7 +697,113 @@ After the simulation completes, Molly uses the Multistate Bennett Acceptance Rat
 
 $$\hat{f}_k = -\log \sum_{i=1}^K \sum_{n=1}^{N_i} \frac{\exp\left[-u_k(x_{i,n})\right]}{\sum_{j=1}^K N_j \exp\left[\hat{f}_j - u_j(x_{i,n})\right]}$$
 
-The example in this section demonstrates an alchemical edge from the TYK2 benchmark set, transforming the ligand ejm31 into ejm20 in both complex and solvent environments to compute $\Delta\Delta G_{bind}$.
+### Matching OpenFE default settings
+
+Molly has many more options for running RBFE calculations than OpenFE including different softcore potentials, variety of $\lambda$-scaled bonded energy functions (e.g. CMAP torsions, periodic and harmonic torsion, etc.), lambda schedulers, and the option for either single or dual topology. To match the OpenFE settings and architectural choices for setup, we have implemented the `OpenFEScheduler`. When using `OpenFEScheduler(false)`, the system setup will be performed similar to the system setup in [OpenFE](https://github.com/OpenFreeEnergy/openfe/blob/main/src/openfe/protocols/openmm_rfe/_rfe_utils/relative.py), which uses a single topology and specific setup choices, including:
+
+- Only using a softcore potential for the LennardJones potential, the CoulombEwald direct space is scaled by lambda directly without using a softcore.
+- In CoulombEwald potential, the regular interactions are scaled by lambda as: 
+
+    $$q_{ij} = ((1-\lambda)q^A_i+\lambda q^B_i) \cdot ((1-\lambda)q^A_j+\lambda q^B_j)$$ 
+
+    However, for 1-4 interactions, the charges are scaled as: 
+
+    $$q_{ij} = (1-\lambda)(q^A_iq^A_j) + \lambda(q^B_iq^B_j)$$
+
+- Atoms from the molecules (both core and unique atoms) are not contributing to the LJDispersionCorrection (OpenFE has set epsilons of ligands to 0), but are counted in the number of particles that is used in the averages for the F6 and F12 terms.
+- For all bonded interaction potentials, the parameters are scaled, for example for the Harmonic Bond potential the `k` is scaled as: $$k = (1-\lambda)k_A + \lambda k_B$$. However, for the periodic torsions, the energies are scaled rather than the parameters, like: $$E_{torsion} = (1-\lambda)E^A_{torsion} + \lambda E^B_{torsion}$$
+
+All the settings have been tested by comparing energies and forces between Molly and OpenFE, and test is included in the testing module.
+
+### Example of running RBFE in Molly
+
+Here in this example, we will show how to setup a hybrid system to interpolate between two ligands for TYK2 (ejm31 and ejm50) using the OpenFE settings.
+![The TYK2 ligands](images/ejm31_ejm50.png)
+
+First, we have to load the individual systems and create a mapping to specify which atom indexes are the unique A, unique B, and core atoms. Also, a map on how the core atoms are mapped between A -> B.
+
+```julia
+using Molly
+
+# --- Variables ---
+FT = Float64
+AT = Array
+data_dir = joinpath(dirname(pathof(Molly)), "..", "data")
+ff_dir     = joinpath(data_dir, "force_fields")
+tyk2_dir   = joinpath(data_dir, "openmm_tyk2")
+
+# --- Force Field Setup ---
+ff_A = MolecularForceField(FT, joinpath.(ff_dir, ["tip3p_standard.xml", "amber14/protein.ff14SB.xml"])...,
+                                        joinpath(data_dir, "ejm31.xml"),
+                                        ; units=true)
+
+ff_B = MolecularForceField(FT, joinpath.(ff_dir, ["tip3p_standard.xml", "amber14/protein.ff14SB.xml"])...,
+                                        joinpath(data_dir, "ejm50.xml")
+                                        ; units=true)
+
+# --- Load Systems ---
+sysA = System(
+        joinpath(data_dir,"tyk2_ejm31.pdb"),
+        ff_A;
+        nonbonded_method=:pme,
+        center_coords=false,
+        dist_cutoff=FT(0.9)u"nm",
+        approximate_pme=false,
+    )
+
+sysB = System(
+        joinpath(data_dir, "tyk2_ejm50.pdb"),
+        ff_B;
+        nonbonded_method=:pme,
+        center_coords=false,
+        dist_cutoff=FT(0.9)u"nm",
+        approximate_pme=false,
+    )
+
+# --- Mapping of Unique and Core atoms ---
+mapping = Dict("unique_A"=>[4701], "unique_B" => [4701,4703])
+core = []
+for i in 4671:4702
+    if !(i in mapping["unique_A"])
+        push!(core, i)
+    end
+end
+
+mapping["core"] = core
+core_mapAB = Dict()
+for (i,a) in enumerate(sysA.atoms_data)
+    if i in mapping["core"]
+        for (j,b) in enumerate(sysB.atoms_data)
+            if a.atom_name == b.atom_name && a.atom_name == b.atom_name
+                core_mapAB[i] = j
+            end
+        end
+    end
+end
+core_mapAB[4702] = 4702
+```
+
+Now we can use SystemA and SystemB to set up a hybrid system with single topology. By specifying `dual=false` in the scheduler, the single topology set up is iniated.
+
+```julia
+# --- Hybrid System Setup ---
+λ = FT(0.0)
+loggers = (writer=TrajectoryWriter(1_000, "hybrid_traj.xtc"),)
+sys = Hybrid_system(sysA, 
+                    sysB, 
+                    λ,   
+                    mapping, 
+                    core_mapAB; 
+                    scheduler=Molly.OpenMMTestScheduler(dual=false),
+                    array_type=AT, 
+                    float_type=FT, 
+                    loggers=loggers
+                    )
+```
+
+
+
+
 
 ## Free energies with AWH
 

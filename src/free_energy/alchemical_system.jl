@@ -442,13 +442,21 @@ end
 # System A is the main reference system from which the environment atoms are taken
 # System B is only used for the Unique system B atoms and the parameters for Core atoms
 
-function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, core_mapAB, traj_file; 
+function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapAB; 
                         temp = T(298.0)u"K", 
                         units=true,
-                        scheduler=DefaultLambdaScheduler(),
-                        dual=true,
+                        scheduler=DefaultLambdaScheduler(dual=true),
+                        loggers=(),
+                        array_type=Array,
+                        float_type=Float32
                         )
     # Collect correct datatypes and fill in missing gaps in the mappings
+    FT = float_type
+    if float_type!=typeof(global_λ)
+        @warn "Float type of global_λ does not match float_type argument. Using float_type of global_λ."
+        FT = typeof(global_λ)
+    end
+    AT = array_type
     S = typeof(sysA.atoms[1].σ)
     E = typeof(sysA.atoms[1].ϵ)
     C = typeof(sysA.atoms[1].charge)
@@ -485,7 +493,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         aB = sysB.atoms[core_mapAB[i]]
         dB = sysB.atoms_data[core_mapAB[i]]
         cB = sysB.coords[core_mapAB[i]]
-        if dual
+        if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=aA.atom_type, mass=aA.mass, charge=aA.charge, σ=aA.σ, ϵ=aA.ϵ, 
                                                 λ=T(global_λ), alch_role=CoreDRole))
             if chain!=d.chain_id
@@ -539,7 +547,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
-        if dual
+        if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                                 λ=T(global_λ), alch_role=DeleteRole))
         else
@@ -569,7 +577,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         a = sysB.atoms[i]
         d = sysB.atoms_data[i]
         c = sysB.coords[i]
-        if dual
+        if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                                 λ=T(global_λ), alch_role=InsertRole))
         else
@@ -599,7 +607,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         a = sysA.atoms[i]
         d = sysA.atoms_data[i]
         c = sysA.coords[i]
-        if dual
+        if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                                 λ=T(1.0), alch_role=EnvRole))
         else
@@ -624,14 +632,14 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
 
     # Ensure all arrays have correct typing
     Atoms = Vector{typeof(Atoms[1])}(Atoms)
-    if dual
+    if scheduler.dual
         Virtual = Vector{typeof(Virtual[1])}(Virtual)
     end
     Coords = Vector{typeof(Coords[1])}(Coords)
     Data = Vector{typeof(Data[1])}(Data)
 
     # Trackers for interactions for single Topology
-    if !dual
+    if !scheduler.dual
         single_top_lambda_arrays = Dict{Any, Any}() 
         single_top_atom_maps = Dict{Any, Dict{Tuple, Int}}()
     end
@@ -647,7 +655,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         field_types = fieldtypes(typeof(interaction))[1:end-1]
         interaction.inters[1] isa EwaldExclusion && continue
         
-        if dual
+        if scheduler.dual
             converted_type = typeof(to_lambda_function(interaction.inters[1]; scheduler=scheduler))
         else
             converted_type = typeof(to_lambda_function_single(interaction.inters[1], nothing; scheduler=scheduler))
@@ -656,7 +664,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
         tmp = [T() for T in field_types]
         
-        if !dual && !haskey(single_top_lambda_arrays,(IT,IIT,P))
+        if !scheduler.dual && !haskey(single_top_lambda_arrays,(IT,IIT,P))
             single_top_lambda_arrays[(IT,IIT,P)] = tmp[end-1]
             single_top_atom_maps[(IT,IIT,P)] = Dict{Tuple, Int}()
         end
@@ -672,7 +680,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
                     push!(mapped_atoms, val) # Track mapped atoms for sysB lookup
                 end
                 
-                if dual
+                if scheduler.dual
                     push!(tmp[n_fields-1], to_lambda_function(field_tuple[end-1]; scheduler=scheduler))
                 else
                     push!(tmp[n_fields-1], to_lambda_function_single(field_tuple[end-1], nothing; scheduler=scheduler))
@@ -696,7 +704,7 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         field_types = fieldtypes(typeof(interaction))[1:end-1]
         interaction.inters[1] isa EwaldExclusion && continue
         
-        if dual
+        if scheduler.dual
             converted_type = typeof(to_lambda_function(interaction.inters[1]; scheduler=scheduler))
             field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
             tmp = [T() for T in field_types]
@@ -877,12 +885,10 @@ function Hybrid_system(T, AT, sysA::System, sysB::System, global_λ, mapping, co
         specific_inter_lists=to_device.(specific_inter_lists,AT),
         neighbor_finder=nf,
         general_inters=general_inters,
-        loggers=(
-            writer=TrajectoryWriter(1_000, traj_file),
-        ),
+        loggers=loggers,
         force_units=(units ? u"kJ * mol^-1 * nm^-1" : NoUnits),
         energy_units=(units ? u"kJ * mol^-1" : NoUnits),
     )
 
-    return sys_final, mapping_A, mapping_B
+    return sys_final
 end
