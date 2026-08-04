@@ -339,46 +339,70 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     ϵσ6_sum  = zero(Tacc) * ϵσ6_unit
     ϵσ12_sum = zero(Tacc) * ϵσ12_unit
 
-    # Counter for number of atoms if scaled by λ, it's counted by the λ value
-    nλ_atoms = T(0)
-    nλ_pairs_acc = T(0)
+    # Accumulate unique (sigma, epsilon, lambda, alch_role) and count number of particles in each class.
+    S = typeof(at.σ)
+    E = typeof(at.ϵ)
+    E0 = zero.(at.ϵ)
+    classCounts = Dict{Tuple{S, E, T, Int}, Int}()
+    nλ_atoms = 0
     for i in 1:n_atoms
         atom_i = atoms_cpu[i]
         λ, λR, λ_params = scale_sterics(scheduler, atom_i.λ, atom_i.alch_role, Val(scheduler.dual))
-        if scheduler.dual
-            nλ_atoms += (atom_i.alch_role==CoreIRole || atom_i.alch_role==CoreDRole ? λ_params : λ)
+        if !scheduler.dual && scheduler isa OpenMMTestScheduler
+            if atom_i.alch_role in [CoreRole, DeleteRole, InsertRole]
+                classCounts[(atom_i.σ,E0,atom_i.λ,atom_i.alch_role)] = get(classCounts,(atom_i.σ,E0,atom_i.λ,atom_i.alch_role),0) + λ
+                nλ_atoms += λ
+            else
+                classCounts[(atom_i.σ,atom_i.ϵ,atom_i.λ,atom_i.alch_role)] = get(classCounts,(atom_i.σ,atom_i.ϵ,atom_i.λ,atom_i.alch_role),0) + λ
+                nλ_atoms += λ
+            end
+        elseif scheduler.dual
+            if atom_i.alch_role==CoreIRole || atom_i.alch_role==CoreDRole
+                classCounts[(atom_i.σ,atom_i.ϵ,atom_i.λ,atom_i.alch_role)] = get(classCounts,(atom_i.σ,atom_i.ϵ,atom_i.λ,atom_i.alch_role),0) + λ_params
+                nλ_atoms += λ_params
+            else
+                classCounts[(atom_i.σ,atom_i.ϵ,atom_i.λ,atom_i.alch_role)] = get(classCounts,(atom_i.σ,atom_i.ϵ,atom_i.λ,atom_i.alch_role),0) + λ
+                nλ_atoms += λ
+            end
         else
+            classCounts[(atom_i.σ,atom_i.ϵ,atom_i.λ,atom_i.alch_role)] = get(classCounts,(atom_i.σ,atom_i.ϵ,atom_i.λ,atom_i.alch_role),0) + λ
             nλ_atoms += λ
-        end
-        for j in 1:i
-            atom_j = atoms_cpu[j]
-            if atom_j.alch_role in [InsertRole, DeleteRole, CoreRole, CoreIRole, CoreDRole] #&& schedule isa OpenMMTestScheduler
-                continue
-            end
-            if atom_i.alch_role in [InsertRole, DeleteRole, CoreRole, CoreIRole, CoreDRole] #&& schedule isa OpenMMTestScheduler
-                continue
-            end
-            # Still have to figure out a better way of doing this, maybe include an 
-            # eligibility matrix where the alchemical groups = false and rest true
-            # if atom_i.alch_role in [InsertRole, CoreIRole] && atom_j.alch_role in [DeleteRole, CoreDRole]
-            #     continue
-            # elseif atom_i.alch_role in [DeleteRole, CoreDRole] && atom_j.alch_role in [InsertRole, CoreIRole]
-            #     continue
-            # end
-
-            λ_glob = T(λ_mixing(λ_mix, (atom_i.λ, atom_j.λ)))
-            role_i = atom_i.alch_role
-            role_j = atom_j.alch_role
-            pair_role = mix_roles(scheduler, (role_i, role_j))
-            λ, λR, λ_params = scale_sterics(scheduler, λ_glob, pair_role, Val(scheduler.dual))
-
-            σ = σ_mixing(σ_mix, atom_i, atom_j, λ_params, pair_role)
-            ϵ = ϵ_mixing(ϵ_mix, atom_i, atom_j, λ_params, pair_role)
-            ϵσ12_sum += λ * λR * ϵ * σ^12
-            ϵσ6_sum  += λ * λR * ϵ * σ^6
         end
     end
 
+    # Compute the ϵσ^6 and ϵσ^12 for all unique classes times the number of particles in each class * 2 for the self-interaction.
+    for (key1,count) in classCounts
+        λ_glob = λ_mixing(λ_mix, (key1[3], key1[3]))
+        role_i = key1[4]
+        role_j = key1[4]
+        pair_role = mix_roles(scheduler, (role_i, role_j))
+        λ, λR, λ_params = scale_sterics(scheduler, λ_glob, pair_role, Val(scheduler.dual))
+        σ = xy_mixing(σ_mix, key1[1], key1[1], λ_params, pair_role)
+        ϵ = xy_mixing(ϵ_mix, key1[2], key1[2], λ_params, pair_role)
+        count2 = count * (count+1)/2
+        ϵσ12_sum += λ * λR * ϵ * σ^12 * count2
+        ϵσ6_sum  += λ * λR * ϵ * σ^6 * count2
+    end
+
+    # Compute the ϵσ^6 and ϵσ^12 for all unique pairs of classes times the number of particles in each class.
+    for (key1,count) in classCounts
+        for (key2,count2) in classCounts
+            if key1 == key2
+                break
+            end
+            λ_glob = λ_mixing(λ_mix, (key1[3], key2[3]))
+            role_i = key1[4]
+            role_j = key2[4]
+            pair_role = mix_roles(scheduler, (role_i, role_j))
+            λ, λR, λ_params = scale_sterics(scheduler, λ_glob, pair_role, Val(scheduler.dual))
+            σ = xy_mixing(σ_mix, key1[1], key2[1], λ_params, pair_role)
+            ϵ = xy_mixing(ϵ_mix, key1[2], key2[2], λ_params, pair_role)
+            ϵσ12_sum += λ * λR * ϵ * σ^12 * count * count2
+            ϵσ6_sum  += λ * λR * ϵ * σ^6 * count * count2
+        end
+    end
+
+    # Compute averages for the ϵσ^6 and ϵσ^12 terms.
     nλ_pairs_acc = Tacc((nλ_atoms * (nλ_atoms + 1)) ÷ 2)
 
     ϵσ12_mean = ϵσ12_sum / nλ_pairs_acc
@@ -398,9 +422,6 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
 
     F6 = typeof(-(term_6_example / dist_cutoff^3))
     F12 = typeof(term_12_example / dist_cutoff^9)
-
-    println("numInt: ", nλ_pairs_acc, ", numPar: ", nλ_atoms_acc)
-    println("Coeff: ", (factor_6_acc + factor_12_acc))
 
     return LJDispersionCorrectionλ(
         convert(F6, factor_6_acc),
