@@ -1216,18 +1216,18 @@ function forces!(fs,
     if length(pairwise_inters_nonl) > 0
         n = length(sys)
         nbs = NoNeighborList(n)
-        pairwise_forces_loop_gpu!(buffers, sys, pairwise_inters_nonl, nbs, Val(needs_vir), step_n, Val(grad_lambda))
+        pairwise_forces_loop_gpu!(buffers, sys, pairwise_inters_nonl, nbs, Val(needs_vir), step_n)
     end
 
     pairwise_inters_nl = filter(use_neighbors, values(pairwise_inters))
     if length(pairwise_inters_nl) > 0
-        pairwise_forces_loop_gpu!(buffers, sys, pairwise_inters_nl, neighbors, Val(needs_vir), step_n, Val(grad_lambda))
+        pairwise_forces_loop_gpu!(buffers, sys, pairwise_inters_nl, neighbors, Val(needs_vir), step_n)
     end
 
     for inter_list in values(specific_inter_lists)
         specific_forces_gpu!(buffers.fs_mat, buffers.virial_nounits,
                             inter_list, sys.coords, sys.velocities, sys.atoms,
-                            sys.boundary, Val(needs_vir), step_n, sys.force_units, Val(T), Val(grad_lambda))
+                            sys.boundary, Val(needs_vir), step_n, sys.force_units, Val(T))
     end
 
     apply_force_units_gpu!(fs, buffers.fs_mat, sys.force_units, Val(D), Val(T))
