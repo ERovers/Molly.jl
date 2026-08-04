@@ -633,6 +633,69 @@ Now one can put this into a graph, for example using a scatter for the free ener
 ![PMF along the dipeptide torsion in kBT units](images/dihedral_pmf_kbt.png)
 ![PMF along the dipeptide torsion in energy units](images/dihedral_pmf_enr.png)
 
+## Free energies with Relative Free Energy Perturbation (RBFE)
+
+### Method overview
+
+Relative Binding Free Energy (RBFE) calculations estimate the difference in binding affinity between two chemically related ligands ($\Delta\Delta G_{bind}$) bound to a target protein. Rather than simulating the physical unbinding process directly, RBFE employs a thermodynamic cycle that transforms Ligand A into Ligand B in both the bound state (complexed with the protein in solvent) and the unbound state (ligand in solvent alone).          
+
+                      ΔG_bind(A)
+  Protein + Ligand A  ─────────►  Complex A
+          │                            │
+          │ ΔG_solv(A→B)               │ ΔG_bound(A→B)
+          ▼                            ▼
+  Protein + Ligand B  ─────────►  Complex B
+                      ΔG_bind(B)
+
+The relative binding free energy is calculated using the thermodynamic cycle closure:
+
+$$\Delta\Delta G = \Delta G_{bind}(B) - \Delta G_{bind}(A) = \Delta G_{bound}(A \to B) - \Delta G_{solv}(A \to B)$$
+
+### Hybrid Topology and Alchemical Interpolation
+
+To transform Ligand A into Ligand B along a single continuous coordinate, the system can be set up using single toplogy (OpenFE) or dual topology. In a single topology, shared atoms between ligands (Core atoms) retain their physical identity, with parameters (charges, vdW, bonds, angles) linearly interpolated along an alchemical coupling parameter $\lambda \in [0, 1]$. Atoms present in only one ligand (Unique atoms) are smoothly created or decoupled using soft-core potentials for electrostatic and van der Waals interactions to prevent numerical singularities at $\lambda \to 0$ and $\lambda \to 1$. In a dual topology, virtual atoms are added for the core atoms representing the core atoms in ligand B along with the unique atoms for each ligand. 
+
+The mathematical difference between single vs dual topology is in the difference between parameter scaling or energy scaling. In single topology parameter scaling is used and the energy for LennardJones is calculated as:
+
+$$E^{LJ}_{ij} = 4\epsilon_{AB}\left[ \frac{\sigma_{AB}}{r_{ij}}^12 - \frac{\sigma_{AB}}{r_{ij}}^12\right]$$
+where
+$$\epsilon_{AB} = (1-\lambda) * \sqrt{\epsilon^{A}_{i}*\epsilon^{A}_{j}} + \lambda * \sqrt{\epsilon^{B}_{i}*\epsilon^{B}_{j}}\\
+\sigma_{AB} = (1-\lambda) * \frac{\sigma^{A}_{i}+\sigma^{A}_{j}}{2} + \lambda * \frac{\sigma^{B}_{i}*\sigma^{B}_{j}}{2}$$
+
+whereas in dual topology the energy is scaled, so the energy for dual topology is calculated as:
+
+$$E^{LJ}_{ij} = (1-\lambda)*4\epsilon_{A}\left[ \frac{\sigma_{A}}{r_{ij}}^12 - \frac{\sigma_{A}}{r_{ij}}^12\right] + \lambda * 4\epsilon_{B}\left[ \frac{\sigma_{B}}{r_{ij}}^12 - \frac{\sigma_{B}}{r_{ij}}^12\right]$$
+where
+$$\epsilon_{X} = \sqrt{\epsilon^{X}_{i}*\epsilon^{X}_{j}}\\
+\sigma_{X} = \frac{\sigma^{X}_{i}+\sigma^{X}_{j}}{2}$$
+
+In Molly both representations can be used and is set during hybrid system setup using the lambda scheduler,
+```python
+Molly.OpenMMTestScheduler(true) # Dual topology
+Molly.OpenMMTestScheduler(false) # Single topology
+```
+the default is dual topology.
+
+### Replica Exchange Molecular Dynamics (REMD)
+
+To enhance sampling across free energy barriers along the alchemical path, Molly runs $N$ simultaneous replicas across a discrete ladder of $\lambda$-states:
+$$\lambda_0 = 0.0 < \lambda_1 < \lambda_2 < \dots < \lambda_{N-1} = 1.0$$
+
+At fixed intervals (exchange_freq), Molly attempts exchanges between adjacent thermodynamic states $i$ and $j$ occupied by configurations $x_i$ and $x_j$. Swaps are accepted according to the Metropolis-Hastings criterion:
+
+$$P_{\text{acc}}(i \leftrightarrow j) = \min\left(1, \exp\left(-\Delta \Delta u\right)\right)$$
+
+where the reduced energy difference is defined as:
+
+$$\Delta \Delta u = \left[ u_j(x_i) + u_i(x_j) \right] - \left[ u_i(x_i) + u_j(x_j) \right]$$
+
+### Free Energy Estimator
+After the simulation completes, Molly uses the Multistate Bennett Acceptance Ratio (MBAR) to reweight the sampled energy differences across all replicas and estimate the free energy difference $\Delta G$ between $\lambda = 0$ and $\lambda = 1$:
+
+$$\hat{f}_k = -\log \sum_{i=1}^K \sum_{n=1}^{N_i} \frac{\exp\left[-u_k(x_{i,n})\right]}{\sum_{j=1}^K N_j \exp\left[\hat{f}_j - u_j(x_{i,n})\right]}$$
+
+The example in this section demonstrates an alchemical edge from the TYK2 benchmark set, transforming the ligand ejm31 into ejm20 in both complex and solvent environments to compute $\Delta\Delta G_{bind}$.
+
 ## Free energies with AWH
 
 ### Method overview

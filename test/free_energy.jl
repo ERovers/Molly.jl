@@ -606,7 +606,9 @@
         if inter == "all"
             gis = test_sys.general_inters
         elseif inter == "PME"
-            gis = test_sys.general_inters
+            gis = test_sys.general_inters[1:1]
+        elseif inter == "nonbonded"
+            gis = test_sys.general_inters[2:2]
         else
             gis = ()
         end
