@@ -24,6 +24,9 @@ function params_mixing(λ_params, params::Tuple, args...)
     return sum(((1-λ_params),λ_params) .* params)
 end
 
+# Extra Atom fields that a mixing rule reads
+mixing_atom_fields(mr) = ()
+
 struct LorentzMixing end
 
 function xy_mixing(::LorentzMixing, x, y, args...) 
@@ -136,6 +139,8 @@ struct MixingException{M, E}
     mixing::M
     exceptions::E
 end
+
+mixing_atom_fields(::MixingException) = (:atom_type,)
 
 function σ_mixing(me::MixingException, atom_i, atom_j, args...)
     default = σ_mixing(me.mixing, atom_i, atom_j, args...)

@@ -1,4 +1,4 @@
-const AlchemicalRole = Int
+const AlchemicalRole = Int32
 
 const EnvRole::AlchemicalRole    = 0
 const CoreRole::AlchemicalRole   = 1

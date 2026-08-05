@@ -34,6 +34,8 @@ end
 
 use_neighbors(inter::Coulomb) = inter.use_neighbors
 
+required_atom_fields(::Coulomb) = (:charge,)
+
 function Base.zero(coul::Coulomb{C, W, T}) where {C, W, T}
     return Coulomb(coul.cutoff, coul.use_neighbors, zero(W), zero(T))
 end
@@ -131,6 +133,8 @@ electrostatic scheduler.
 end
 
 use_neighbors(inter::CoulombScaled) = inter.use_neighbors
+
+required_atom_fields(::CoulombScaled) = (:charge, :λ, :alch_role)
 
 function Base.zero(coul::CoulombScaled{C, SCH, W, T}) where {C, SCH, W, T}
     return CoulombScaled(
@@ -341,6 +345,10 @@ function CoulombSoftCoreBeutler(; cutoff=NoCutoff(), α=1.0, use_neighbors=false
 end
 
 use_neighbors(inter::CoulombSoftCoreBeutler) = inter.use_neighbors
+
+required_atom_fields(inter::CoulombSoftCoreBeutler) = (:charge, :σ, :ϵ, :λ, :alch_role,
+            mixing_atom_fields(inter.σ_mixing)..., mixing_atom_fields(inter.ϵ_mixing)...,
+            mixing_atom_fields(inter.λ_mixing)...)
 
 function Base.zero(coul::CoulombSoftCoreBeutler{C, A, S, E, LM, SCH, W, T}) where {C, A, S, E, LM, SCH, W, T}
     return CoulombSoftCoreBeutler(
@@ -553,6 +561,9 @@ end
 
 use_neighbors(inter::CoulombSoftCoreGapsys) = inter.use_neighbors
 
+required_atom_fields(::CoulombSoftCoreGapsys) = (:charge, :λ, :alch_role,
+            mixing_atom_fields(inter.λ_mixing)...)
+
 function Base.zero(coul::CoulombSoftCoreGapsys{C, A, S, LM, SCH, W, T}) where {C, A, S, LM, SCH, W, T}
     return CoulombSoftCoreGapsys(
         coul.cutoff,
@@ -732,6 +743,8 @@ end
 
 use_neighbors(inter::CoulombReactionField) = inter.use_neighbors
 
+required_atom_fields(::CoulombReactionField) = (:charge,)
+
 function Base.zero(coul::CoulombReactionField{D, S, W, T}) where {D, S, W, T}
     return CoulombReactionField{D, S, W, T}(
         zero(D),
@@ -857,6 +870,8 @@ electrostatic scheduler.
 end
 
 use_neighbors(inter::CoulombReactionFieldScaled) = inter.use_neighbors
+
+required_atom_fields(::CoulombReactionFieldScaled) = (:charge, :λ, :alch_role)
 
 function Base.zero(coul::CoulombReactionFieldScaled{D, S, SCH, W, T}) where {D, S, SCH, W, T}
     return CoulombReactionFieldScaled{D, S, SCH, W, T}(
@@ -1005,6 +1020,10 @@ function CoulombSoftCoreBeutlerReactionField(; dist_cutoff, solvent_dielectric=c
 end
 
 use_neighbors(inter::CoulombSoftCoreBeutlerReactionField) = inter.use_neighbors
+
+required_atom_fields(inter::CoulombSoftCoreBeutlerReactionField) = (:charge, :σ, :ϵ, :λ, :alch_role,
+            mixing_atom_fields(inter.σ_mixing)..., mixing_atom_fields(inter.ϵ_mixing)...,
+            mixing_atom_fields(inter.λ_mixing)...)
 
 function Base.zero(coul::CoulombSoftCoreBeutlerReactionField{D, S, A, SM, EM, LM, SCH, W, T}) where {D, S, A, SM, EM, LM, SCH, W, T}
     return CoulombSoftCoreBeutlerReactionField(
@@ -1225,6 +1244,9 @@ end
 
 use_neighbors(inter::CoulombSoftCoreGapsysReactionField) = inter.use_neighbors
 
+required_atom_fields(::CoulombSoftCoreGapsysReactionField) = (:charge, :λ, :alch_role,
+            mixing_atom_fields(inter.λ_mixing)...)
+
 function Base.zero(coul::CoulombSoftCoreGapsysReactionField{D, S, A, SQ, LM, SCH, W, T}) where {D, S, A, SQ, LM, SCH, W, T}
     return CoulombSoftCoreGapsysReactionField(
         zero(D),
@@ -1421,6 +1443,8 @@ end
 
 use_neighbors(inter::CoulombEwald) = inter.use_neighbors
 
+required_atom_fields(::CoulombEwald) = (:charge,)
+
 function Base.zero(coul::CoulombEwald{T, D, W, C, A}) where {T, D, W, C, A}
     return CoulombEwald(
         zero(D),
@@ -1554,6 +1578,8 @@ function CoulombEwaldScaled(; dist_cutoff, error_tol=0.0005, use_neighbors=false
 end
 
 use_neighbors(inter::CoulombEwaldScaled) = inter.use_neighbors
+
+required_atom_fields(::CoulombEwaldScaled) = (:charge, :λ, :alch_role)
 
 function Base.zero(coul::CoulombEwaldScaled{T, D, SCH, W, C, A}) where {T, D, SCH, W, C, A}
     return CoulombEwaldScaled(
@@ -1764,6 +1790,10 @@ end
 
 use_neighbors(inter::CoulombSoftCoreBeutlerEwald) = inter.use_neighbors
 
+required_atom_fields(inter::CoulombSoftCoreBeutlerEwald) = (:charge, :σ, :ϵ, :λ, :alch_role,
+            mixing_atom_fields(inter.σ_mixing)..., mixing_atom_fields(inter.ϵ_mixing)...,
+            mixing_atom_fields(inter.λ_mixing)...)
+
 function Base.zero(coul::CoulombSoftCoreBeutlerEwald{ET, D, A, SM, EM, LM, SCH, W, C, EA}) where {ET, D, A, SM, EM, LM, SCH, W, C, EA}
     return CoulombSoftCoreBeutlerEwald(
         zero(D),
@@ -1940,6 +1970,9 @@ end
 
 use_neighbors(inter::CoulombSoftCoreGapsysEwald) = inter.use_neighbors
 
+required_atom_fields(::CoulombSoftCoreGapsysEwald) = (:charge, :λ, :alch_role,
+            mixing_atom_fields(inter.λ_mixing)...)
+
 function Base.zero(coul::CoulombSoftCoreGapsysEwald{ET, D, A, SQ, LM, SCH, W, C, EA}) where {ET, D, A, SQ, LM, SCH, W, C, EA}
     return CoulombSoftCoreGapsysEwald(
         zero(D),
@@ -2095,6 +2128,8 @@ F(r_{ij}) = \frac{q_i q_j}{4 \pi \varepsilon_0 r_{ij}^2} \exp(-\kappa r_{ij})\le
 end
 
 use_neighbors(inter::Yukawa) = inter.use_neighbors
+
+required_atom_fields(::Yukawa) = (:charge,)
 
 function Base.zero(yukawa::Yukawa{C, W, T, K}) where {C, W, T, K}
     return Yukawa(

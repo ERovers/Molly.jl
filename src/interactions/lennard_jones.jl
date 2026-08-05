@@ -39,6 +39,9 @@ end
 
 use_neighbors(inter::LennardJones) = inter.use_neighbors
 
+required_atom_fields(inter::LennardJones) = (:σ, :ϵ, :λ,
+            mixing_atom_fields(inter.σ_mixing)..., mixing_atom_fields(inter.ϵ_mixing)...)
+
 function Base.zero(lj::LennardJones{C, H, S, E, W}) where {C, H, S, E, W}
     return LennardJones(
         lj.cutoff,
@@ -119,7 +122,7 @@ end
                                   special=false,
                                   args...)
     if shortcut_pair(inter.shortcut, atom_i, atom_j, special)
-        return ustrip(zero(dr[1])) * energy_units
+        return zero_pairwise_energy(dr, energy_units)
     end
     σ = σ_mixing(inter.σ_mixing, atom_i, atom_j)
     ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j)
@@ -543,6 +546,10 @@ end
 
 use_neighbors(inter::LennardJonesSoftCoreBeutler) = inter.use_neighbors
 
+required_atom_fields(inter::LennardJonesSoftCoreBeutler) = (:σ, :ϵ, :λ, :alch_role,
+            mixing_atom_fields(inter.σ_mixing)..., mixing_atom_fields(inter.ϵ_mixing)...,
+            mixing_atom_fields(inter.λ_mixing)...)
+
 function Base.zero(lj::LennardJonesSoftCoreBeutler{C, A, H, S, E, LM, SCH, W}) where {C, A, H, S, E, LM, SCH, W}
     return LennardJonesSoftCoreBeutler(
         lj.cutoff,
@@ -781,6 +788,10 @@ end
 
 use_neighbors(inter::LennardJonesSoftCoreGapsys) = inter.use_neighbors
 
+required_atom_fields(inter::LennardJonesSoftCoreGapsys) = (:σ, :ϵ, :λ, :alch_role,
+            mixing_atom_fields(inter.σ_mixing)..., mixing_atom_fields(inter.ϵ_mixing)...,
+            mixing_atom_fields(inter.λ_mixing)...)
+
 function Base.zero(lj::LennardJonesSoftCoreGapsys{C, A, H, S, E, LM, SCH, W}) where {C, A, H, S, E, LM, SCH, W}
     return LennardJonesSoftCoreGapsys(
         lj.cutoff,
@@ -1015,6 +1026,10 @@ end
 
 use_neighbors(inter::AshbaughHatch) = inter.use_neighbors
 
+required_atom_fields(inter::AshbaughHatch) = (:σ, :ϵ, :λ,
+            mixing_atom_fields(inter.σ_mixing)..., mixing_atom_fields(inter.ϵ_mixing)...,
+            mixing_atom_fields(inter.λ_mixing)...)
+
 function Base.zero(lj::AshbaughHatch{C, H, S, E, L, W}) where {C, H, S, E, L, W}
     return AshbaughHatch(
         lj.cutoff,
@@ -1037,16 +1052,6 @@ function Base.:+(l1::AshbaughHatch, l2::AshbaughHatch)
         l1.λ_mixing,
         l1.weight_special + l2.weight_special,
     )
-end
-
-@kwdef struct AshbaughHatchAtom{T, M, C, S, E, L}
-    index::Int = 1
-    atom_type::T = 1
-    mass::M = 1.0u"g/mol"
-    charge::C = 0.0
-    σ::S = 0.0u"nm"
-    ϵ::E = 0.0u"kJ * mol^-1"
-    λ::L = 1.0
 end
 
 @inline function force(inter::AshbaughHatch,
@@ -1100,7 +1105,7 @@ end
                                   special::Bool=false,
                                   args...)
     if shortcut_pair(inter.shortcut, atom_i, atom_j, special)
-        return ustrip(zero(dr[1])) * energy_units
+        return zero_pairwise_energy(dr, energy_units)
     end
 
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))

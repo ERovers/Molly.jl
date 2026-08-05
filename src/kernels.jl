@@ -1,5 +1,8 @@
 # KernelAbstractions.jl kernels, CUDA kernels are in an extension
 
+kernel_maybe_velocity(velocities, i) = velocities[i]
+kernel_maybe_velocity(::Nothing, i) = nothing
+
 @inline function sum_pairwise_forces_gpu(inters::Tuple{T}, dr, atom_i, atom_j, ::Val{F},
                                          special, coord_i, coord_j, boundary, vel_i, vel_j,
                                          step_n) where {T, F}
@@ -47,8 +50,8 @@ end
                                        coord_i, coord_j, boundary, vel_i, vel_j, step_n)
 end
 
-@inline function sum_pairwise_potentials_nonl(inters, atom_i, atom_j, ::Val{E}, special, coord_i,
-                                              coord_j, boundary, vel_i, vel_j, step_n) where E
+@inline function sum_pairwise_potentials_kernel(inters, atom_i, atom_j, ::Val{E}, special, coord_i,
+                                                coord_j, boundary, vel_i, vel_j, step_n) where E
     dr = vector(coord_i, coord_j, boundary)
     pe = sum_pairwise_potentials_gpu(inters, dr, atom_i, atom_j, Val(E), special, coord_i,
                                      coord_j, boundary, vel_i, vel_j, step_n)
@@ -56,6 +59,44 @@ end
         error("wrong force unit returned, was expecting $E but got $(unit(pe[1]))")
     end
     return pe
+end
+
+# Atom fields read by a pairwise interaction in its force/energy calculation,
+# as a tuple of field name Symbols. Returning `nothing` (the default) conservatively
+# shuffles all Atom fields in the tiled GPU pairwise kernel. Narrowing this to the
+# fields actually used cuts warp-shuffle traffic (the dominant cost of that kernel),
+# but must list every field read or forces/energies will be silently wrong, so the
+# default is safe.
+required_atom_fields(inter) = nothing
+
+@inline merge_atom_fields(::Nothing, _) = nothing
+@inline merge_atom_fields(_, ::Nothing) = nothing
+@inline merge_atom_fields(::Nothing, ::Nothing) = nothing
+@inline merge_atom_fields(a::Tuple, b::Tuple) = (a..., b...)
+@inline combine_atom_fields(::Tuple{}) = ()
+
+@inline function combine_atom_fields(inters::Tuple)
+    return merge_atom_fields(
+        required_atom_fields(first(inters)),
+        combine_atom_fields(Base.tail(inters)),
+    )
+end
+
+@inline resolve_atom_fields(::Nothing, ::Type{A}) where {A} = fieldnames(A)
+@inline resolve_atom_fields(syms::Tuple, ::Type{A}) where {A} = syms
+
+# Extract the values of `syms` from an atom as a tuple (the warp-shuffle payload)
+@inline atom_shuffle_payload(atom, ::Val{syms}) where {syms} = map(s -> getfield(atom, s), syms)
+
+# Rebuild an Atom from `base` (lane-local atom), overwriting the fields in `syms`
+# with the shuffled `payload` values. Fields not in `syms` keep `base`'s values;
+# they are guaranteed unused by the active interactions so the placeholder is safe.
+@generated function rebuild_shuffled_atom(::Type{A}, base, payload, ::Val{syms}) where {A, syms}
+    args = map(fieldnames(A)) do f
+        i = findfirst(==(f), syms)
+        i === nothing ? :(getfield(base, $(QuoteNode(f)))) : :(payload[$i])
+    end
+    return :($A($(args...)))
 end
 
 function gpu_threads_env(name, default)
@@ -104,7 +145,8 @@ function pairwise_forces_loop_gpu!(buffers, sys::System{D, <:AbstractGPUArray},
         backend = get_backend(sys.coords)
         n_threads_gpu = gpu_threads_pairwise(length(nbs))
         kernel! = pairwise_force_kernel_nl!(backend, n_threads_gpu)
-        kernel!(buffers.fs_mat, buffers.virial_nounits, sys.coords, sys.velocities, sys.atoms,
+        vels = (any_uses_velocity(pairwise_inters) ? sys.velocities : nothing)
+        kernel!(buffers.fs_mat, buffers.virial_nounits, sys.coords, vels, sys.atoms,
                 sys.boundary, pairwise_inters, nbs, step_n, Val(needs_vir), Val(D),
                 Val(sys.force_units); ndrange=length(nbs))
     end
@@ -122,10 +164,11 @@ end
         i, j, special = neighbors[inter_i]
         coord_i = coords[i]
         coord_j = coords[j]
+        vel_i = kernel_maybe_velocity(velocities, i)
+        vel_j = kernel_maybe_velocity(velocities, j)
         dr = vector(coord_i, coord_j, boundary)
         f = sum_pairwise_forces_gpu(inters, dr, atoms[i], atoms[j], Val(F), special,
-                                    coord_i, coord_j, boundary, velocities[i], velocities[j],
-                                    step_n)
+                                    coord_i, coord_j, boundary, vel_i, vel_j, step_n)
         for dim in 1:D
             fval = ustrip(f[dim])
             Atomix.@atomic fs_mat[dim, i] += -fval
@@ -204,6 +247,7 @@ function specific_forces_gpu!(fs_mat, vir, inter_list::InteractionList5Atoms,
     return fs_mat
 end
 
+# Unclear virial contribution in periodic space as only one coordinate is available
 @kernel inbounds=true function specific_force_1_atoms_kernel!(fs_mat, vir, @Const(coords),
                                         @Const(velocities), @Const(atoms), boundary, step_n,
                                         @Const(is), @Const(inters), @Const(data), ::Val{needs_vir},
@@ -397,7 +441,8 @@ function pairwise_pe_loop_gpu!(pe_vec_nounits, buffers, sys::System{<:Any, <:Abs
         backend = get_backend(sys.coords)
         n_threads_gpu = gpu_threads_pairwise(length(nbs))
         kernel! = pairwise_pe_kernel!(backend, n_threads_gpu)
-        kernel!(pe_vec_nounits, sys.coords, sys.velocities, sys.atoms, sys.boundary,
+        vels = (any_uses_velocity(pairwise_inters) ? sys.velocities : nothing)
+        kernel!(pe_vec_nounits, sys.coords, vels, sys.atoms, sys.boundary,
                 pairwise_inters, nbs, step_n, Val(sys.energy_units); ndrange=length(nbs))
     end
     return pe_vec_nounits
@@ -410,8 +455,10 @@ end
 
     if inter_i <= length(neighbors)
         i, j, special = neighbors[inter_i]
-        pe = sum_pairwise_potentials_nonl(inters, atoms[i], atoms[j], Val(E), special, coords[i],
-                                coords[j], boundary, velocities[i], velocities[j], step_n)[1]
+        vel_i = kernel_maybe_velocity(velocities, i)
+        vel_j = kernel_maybe_velocity(velocities, j)
+        pe = sum_pairwise_potentials_kernel(inters, atoms[i], atoms[j], Val(E), special, coords[i],
+                                            coords[j], boundary, vel_i, vel_j, step_n)[1]
         if unit(pe) != E
             error("wrong energy unit returned, was expecting $E but got $(unit(pe))")
         end
@@ -652,4 +699,112 @@ end
             fs_mat[d, orig_idx] += fs_reordered[d, i]
         end
     end
+end
+
+# `Float32` gets a dedicated
+# method; any other `AbstractFloat` (including `Float64`) falls back to
+# drawing in `Float64` and converting.
+# After calling this advance ctr0 by at least 2*natoms
+@inline function randn_svec(::Type{SVector{2, Float32}}, ctr0::UInt64, ctr1::UInt64, key::UInt64, natoms::UInt64)
+    c1, c2, c3, c4 = randn_f32(ctr0, ctr1, key)
+    SVector{2, Float32}(c1, c2)
+end
+@inline function randn_svec(::Type{SVector{3, Float32}}, ctr0::UInt64, ctr1::UInt64, key::UInt64, natoms::UInt64)
+    c1, c2, c3, c4 = randn_f32(ctr0, ctr1, key)
+    SVector{3, Float32}(c1, c2, c3)
+end
+@inline function randn_svec(::Type{SVector{2, FT}}, ctr0::UInt64, ctr1::UInt64, key::UInt64, natoms::UInt64) where {FT <: AbstractFloat}
+    c1, c2 = randn_f64(ctr0, ctr1, key)
+    SVector{2, FT}(c1, c2)
+end
+@inline function randn_svec(::Type{SVector{3, FT}}, ctr0::UInt64, ctr1::UInt64, key::UInt64, natoms::UInt64) where {FT <: AbstractFloat}
+    c1, c2 = randn_f64(ctr0, ctr1, key)
+    ctr0 += natoms
+    c3, c4 = randn_f64(ctr0, ctr1, key)
+    SVector{3, FT}(c1, c2, c3)
+end
+
+@kernel function random_velocities_kernel!(
+        vels::AbstractVector{SVector{D, C}}, @Const(masses::AbstractVector),
+        kT, @Const(virtual_sites), ctr1::UInt64, key::UInt64, ::Val{FT}
+    ) where {D, C, FT}
+    i = @index(Global, Linear)
+    natoms = length(vels)%UInt64
+    ctr0 = i%UInt64
+    @inbounds if i <= length(vels)
+        if !virtual_sites[i]
+            scale = C(sqrt(kT / masses[i]))
+            vels[i] = randn_svec(SVector{D, FT}, ctr0, ctr1, key, natoms) * scale
+        else
+            vels[i] = zero(SVector{D, C})
+        end
+    end
+end
+
+@kernel function apply_andersen_coupling_kernel!(
+        vels::AbstractVector{SVector{D, C}}, @Const(masses::AbstractVector),
+        kT, prob_val_u64::UInt64, @Const(virtual_sites), ctr1::UInt64, key::UInt64, ::Val{FT}
+    ) where {D, C, FT}
+    i = @index(Global, Linear)
+    natoms = length(vels)%UInt64
+    ctr0 = i%UInt64
+    @inbounds if i<= length(vels) && !virtual_sites[i]
+        u0, u1 = philox4x32_10(ctr0, ctr1, key)
+        rand_u64 = (UInt64(u0) | UInt64(u1)<<Int32(32))
+        if rand_u64 < prob_val_u64
+            ctr0 += natoms # advance the rng natoms
+            scale = C(sqrt(kT/masses[i]))
+            vels[i] = randn_svec(SVector{D, FT}, ctr0, ctr1, key, natoms) * scale
+        end
+    end
+end
+
+# Fused inner part of a Langevin step
+@kernel function langevin_o_step_kernel!(
+        vels::AbstractVector{SVector{D, C}},
+        @Const(vel_scales::AbstractVector),
+        @Const(noise_scales::AbstractVector),
+        philox_ctr1::UInt64,
+        philox_key::UInt64,
+        ::Val{FT},
+    ) where {D, C, FT}
+    i = @index(Global, Linear)
+    natoms = length(vels)%UInt64
+    philox_ctr0 = i%UInt64
+    @inbounds if i<= length(vels)
+        noise = randn_svec(SVector{D, FT}, philox_ctr0, philox_ctr1, philox_key, natoms)
+        vels[i] = muladd(vel_scales[i], vels[i], noise*noise_scales[i])
+    end
+end
+# host
+function langevin_o_step!(
+        vels::AbstractVector{SVector{D, C}},
+        vel_scales::AbstractVector,
+        noise_scales::AbstractVector,
+        philox_ctr1::UInt64,
+        philox_key::UInt64,
+        ::Type{FT},
+    ) where {D, C, FT}
+    natoms = UInt64(length(vels))
+    @inbounds @simd ivdep for i in eachindex(vels, vel_scales, noise_scales)
+        philox_ctr0 = i%UInt64
+        noise = randn_svec(SVector{D, FT}, philox_ctr0, philox_ctr1, philox_key, natoms)
+        vels[i] = muladd(vel_scales[i], vels[i], noise*noise_scales[i])
+    end
+    nothing
+end
+# device
+function langevin_o_step!(
+            vels::AbstractGPUArray,
+            vel_scales::AbstractVector,
+            noise_scales::AbstractVector,
+            philox_ctr1::UInt64,
+            philox_key::UInt64,
+            ::Type{FT},
+        ) where {FT}
+    backend = get_backend(vels)
+    kernel! = langevin_o_step_kernel!(backend)
+    kernel!(vels, vel_scales, noise_scales, philox_ctr1, philox_key,
+            Val{FT}(); ndrange=length(vels))
+    nothing
 end

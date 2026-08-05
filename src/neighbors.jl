@@ -59,10 +59,10 @@ uses_gpu_neighbor_finder(AT) = false
 
 """
     GPUNeighborFinder(; n_atoms, dist_cutoff,
-                      excluded_pairs=(), special_pairs=(), n_steps_reorder=25,
+                      excluded_pairs=(), special_pairs=(), n_steps_reorder=10,
                       initialized=false, device_vector_type)
     GPUNeighborFinder(; eligible, dist_cutoff,
-                      special=nothing, n_steps_reorder=25,
+                      special=nothing, n_steps_reorder=10,
                       initialized=false, device_vector_type=nothing)
 
 Neighbor finder for CUDA systems that uses Molly's tiled pairwise kernels.
@@ -324,7 +324,7 @@ function GPUNeighborFinder(;
                             excluded_pairs=(),
                             special_pairs=(),
                             special=nothing,
-                            n_steps_reorder=25,
+                            n_steps_reorder=10,
                             initialized=false,
                             device_vector_type=nothing)
     if !isnothing(n_atoms)
@@ -605,11 +605,19 @@ end
 
 # Add a pair to the pair list
 # If the buffer size is large enough update the element, otherwise push a new element
-#   to `neighbor.list`
-function push_pair!(pair, neighbors::NeighborList, eligible, special)
-    (; i, j) = pair
-    if eligible[i, j]
-        push!(neighbors, (Int32(i), Int32(j), special[i, j]))
+#   to `neighbors.list`
+@inline function push_pair!(pair, neighbors::NeighborList, eligible, special)
+    i, j = pair.i, pair.j
+    @inbounds if eligible[i, j]
+        n = neighbors.n + 1
+        neighbors.n = n
+        list = neighbors.list
+        element = (i, j, special[i, j])
+        if n > length(list)
+            push!(list, element)
+        else
+            @inbounds list[n] = element
+        end
     end
     return neighbors
 end

@@ -53,10 +53,18 @@ function kinetic_energy_tensor(sys::System{D}; kin_tensor=nothing) where D
     return kin_tensor_used
 end
 
-function kinetic_energy_tensor!(kin_tensor, sys::System{<:Any, <:Any, T}) where T
+function kinetic_energy_tensor!(kin_tensor, sys::System{D, <:Any, T}) where {D, T}
     fill!(kin_tensor, zero(T) * sys.energy_units)
-    for (m, v) in zip(from_device(sys.masses), from_device(sys.velocities))
-        kin_tensor .+= uconvert.(sys.energy_units, m .* (v * transpose(v))) ./ 2
+    masses_cpu = from_device(sys.masses)
+    velocities_cpu = from_device(sys.velocities)
+    @inbounds for i in eachindex(sys)
+        m_half = masses_cpu[i] / 2
+        v = velocities_cpu[i]
+        for col in 1:D
+            for row in 1:D
+                kin_tensor[row, col] += uconvert(sys.energy_units, m_half * v[row] * v[col])
+            end
+        end
     end
     return kin_tensor
 end
@@ -116,9 +124,10 @@ function virial(sys, neighbors, step_n::Integer=0;
         compute_initial_total_virial!(buffers, sys, neighbors, step_n;
                                       n_threads=n_threads, kwargs...)
         return buffers.virial
+    else
+        _, v = forces_virial(sys, neighbors, step_n; n_threads=n_threads, kwargs...)
+        return v
     end
-    _, v = forces_virial(sys, neighbors, step_n; n_threads=n_threads, kwargs...)
-    return v
 end
 
 """
@@ -141,12 +150,21 @@ function scalar_virial(sys, neighbors, step_n::Integer=0;
     return tr(virial(sys, neighbors, step_n; n_threads=n_threads, kwargs...))
 end
 
-"""
-    temperature(system; kin_tensor=nothing, recompute=true)
+@doc raw"""
+    temperature(system; kin_tensor=nothing, n_dof=system.df,
+                k=system.k, recompute=true)
 
 Calculate the temperature of a system from the kinetic energy of the atoms.
+
+The temperature is defined as
+```math
+T = \frac{2 E_\mathrm{kin}}{N_\mathrm{df} k}
+```
+where ``E_\mathrm{kin}`` is the kinetic energy, ``N_\mathrm{df}`` is the number of
+degrees of freedom in the system (`n_dof`) and ``k`` is the Boltzmann constant (`k`).
 """
-function temperature(sys::System{D}; kin_tensor=nothing, recompute=true) where D
+function temperature(sys::System{D}; kin_tensor=nothing, n_dof=sys.df, k=sys.k,
+                     recompute=true) where D
     if isnothing(kin_tensor)
         # Allows propagation of uncertainties to tensors
         CT = typeof(ustrip(oneunit(eltype(eltype(sys.coords)))))
@@ -157,12 +175,27 @@ function temperature(sys::System{D}; kin_tensor=nothing, recompute=true) where D
     else
         ke = tr(kin_tensor)
     end
-    temp = 2 * ke / (sys.df * sys.k)
+    temp = 2 * ke / (n_dof * k)
     if sys.energy_units == NoUnits
         return temp
     else
         return uconvert(u"K", temp)
     end
+end
+
+@inline function sum_pairwise_pe(inters::Tuple{T}, dr, atom_i, atom_j, energy_units,
+                                 special, coord_i, coord_j, boundary, vel_i, vel_j,
+                                 step_n) where {T}
+    return potential_energy(inters[1], dr, atom_i, atom_j, energy_units, special, coord_i, coord_j,
+                            boundary, vel_i, vel_j, step_n)
+end
+
+@inline function sum_pairwise_pe(inters::Tuple, dr, atom_i, atom_j, energy_units,
+                                 special, coord_i, coord_j, boundary, vel_i, vel_j, step_n)
+    return potential_energy(first(inters), dr, atom_i, atom_j, energy_units, special, coord_i, coord_j,
+                            boundary, vel_i, vel_j, step_n) +
+           sum_pairwise_pe(Base.tail(inters), dr, atom_i, atom_j, energy_units, special,
+                           coord_i, coord_j, boundary, vel_i, vel_j, step_n)
 end
 
 """
@@ -209,9 +242,10 @@ function potential_energy(sys::System,
     if length(pairwise_inters) > 0
         pairwise_inters_nonl = filter(!use_neighbors, values(pairwise_inters))
         pairwise_inters_nl   = filter( use_neighbors, values(pairwise_inters))
+        use_vel = any_uses_velocity(pairwise_inters)
         pe = pairwise_pe_loop(sys.atoms, sys.coords, sys.velocities, sys.boundary,
                               neighbors, sys.energy_units, length(sys), pairwise_inters_nonl,
-                              pairwise_inters_nl, Val(T), Val(n_threads), step_n)
+                              pairwise_inters_nl, step_n, Val(T), Val(n_threads), Val(use_vel))
     else
         pe = zero(T) * sys.energy_units
     end
@@ -239,22 +273,22 @@ function potential_energy(sys::System,
 end
 
 function pairwise_pe_loop(atoms, coords, velocities, boundary, neighbors, energy_units,
-                          n_atoms, pairwise_inters_nonl, pairwise_inters_nl, ::Val{T},
-                          ::Val{1}, step_n=0) where T
+                          n_atoms, pairwise_inters_nonl, pairwise_inters_nl, step_n, ::Val{T},
+                          ::Val{1}, ::Val{use_vel}) where {T, use_vel}
     pe = zero(T) * energy_units
 
     @inbounds if length(pairwise_inters_nonl) > 0
-        n_atoms = length(coords)
         for i in 1:n_atoms
+            coord_i = coords[i]
+            atom_i = atoms[i]
+            vel_i = maybe_velocity(velocities, i, Val(use_vel))
             for j in (i + 1):n_atoms
-                dr = vector(coords[i], coords[j], boundary)
-                pe_sum = potential_energy(pairwise_inters_nonl[1], dr, atoms[i], atoms[j],
-                                energy_units, false, coords[i], coords[j], boundary,
-                                velocities[i], velocities[j], step_n)
-                for inter in pairwise_inters_nonl[2:end]
-                    pe_sum += potential_energy(inter, dr, atoms[i], atoms[j], energy_units, false,
-                                coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-                end
+                coord_j = coords[j]
+                dr = vector(coord_i, coord_j, boundary)
+                atom_j = atoms[j]
+                vel_j = maybe_velocity(velocities, j, Val(use_vel))
+                pe_sum = sum_pairwise_pe(pairwise_inters_nonl, dr, atom_i, atom_j, energy_units,
+                                         false, coord_i, coord_j, boundary, vel_i, vel_j, step_n)
                 check_energy_units(pe_sum, energy_units)
                 pe += pe_sum
             end
@@ -267,13 +301,15 @@ function pairwise_pe_loop(atoms, coords, velocities, boundary, neighbors, energy
         end
         for ni in eachindex(neighbors)
             i, j, special = neighbors[ni]
-            dr = vector(coords[i], coords[j], boundary)
-            pe_sum = potential_energy(pairwise_inters_nl[1], dr, atoms[i], atoms[j], energy_units, special,
-                            coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-            for inter in pairwise_inters_nl[2:end]
-                pe_sum += potential_energy(inter, dr, atoms[i], atoms[j], energy_units, special,
-                            coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-            end
+            coord_i = coords[i]
+            coord_j = coords[j]
+            dr = vector(coord_i, coord_j, boundary)
+            atom_i = atoms[i]
+            atom_j = atoms[j]
+            vel_i = maybe_velocity(velocities, i, Val(use_vel))
+            vel_j = maybe_velocity(velocities, j, Val(use_vel))
+            pe_sum = sum_pairwise_pe(pairwise_inters_nl, dr, atom_i, atom_j, energy_units,
+                                     special, coord_i, coord_j, boundary, vel_i, vel_j, step_n)
             check_energy_units(pe_sum, energy_units)
             pe += pe_sum
         end
@@ -283,50 +319,85 @@ function pairwise_pe_loop(atoms, coords, velocities, boundary, neighbors, energy
 end
 
 function pairwise_pe_loop(atoms, coords, velocities, boundary, neighbors, energy_units,
-                          n_atoms, pairwise_inters_nonl, pairwise_inters_nl, ::Val{T},
-                          ::Val{n_threads}, step_n=0) where {T, n_threads}
+                          n_atoms, pairwise_inters_nonl, pairwise_inters_nl, step_n, ::Val{T},
+                          ::Val{n_threads}, ::Val{use_vel}) where {T, n_threads, use_vel}
     pe_chunks_nounits = zeros(T, n_threads)
 
-    if length(pairwise_inters_nonl) > 0
-        n_atoms = length(coords)
+    @inbounds if length(pairwise_inters_nonl) > 0
         Threads.@threads for chunk_i in 1:n_threads
-            for i in chunk_i:n_threads:n_atoms
-                for j in (i + 1):n_atoms
-                    dr = vector(coords[i], coords[j], boundary)
-                    pe_sum = potential_energy(pairwise_inters_nonl[1], dr, atoms[i], atoms[j], energy_units, false,
-                                coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-                    for inter in pairwise_inters_nonl[2:end]
-                        pe_sum += potential_energy(inter, dr, atoms[i], atoms[j], energy_units, false,
-                                coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-                    end
-                    check_energy_units(pe_sum, energy_units)
-                    pe_chunks_nounits[chunk_i] += ustrip(pe_sum)
-                end
-            end
+            pe_chunks_nounits[chunk_i] = pairwise_pe_nonl_range(atoms, coords, velocities, boundary,
+                            energy_units, pairwise_inters_nonl, step_n, chunk_i, n_threads, n_atoms,
+                            Val(T), Val(use_vel))
         end
     end
 
-    if length(pairwise_inters_nl) > 0
+    @inbounds if length(pairwise_inters_nl) > 0
         if isnothing(neighbors)
             error("an interaction uses the neighbor list but neighbors is nothing")
         end
-        Threads.@threads for chunk_i in 1:n_threads
-            for ni in chunk_i:n_threads:length(neighbors)
-                i, j, special = neighbors[ni]
-                dr = vector(coords[i], coords[j], boundary)
-                pe_sum = potential_energy(pairwise_inters_nl[1], dr, atoms[i], atoms[j], energy_units, special,
-                                coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
-                for inter in pairwise_inters_nl[2:end]
-                    pe_sum += potential_energy(inter, dr, atoms[i], atoms[j], energy_units, special,
-                                coords[i], coords[j], boundary, velocities[i], velocities[j], step_n)
+        n_neighbors = length(neighbors)
+        block_size = 512
+        next_block_start = Threads.Atomic{Int}(1)
+        @sync for chunk_i in 1:n_threads
+            Threads.@spawn begin
+                pe_chunk = zero(T)
+                while true
+                    block_start = Threads.atomic_add!(next_block_start, block_size)
+                    block_start > n_neighbors && break
+                    block_stop = min(block_start + block_size - 1, n_neighbors)
+                    pe_chunk += pairwise_pe_nl_block(atoms, coords, velocities, boundary, neighbors,
+                                    energy_units, pairwise_inters_nl, step_n, block_start, block_stop,
+                                    Val(T), Val(use_vel))
                 end
-                check_energy_units(pe_sum, energy_units)
-                pe_chunks_nounits[chunk_i] += ustrip(pe_sum)
+                pe_chunks_nounits[chunk_i] += pe_chunk
             end
         end
     end
 
     return sum(pe_chunks_nounits) * energy_units
+end
+
+@noinline function pairwise_pe_nonl_range(atoms, coords, velocities, boundary, energy_units,
+                                          pairwise_inters_nonl, step_n, chunk_i, n_threads, n_atoms,
+                                          ::Val{T}, ::Val{use_vel}) where {T, use_vel}
+    pe_chunk = zero(T)
+    @inbounds for i in chunk_i:n_threads:n_atoms
+        coord_i = coords[i]
+        atom_i = atoms[i]
+        vel_i = maybe_velocity(velocities, i, Val(use_vel))
+        for j in (i + 1):n_atoms
+            coord_j = coords[j]
+            dr = vector(coord_i, coord_j, boundary)
+            atom_j = atoms[j]
+            vel_j = maybe_velocity(velocities, j, Val(use_vel))
+            pe_sum = sum_pairwise_pe(pairwise_inters_nonl, dr, atom_i, atom_j, energy_units,
+                                     false, coord_i, coord_j, boundary, vel_i, vel_j, step_n)
+            check_energy_units(pe_sum, energy_units)
+            pe_chunk += ustrip(pe_sum)
+        end
+    end
+    return pe_chunk
+end
+
+@noinline function pairwise_pe_nl_block(atoms, coords, velocities, boundary, neighbors, energy_units,
+                                      pairwise_inters_nl, step_n, block_start, block_stop,
+                                      ::Val{T}, ::Val{use_vel}) where {T, use_vel}
+    pe_chunk = zero(T)
+    @inbounds for ni in block_start:block_stop
+        i, j, special = neighbors[ni]
+        coord_i = coords[i]
+        coord_j = coords[j]
+        dr = vector(coord_i, coord_j, boundary)
+        atom_i = atoms[i]
+        atom_j = atoms[j]
+        vel_i = maybe_velocity(velocities, i, Val(use_vel))
+        vel_j = maybe_velocity(velocities, j, Val(use_vel))
+        pe_sum = sum_pairwise_pe(pairwise_inters_nl, dr, atom_i, atom_j, energy_units,
+                                 special, coord_i, coord_j, boundary, vel_i, vel_j, step_n)
+        check_energy_units(pe_sum, energy_units)
+        pe_chunk += ustrip(pe_sum)
+    end
+    return pe_chunk
 end
 
 function specific_pe(atoms, coords, velocities, boundary, energy_units, sils_1_atoms,

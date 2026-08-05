@@ -36,6 +36,10 @@ end
 
 use_neighbors(inter::Buckingham) = inter.use_neighbors
 
+required_atom_fields(inter::Buckingham) = (:A, :B, :C,
+            mixing_atom_fields(inter.A_mixing)..., mixing_atom_fields(inter.B_mixing)...,
+            mixing_atom_fields(inter.C_mixing)...)
+
 function Base.zero(b::Buckingham{C, W}) where {C, W}
     return Buckingham(b.cutoff, b.use_neighbors, b.shortcut, b.A_mixing,
                       b.B_mixing, b.C_mixing, zero(W))
@@ -85,7 +89,7 @@ end
                                   special=false,
                                   args...)
     if shortcut_pair(inter.shortcut, atom_i, atom_j, special)
-        return ustrip(zero(dr[1])) * energy_units
+        return zero_pairwise_energy(dr, energy_units)
     end
     A = A_mixing(inter.A_mixing, atom_i, atom_j, special)
     B = B_mixing(inter.B_mixing, atom_i, atom_j, special)

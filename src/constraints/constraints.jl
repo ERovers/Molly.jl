@@ -349,65 +349,61 @@ end
 
 Calculate the number of degrees of freedom lost from the system due to the constraints.
 
-All constrained molecules with 3 or more atoms are assumed to be non-linear.
-The table below shows the degrees of freedom for different types of structures in the
-system where D is the dimensionality.
-When using constraint algorithms the vibrational degrees of freedom are removed from a molecule.
-
-| DoF           | Monoatomic | Linear Molecule | Non-Linear Molecule |
-| ------------- | ---------- | --------------- | ------------------- |
-| Translational |     D      |       D         |        D            |
-| Rotational    |     0      |     D - 1       |        D            |
-| Vibrational   |     0      |  D*N - (2D - 1) |    D*N - 2D         |
-| Total         |     D      |      D*N        |       D*N           |
-
+Each independent holonomic distance constraint removes exactly one degree of freedom,
+independent of the dimensionality D, so the number of degrees of freedom lost by a cluster
+is the number of distance constraints it applies. This does not assume the cluster is a rigid
+body: for example a 3-atom cluster with two bond constraints (such as a flexible-angle water)
+removes two degrees of freedom, not three.
 =#
 function n_dof_lost(D::Integer, constraint_clusters::AbstractVector)
-    # Bond constraints remove vibrational DoFs
-    vibrational_dof_lost = 0
-    # Assumes constraints are a non-linear chain
+    # Each cluster removes one degree of freedom per distance constraint it applies
+    dof_lost = 0
     for cluster in constraint_clusters
-        N = n_atoms_cluster(cluster)
-        # If N > 2 assume non-linear (e.g. breaks for CO2)
-        vibrational_dof_lost += ((N == 2) ? D*N - (2*D - 1) : D*(N - 2))
+        dof_lost += n_constraints(cluster)
     end
-    return vibrational_dof_lost
+    return dof_lost
 end
 
 function n_dof_lost(D::Integer,
                     constraint_clusters::AbstractVector{C}) where {C <: ConstraintKernelData}
-    N = n_atoms_cluster(C)
-    vibrational_dof_lost = (N == 2) ? D*N - (2*D - 1) : D*(N - 2)
-    return length(constraint_clusters) * vibrational_dof_lost
+    return length(constraint_clusters) * n_constraints(C)
 end
 
-function n_dof(D::Integer, n_atoms::Integer, boundary)
-    return D * n_atoms - (D - n_infinite_dims(boundary))
+# This assumes that the center of mass motion is being removed
+# For infinite boundary systems the rotation around the center of mass is not currently
+#   removed, so this also applies
+function calculate_n_dof(D::Integer, n_atoms::Integer, boundary)
+    return D * (n_atoms - 1)
 end
 
 """
-    apply_position_constraints!(sys, coord_storage)
-    apply_position_constraints!(sys, coord_storage, vel_storage, dt)
+    apply_position_constraints!(sys, coord_storage; context=nothing, n_threads=Threads.nthreads(),
+                                strictness=:warn)
+    apply_position_constraints!(sys, coord_storage, vel_storage, dt; context=nothing,
+                                n_threads=Threads.nthreads(), strictness=:warn)
 
 Apply the coordinate constraints to the system.
 
 If `vel_storage` and `dt` are provided then velocity constraints are applied as well.
 """
 function apply_position_constraints!(sys, coord_storage; context=nothing,
-                                     n_threads::Integer=Threads.nthreads())
+                                     n_threads::Integer=Threads.nthreads(),
+                                     strictness=default_strictness())
     for ca in sys.constraints
-        apply_position_constraints!(sys, ca, coord_storage; context, n_threads=n_threads)
+        apply_position_constraints!(sys, ca, coord_storage; context, n_threads=n_threads,
+                                    strictness=strictness)
     end
     return sys
 end
 
 function apply_position_constraints!(sys, coord_storage, vel_storage, dt;
-                                     context=nothing,
-                                     n_threads::Integer=Threads.nthreads())
+                                     context=nothing, n_threads::Integer=Threads.nthreads(),
+                                     strictness=default_strictness())
     if length(sys.constraints) > 0
         vel_storage .= -sys.coords ./ dt
         for ca in sys.constraints
-            apply_position_constraints!(sys, ca, coord_storage; context, n_threads=n_threads)
+            apply_position_constraints!(sys, ca, coord_storage; context, n_threads=n_threads,
+                                        strictness=strictness)
         end
         sys.velocities .+= vel_storage .+ sys.coords ./ dt
     end
@@ -415,14 +411,16 @@ function apply_position_constraints!(sys, coord_storage, vel_storage, dt;
 end
 
 """
-    apply_velocity_constraints!(sys)
+    apply_velocity_constraints!(sys; context=nothing, n_threads=Threads.nthreads(),
+                                strictness=:warn)
 
 Apply the velocity constraints to the system.
 """
-function apply_velocity_constraints!(sys; context=nothing,
-                                     n_threads::Integer=Threads.nthreads())
+function apply_velocity_constraints!(sys; context=nothing, n_threads::Integer=Threads.nthreads(),
+                                     strictness=default_strictness())
     for ca in sys.constraints
-        apply_velocity_constraints!(sys, ca; context)
+        apply_velocity_constraints!(sys, ca; context=context, n_threads=n_threads,
+                                    strictness=strictness)
     end
     return sys
 end

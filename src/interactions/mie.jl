@@ -43,6 +43,9 @@ end
 
 use_neighbors(inter::Mie) = inter.use_neighbors
 
+required_atom_fields(inter::Mie) = (:σ, :ϵ, :λ,
+            mixing_atom_fields(inter.σ_mixing)..., mixing_atom_fields(inter.ϵ_mixing)...)
+
 function Base.zero(m::Mie{T, W}) where {T, W}
     return Mie(zero(T), zero(T), m.cutoff, m.use_neighbors, m.shortcut, m.σ_mixing,
                m.ϵ_mixing, zero(W), zero(T))
@@ -80,8 +83,7 @@ end
     m = inter.m
     n = inter.n
     const_mn = inter.mn_fac * ϵ
-    σ_r = σ / r
-    params = (m, n, σ_r, const_mn)
+    params = (m, n, σ, const_mn)
 
     f = force_cutoff(cutoff, inter, r, params)
     fdr = (f / r) * dr
@@ -92,7 +94,8 @@ end
     end
 end
 
-function pairwise_force(::Mie, r, (m, n, σ_r, const_mn))
+function pairwise_force(::Mie, r, (m, n, σ, const_mn))
+    σ_r = σ / r
     return -(const_mn / r) * (m * σ_r ^ m - n * σ_r ^ n)
 end
 
@@ -104,7 +107,7 @@ end
                                   special=false,
                                   args...)
     if shortcut_pair(inter.shortcut, atom_i, atom_j, special)
-        return ustrip(zero(dr[1])) * energy_units
+        return zero_pairwise_energy(dr, energy_units)
     end
     σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, special)
     ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, special)

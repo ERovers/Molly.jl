@@ -48,12 +48,26 @@ Custom pairwise interactions should subtype this.
 """
 const PairwiseInteraction = NBodyInteraction{2}
 
+# Whether a pairwise interaction uses velocities in its force/potential energy calculation
+pairwise_uses_velocity(inter) = false
+
+@inline any_uses_velocity(::Union{Tuple{}, @NamedTuple{}}) = false
+@inline function any_uses_velocity(inters)
+    return pairwise_uses_velocity(first(inters)) || any_uses_velocity(Base.tail(inters))
+end
+
+maybe_velocity(velocities, i, ::Val{true}) = velocities[i]
+maybe_velocity(velocities, i, ::Val{false}) = nothing
+
 """
     InteractionList1Atoms(is, inters)
     InteractionList1Atoms(is, inters, types, data=nothing)
     InteractionList1Atoms(inter_type)
 
 A list of specific interactions that involve one atom such as position restraints.
+
+Note that the virial contribution from these interactions is treated as zero, since only
+one coordinate is available and the virial in periodic space requires displacements.
 """
 struct InteractionList1Atoms{I, T, D} <: SpecificInteractionList{1}
     is::I
@@ -397,6 +411,10 @@ function hash(a::InteractionList5Atoms, h::UInt)
     return hash(is, hash(js, hash(ks, hash(ls, hash(ms, hash(inters, hash(types, hash(a.data, h))))))))
 end
 
+function Base.show(io::IO, sil::T) where T <: SpecificInteractionList
+    print(io, nameof(T), " with ", length(sil.is), " interactions of type ", eltype(sil.inters))
+end
+
 function inject_interaction_list(inter::InteractionList1Atoms, params_dic, AT)
     inters_grad = to_device(inject_interaction.(from_device(inter.inters),
                                 inter.types, (params_dic,)), AT)
@@ -575,7 +593,7 @@ default values.
 The types used should be bits types if the GPU is going to be used.
 
 # Arguments
-- `index::Int=1`: the index of the atom in the system. This only needs to be set if
+- `index::Int32=1`: the index of the atom in the system. This only needs to be set if
     it is used in the interactions. The order of atoms is determined by their order
     in the atom vector.
 - `atom_type::T=1`: the type of the atom. This only needs to be set if
@@ -587,21 +605,32 @@ The types used should be bits types if the GPU is going to be used.
 - `ϵ::E=0.0u"kJ * mol^-1"`: the Lennard-Jones depth of the potential well.
 - `λ::L=1.0`: scaling parameter of non-bonded interactions, used for alchemical 
     transformations.
-- `alch_role::Int=CoreRole`: Role of the atom in an alchemical transformation.
+- `alch_role::Int32=CoreRole`: Role of the atom in an alchemical transformation.
 """
-@kwdef struct Atom{T, M, C, S, E, L}
-    index::Int = 1
-    atom_type::T = 1
-    mass::M = 1.0u"g/mol"
-    charge::C = 0.0
-    σ::S = 0.0u"nm"
-    ϵ::E = 0.0u"kJ * mol^-1"
-    λ::L = 1.0
-    alch_role::Int = EnvRole
+struct Atom{T, M, C, S, E, L} # With Float32 numeric fields this fits into 32 bytes
+    index::Int32
+    atom_type::T
+    mass::M
+    charge::C
+    σ::S
+    ϵ::E
+    λ::L
+    alch_role::Int32
+end
+
+# Accept any integer types for the Int32 index/alch_role fields
+function Atom(index, atom_type::T, mass::M, charge::C, σ::S, ϵ::E,
+              λ::L, alch_role) where {T, M, C, S, E, L}
+    return Atom{T, M, C, S, E, L}(index, atom_type, mass, charge, σ, ϵ, λ, alch_role)
+end
+
+function Atom(; index=Int32(1), atom_type=Int32(1), mass=1.0u"g/mol", charge=0.0,
+              σ=0.0u"nm", ϵ=0.0u"kJ * mol^-1", λ=1.0, alch_role=CoreRole)
+    return Atom(index, atom_type, mass, charge, σ, ϵ, λ, alch_role)
 end
 
 function Base.zero(::Atom{T, M, C, S, E, L}) where {T, M, C, S, E, L}
-    return Atom(0, zero(T), zero(M), zero(C), zero(S), zero(E), zero(L), CoreRole)
+    return Atom(Int32(0), zero(T), zero(M), zero(C), zero(S), zero(E), zero(L), CoreRole)
 end
 
 function Base.:+(a1::Atom, a2::Atom)
@@ -1078,7 +1107,7 @@ function System(;
     VF = typeof(virtual_site_flags)
     n_virtual_sites = sum(virtual_site_flags)
 
-    df = n_dof(D, n_atoms - n_virtual_sites, boundary)
+    df = calculate_n_dof(D, n_atoms - n_virtual_sites, boundary)
     if length(constraints) > 0
         for ca in constraints
             for cluster_type in cluster_keys(ca)
@@ -1589,6 +1618,7 @@ from_device(x::StructArray) = replace_storage(Array, x)
 
 to_device(x::Nothing, ::Type{AT}) where AT = nothing
 to_device(x::Array, ::Type{<:Array}) = x
+to_device(x::AT, ::Type{AT}) where {AT <: AbstractArray} = x
 to_device(x, ::Type{AT}) where AT = AT(x)
 
 function Base.deepcopy(t::Tuple)
@@ -1666,7 +1696,7 @@ AtomsBase.hasatomkey(s::Union{System, ReplicaSystem}, x::Symbol) = x in atomkeys
 AtomsBase.keys(sys::Union{System, ReplicaSystem}) = fieldnames(typeof(sys))
 AtomsBase.haskey(sys::Union{System, ReplicaSystem}, x::Symbol) = hasfield(typeof(sys), x)
 Base.getindex(sys::Union{System, ReplicaSystem}, x::Symbol) =
-    hasfield(typeof(sys), x) ? getfield(sys, x) : KeyError("no field `$x`, allowed keys are $(keys(sys))")
+    hasfield(typeof(sys), x) ? getfield(sys, x) : throw(KeyError("no field `$x`, allowed keys are $(keys(sys))"))
 Base.pairs(sys::Union{System, ReplicaSystem}) = (k => sys[k] for k in keys(sys))
 Base.get(sys::Union{System, ReplicaSystem}, x::Symbol, default) =
     haskey(sys, x) ? getfield(sys, x) : default
@@ -2091,9 +2121,9 @@ function check_strictness(strictness)
     end
 end
 
-function report_issue(err_str, strictness)
+function report_issue(err_str, strictness; maxlog=nothing)
     if strictness == :warn
-        @warn err_str
+        @warn err_str maxlog=maxlog
     elseif strictness == :error
         error(err_str)
     end
