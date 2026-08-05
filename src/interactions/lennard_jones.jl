@@ -64,6 +64,16 @@ function Base.:+(l1::LennardJones, l2::LennardJones)
     )
 end
 
+function to_lambda_function(inter::LennardJones, ::DefaultSoftCore; args...)
+    return LennardJones(cutoff=inter.cutoff, 
+                            use_neighbors=inter.use_neighbors, 
+                            shortcut=inter.shortcut,
+                            σ_mixing=inter.σ_mixing,
+                            ϵ_mixing=inter.ϵ_mixing,
+                            weight_special=inter.weight_special, 
+                            )
+end
+
 function inject_interaction(inter::LennardJones, params_dic)
     key_prefix = "inter_LJ_"
     return LennardJones(
@@ -534,7 +544,7 @@ If ``\lambda`` is zero the interaction is turned off.
 """
 @kwdef struct LennardJonesSoftCoreBeutler{C, A, H, S, E, LM, SCH, W} <: PairwiseInteraction
     cutoff::C = NoCutoff()
-    α::A = 1.0
+    α::A = 0.3
     use_neighbors::Bool = false
     shortcut::H = LJZeroShortcut()
     σ_mixing::S = LorentzMixing()
@@ -578,9 +588,12 @@ function Base.:+(l1::LennardJonesSoftCoreBeutler, l2::LennardJonesSoftCoreBeutle
     )
 end
 
-function to_lambda_function(inter::LennardJones, gapsys::Val{false}; α=T(1.0), λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    return LennardJonesSoftCoreBeutler(cutoff=inter.cutoff, α=α, use_neighbors=inter.use_neighbors, shortcut=inter.shortcut, 
-                                        σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing, λ_mixing=λ_mixing, scheduler=scheduler, 
+function to_lambda_function(inter::LennardJones, ::BeutlerSoftCore; α=0.3, λ_mixing=MinimumMixing(), 
+                            scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+    return LennardJonesSoftCoreBeutler(cutoff=inter.cutoff, α=float_type(α), 
+                                        use_neighbors=inter.use_neighbors, shortcut=inter.shortcut, 
+                                        σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing, 
+                                        λ_mixing=λ_mixing, scheduler=scheduler, 
                                         weight_special=inter.weight_special)
 end
 
@@ -820,9 +833,12 @@ function Base.:+(l1::LennardJonesSoftCoreGapsys, l2::LennardJonesSoftCoreGapsys)
     )
 end
 
-function to_lambda_function(inter::LennardJones, gapsys::Val{true}; α=T(0.85), λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    return LennardJonesSoftCoreGapsys(cutoff=inter.cutoff, α=α, use_neighbors=inter.use_neighbors, shortcut=inter.shortcut, 
-                                        σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing, λ_mixing=λ.mixing, scheduler=scheduler, 
+function to_lambda_function(inter::LennardJones, ::GapsysSoftCore; α=0.85, λ_mixing=MinimumMixing(), 
+                            scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+    return LennardJonesSoftCoreGapsys(cutoff=inter.cutoff, α=float_type(α), 
+                                        use_neighbors=inter.use_neighbors, shortcut=inter.shortcut, 
+                                        σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing, 
+                                        λ_mixing=λ_mixing, scheduler=scheduler, 
                                         weight_special=inter.weight_special)
 end
 
@@ -1210,8 +1226,11 @@ function Base.:+(l1::LennardJones14SoftCoreGapsys, l2::LennardJones14SoftCoreGap
     )
 end
 
-function to_lambda_function(inter::LennardJones14, gapsys::Val{true}; α=T(0.85), λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    return LennardJones14SoftCoreGapsys(σ14_mixed=inter.σ14_mixed, ϵ14_mixed=inter.ϵ14_mixed, weight_14=inter.weight_14, α=α, λ_mixing=λ.mixing, scheduler=scheduler)
+function to_lambda_function(inter::LennardJones14, ::GapsysSoftCore; α=0.85, λ_mixing=MinimumMixing(), 
+                            scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+    return LennardJones14SoftCoreGapsys(σ14_mixed=inter.σ14_mixed, ϵ14_mixed=inter.ϵ14_mixed, 
+                                        weight_14=inter.weight_14, α=float_type(α), λ_mixing=λ.mixing, 
+                                        scheduler=scheduler)
 end
 
 @inline function force(inter::LennardJones14SoftCoreGapsys, coords_i, coords_l, boundary, atoms_i, atoms_l, force_units, args...)

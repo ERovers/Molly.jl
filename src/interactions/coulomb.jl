@@ -66,6 +66,11 @@ function extract_parameters!(params_dic, inter::Coulomb, ff)
     return params_dic
 end
 
+function to_lambda_function(inter::Coulomb, ::DefaultSoftCore; args...)
+    return Coulomb(cutoff=inter.cutoff,use_neighbors=inter.use_neighbors, 
+                    weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
+end
+
 @inline function force(inter::Coulomb{C},
                        dr,
                        atom_i,
@@ -157,6 +162,14 @@ function Base.:+(c1::CoulombScaled, c2::CoulombScaled)
         c1.coulomb_const + c2.coulomb_const,
     )
 end
+
+function to_lambda_function(inter::Coulomb, ::ScaledSoftCore; λ_mixing=MinimumMixing(), 
+    scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+    return CoulombScaled(cutoff=inter.cutoff,use_neighbors=inter.use_neighbors, 
+                            λ_mixing=λ_mixing, scheduler=scheduler,
+                            weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
+end
+
 
 @inline function force(inter::CoulombScaled{C},
                        dr,
@@ -325,7 +338,7 @@ struct CoulombSoftCoreBeutler{C, A, S, E, LM, SCH, W, T} <: PairwiseInteraction
     coulomb_const::T
 end
 
-function CoulombSoftCoreBeutler(; cutoff=NoCutoff(), α=1.0, use_neighbors=false,
+function CoulombSoftCoreBeutler(; cutoff=NoCutoff(), α=0.3, use_neighbors=false,
                                     σ_mixing=LorentzMixing(), ϵ_mixing=GeometricMixing(), 
                                     λ_mixing=MinimumMixing(),
                                     scheduler=DefaultLambdaScheduler(), weight_special=1,
@@ -378,9 +391,12 @@ function Base.:+(c1::CoulombSoftCoreBeutler, c2::CoulombSoftCoreBeutler)
     )
 end
 
-function to_lambda_function(inter::Coulomb, gapsys::Val{false}; α=1.0, λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    return CoulombSoftCoreBeutler(cutoff=inter.cutoff, α=α, use_neighbors=inter.use_neighbors, σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing,
-                                        λ_mixing=λ_mixing, scheduler=scheduler, weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
+function to_lambda_function(inter::Coulomb, ::BeutlerSoftCore; α=0.3, λ_mixing=MinimumMixing(), 
+    scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+    return CoulombSoftCoreBeutler(cutoff=inter.cutoff, α=float_type(α), use_neighbors=inter.use_neighbors, 
+                                    σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing,
+                                    λ_mixing=λ_mixing, scheduler=scheduler,
+                                    weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
 end
 
 @inline function force(inter::CoulombSoftCoreBeutler,
@@ -541,7 +557,7 @@ struct CoulombSoftCoreGapsys{C, A, S, LM, SCH, W, T} <: PairwiseInteraction
     coulomb_const::T
 end
 
-function CoulombSoftCoreGapsys(; cutoff=NoCutoff(), α=1.0, σQ=1.0u"nm", use_neighbors=false,
+function CoulombSoftCoreGapsys(; cutoff=NoCutoff(), α=0.3, σQ=1.0u"nm", use_neighbors=false,
                                     λ_mixing=MinimumMixing(),
                                     scheduler=DefaultLambdaScheduler(), weight_special=1,
                                     coulomb_const=coulomb_const)
@@ -590,8 +606,10 @@ function Base.:+(c1::CoulombSoftCoreGapsys, c2::CoulombSoftCoreGapsys)
     )
 end
 
-function to_lambda_function(inter::Coulomb, gapsys::Val{true}; α=1.0, σQ=1.0u"nm", λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    return CoulombSoftCoreGapsys(cutoff=inter.cutoff, α=α, σQ=σQ, use_neighbors=inter.use_neighbors, λ_mixing=λ_mixing, scheduler=scheduler, 
+function to_lambda_function(inter::Coulomb, ::GapsysSoftCore; α=0.3, σQ=1.0u"nm", λ_mixing=MinimumMixing(), 
+                                scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+    return CoulombSoftCoreGapsys(cutoff=inter.cutoff, α=float_type(α), σQ=float_type(ustrip(σQ))u"nm", 
+                                    use_neighbors=inter.use_neighbors, λ_mixing=λ_mixing, scheduler=scheduler, 
                                     weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
 end
 
@@ -765,6 +783,14 @@ function Base.:+(c1::CoulombReactionField, c2::CoulombReactionField)
     )
 end
 
+function to_lambda_function(inter::CoulombReactionField, ::DefaultSoftCore; args...)
+    return CoulombReactionField(dist_cutoff=inter.dist_cutoff, 
+                                    solvent_dielectric=inter.solvent_dielectric,
+                                    use_neighbors=inter.use_neighbors, 
+                                    weight_special=inter.weight_special, 
+                                    coulomb_const=inter.coulomb_const)
+end
+
 function inject_interaction(inter::CoulombReactionField, params_dic)
     key_prefix = "inter_CRF_"
     return CoulombReactionField(
@@ -860,10 +886,11 @@ end
 The reaction-field Coulomb interaction with charges scaled by an alchemical
 electrostatic scheduler.
 """
-@kwdef struct CoulombReactionFieldScaled{D, S, SCH, W, T} <: PairwiseInteraction
+@kwdef struct CoulombReactionFieldScaled{D, S, LM, SCH, W, T} <: PairwiseInteraction
     dist_cutoff::D
     solvent_dielectric::S = crf_solvent_dielectric
     use_neighbors::Bool = false
+    λ_mixing::LM = MinimumMixing()
     scheduler::SCH = DefaultLambdaScheduler()
     weight_special::W = 1
     coulomb_const::T = coulomb_const
@@ -873,11 +900,12 @@ use_neighbors(inter::CoulombReactionFieldScaled) = inter.use_neighbors
 
 required_atom_fields(::CoulombReactionFieldScaled) = (:charge, :λ, :alch_role)
 
-function Base.zero(coul::CoulombReactionFieldScaled{D, S, SCH, W, T}) where {D, S, SCH, W, T}
+function Base.zero(coul::CoulombReactionFieldScaled{D, S, SCH, W, T}) where {D, S, LN, SCH, W, T}
     return CoulombReactionFieldScaled{D, S, SCH, W, T}(
         zero(D),
         zero(S),
         coul.use_neighbors,
+        coul.λ_mixing,
         coul.scheduler,
         zero(W),
         zero(T),
@@ -889,11 +917,20 @@ function Base.:+(c1::CoulombReactionFieldScaled, c2::CoulombReactionFieldScaled)
         c1.dist_cutoff + c2.dist_cutoff,
         c1.solvent_dielectric + c2.solvent_dielectric,
         c1.use_neighbors,
+        c1.λ_mixing,
         c1.scheduler,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
     )
 end
+
+function to_lambda_function(inter::CoulombReactionField, ::ScaledSoftCore; λ_mixing=MinimumMixing(), 
+                                scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+    return CoulombReactionFieldScaled(dist_cutoff=inter.dist_cutoff,solvent_dielectric=inter.solvent_dielectric,
+                                    use_neighbors=inter.use_neighbors, λ_mixing=λ_mixing, scheduler=scheduler, 
+                                    weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
+end
+
 
 @inline function force(inter::CoulombReactionFieldScaled,
                        dr,
@@ -999,7 +1036,7 @@ struct CoulombSoftCoreBeutlerReactionField{D, S, A, SM, EM, LM, SCH, W, T} <: Pa
     coulomb_const::T
 end
 
-function CoulombSoftCoreBeutlerReactionField(; dist_cutoff, solvent_dielectric=crf_solvent_dielectric, α=1.0,
+function CoulombSoftCoreBeutlerReactionField(; dist_cutoff, solvent_dielectric=crf_solvent_dielectric, α=0.3,
                                               use_neighbors=false, σ_mixing=LorentzMixing(),
                                               ϵ_mixing=GeometricMixing(), λ_mixing=MinimumMixing(),
                                               scheduler=DefaultLambdaScheduler(), weight_special=1,
@@ -1055,10 +1092,14 @@ function Base.:+(c1::CoulombSoftCoreBeutlerReactionField, c2::CoulombSoftCoreBeu
     )
 end
 
-function to_lambda_function(inter::CoulombReactionField, gapsys::Val{false}; α=1.0, λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    return CoulombSoftCoreBeutlerReactionField(dist_cutoff=inter.dist_cutoff, solvent_dielectric=inter.solvent_dielectric, α=α, 
-                                                use_neighbors=inter.use_neighbors, σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing,
-                                                λ_mixing=λ_mixing, scheduler=scheduler, weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
+function to_lambda_function(inter::CoulombReactionField, ::BeutlerSoftCore; α=0.3, λ_mixing=MinimumMixing(), 
+                            scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+    return CoulombSoftCoreBeutlerReactionField(dist_cutoff=inter.dist_cutoff, 
+                                                solvent_dielectric=inter.solvent_dielectric, α=float_type(α), 
+                                                use_neighbors=inter.use_neighbors, σ_mixing=inter.σ_mixing, 
+                                                ϵ_mixing=inter.ϵ_mixing, λ_mixing=λ_mixing, 
+                                                scheduler=scheduler, weight_special=inter.weight_special, 
+                                                coulomb_const=inter.coulomb_const)
 end
 
 @inline function force(inter::CoulombSoftCoreBeutlerReactionField,
@@ -1223,7 +1264,7 @@ struct CoulombSoftCoreGapsysReactionField{D, S, A, SQ, LM, SCH, W, T} <: Pairwis
     coulomb_const::T 
 end
 
-function CoulombSoftCoreGapsysReactionField(; dist_cutoff, solvent_dielectric=crf_solvent_dielectric, α=1.0,
+function CoulombSoftCoreGapsysReactionField(; dist_cutoff, solvent_dielectric=crf_solvent_dielectric, α=0.3,
                                               σQ=1.0u"nm", use_neighbors=false, λ_mixing=MinimumMixing(),
                                               scheduler=DefaultLambdaScheduler(), weight_special=1,
                                               coulomb_const=coulomb_const)
@@ -1275,10 +1316,14 @@ function Base.:+(c1::CoulombSoftCoreGapsysReactionField, c2::CoulombSoftCoreGaps
     )
 end
 
-function to_lambda_function(inter::CoulombReactionField, gapsys::Val{true}; α=1.0, σQ=1.0u"nm", λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    return CoulombSoftCoreGapsysReactionField(dist_cutoff=inter.dist_cutoff, solvent_dielectric=inter.solvent_dielectric, α=α, σQ=σQ, 
-                                    use_neighbors=inter.use_neighbors, λ_mixing=λ_mixing, scheduler=scheduler, 
-                                    weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
+function to_lambda_function(inter::CoulombReactionField, ::GapsysSoftCore; α=0.3, σQ=1.0u"nm", 
+                                λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler(), 
+                                float_type=Float32, args...)
+    return CoulombSoftCoreGapsysReactionField(dist_cutoff=inter.dist_cutoff, 
+                                                solvent_dielectric=inter.solvent_dielectric, α=float_type(α), 
+                                                σQ=float_type(ustrip(σQ))u"nm", use_neighbors=inter.use_neighbors, 
+                                                λ_mixing=λ_mixing, scheduler=scheduler, 
+                                                weight_special=inter.weight_special, coulomb_const=inter.coulomb_const)
 end
 
 @inline function force(inter::CoulombSoftCoreGapsysReactionField,
@@ -1430,15 +1475,15 @@ struct CoulombEwald{T, D, W, C, A} <: PairwiseInteraction
     use_neighbors::Bool
     weight_special::W
     coulomb_const::C
-    α::A
+    α_ewald::A
     approximate_erfc::Bool
 end
 
 function CoulombEwald(; dist_cutoff, error_tol=0.0005, use_neighbors=false,
                       weight_special=1, coulomb_const=coulomb_const, approximate_erfc=true)
-    α = inv(dist_cutoff) * sqrt(-log(2 * error_tol))
+    α_ewald = inv(dist_cutoff) * sqrt(-log(2 * error_tol))
     return CoulombEwald(dist_cutoff, error_tol, use_neighbors, weight_special, coulomb_const,
-                        α, approximate_erfc)
+                        α_ewald, approximate_erfc)
 end
 
 use_neighbors(inter::CoulombEwald) = inter.use_neighbors
@@ -1464,9 +1509,20 @@ function Base.:+(c1::CoulombEwald, c2::CoulombEwald)
         c1.use_neighbors,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
-        c1.α + c2.α,
+        c1.α_ewald + c2.α_ewald,
         c1.approximate_erfc,
     )
+end
+
+function to_lambda_function(inter::CoulombEwald, ::DefaultSoftCore; args...)
+    return CoulombEwald(dist_cutoff=inter.dist_cutoff, 
+                                    error_tol=inter.error_tol,
+                                    use_neighbors=inter.use_neighbors, 
+                                    weight_special=inter.weight_special, 
+                                    coulomb_const=inter.coulomb_const,
+                                    α_ewald=inter.α_ewald,
+                                    approximate_erfc=inter.approximate_erfc,
+                                    )
 end
 
 function inject_interaction(inter::CoulombEwald, params_dic)
@@ -1565,16 +1621,16 @@ struct CoulombEwaldScaled{T, D, LM, SCH, W, C, A} <: PairwiseInteraction
     scheduler::SCH
     weight_special::W
     coulomb_const::C
-    α::A
+    α_ewald::A
     approximate_erfc::Bool
 end
 
 function CoulombEwaldScaled(; dist_cutoff, error_tol=0.0005, use_neighbors=false, λ_mixing=MinimumMixing(),
                             scheduler=DefaultLambdaScheduler(), weight_special=1,
                             coulomb_const=coulomb_const, approximate_erfc=true)
-    α = inv(dist_cutoff) * sqrt(-log(2 * error_tol))
+    α_ewald = inv(dist_cutoff) * sqrt(-log(2 * error_tol))
     return CoulombEwaldScaled(dist_cutoff, error_tol, use_neighbors, λ_mixing, scheduler,
-                              weight_special, coulomb_const, α, approximate_erfc)
+                              weight_special, coulomb_const, α_ewald, approximate_erfc)
 end
 
 use_neighbors(inter::CoulombEwaldScaled) = inter.use_neighbors
@@ -1604,9 +1660,19 @@ function Base.:+(c1::CoulombEwaldScaled, c2::CoulombEwaldScaled)
         c1.scheduler,
         c1.weight_special + c2.weight_special,
         c1.coulomb_const + c2.coulomb_const,
-        c1.α + c2.α,
+        c1.α_ewald + c2.α_ewald,
         c1.approximate_erfc,
     )
+end
+
+function to_lambda_function(inter::CoulombEwald, ::ScaledSoftCore; α=0.3, 
+                                λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler(), 
+                                float_type=Float32, args...)
+    return CoulombEwaldScaled(;dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, 
+                                use_neighbors=inter.use_neighbors, λ_mixing=λ_mixing, 
+                                scheduler=scheduler, weight_special=inter.weight_special, 
+                                coulomb_const=inter.coulomb_const,
+                                approximate_erfc=inter.approximate_erfc)
 end
 
 @inline function force(inter::CoulombEwaldScaled{T},
@@ -1737,7 +1803,7 @@ end
 end
 
 @doc raw"""
-    CoulombSoftCoreBeutlerEwald(; dist_cutoff, error_tol=0.0005, α=1.0,
+    CoulombSoftCoreBeutlerEwald(; dist_cutoff, error_tol=0.0005, α=0.3,
                                 use_neighbors=false, σ_mixing=LorentzMixing(),
                                 ϵ_mixing=GeometricMixing(), λ_mixing=MinimumMixing(),
                                 scheduler=DefaultLambdaScheduler(), weight_special=1,
@@ -1765,7 +1831,7 @@ struct CoulombSoftCoreBeutlerEwald{ET, D, A, SM, EM, LM, SCH, W, C, EA} <: Pairw
     approximate_erfc::Bool
 end
 
-function CoulombSoftCoreBeutlerEwald(; dist_cutoff, error_tol=0.0005, α=1.0,
+function CoulombSoftCoreBeutlerEwald(; dist_cutoff, error_tol=0.0005, α=0.3,
                                      use_neighbors=false, σ_mixing=LorentzMixing(),
                                      ϵ_mixing=GeometricMixing(), λ_mixing=MinimumMixing(),
                                      scheduler=DefaultLambdaScheduler(), weight_special=1,
@@ -1828,11 +1894,13 @@ function Base.:+(c1::CoulombSoftCoreBeutlerEwald, c2::CoulombSoftCoreBeutlerEwal
     )
 end
 
-function to_lambda_function(inter::CoulombEwald, gapsys::Val{false}; α=1.0, λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    return CoulombSoftCoreBeutlerEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, α=α, 
-                                                use_neighbors=inter.use_neighbors, σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing,
-                                                λ_mixing=λ_mixing, scheduler=scheduler, weight_special=inter.weight_special, coulomb_const=inter.coulomb_const,
-                                                α_ewald=inter.α_ewald, approximate_erfc=inter.approximate_erfc)
+function to_lambda_function(inter::CoulombEwald, ::BeutlerSoftCore; α=0.3, 
+                            λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+    return CoulombSoftCoreBeutlerEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, α=float_type(α), 
+                                            use_neighbors=inter.use_neighbors, σ_mixing=inter.σ_mixing, 
+                                            ϵ_mixing=inter.ϵ_mixing, λ_mixing=λ_mixing, scheduler=scheduler, 
+                                            weight_special=inter.weight_special, coulomb_const=inter.coulomb_const,
+                                            α_ewald=inter.α_ewald, approximate_erfc=inter.approximate_erfc)
 end
 
 @inline function force(inter::CoulombSoftCoreBeutlerEwald,
@@ -2005,11 +2073,13 @@ function Base.:+(c1::CoulombSoftCoreGapsysEwald, c2::CoulombSoftCoreGapsysEwald)
     )
 end
 
-function to_lambda_function(inter::CoulombEwald, gapsys::Val{true}; α=1.0, σQ=1.0u"nm", λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    return CoulombSoftCoreGapsysEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, α=α, σQ=σQ, 
-                                    use_neighbors=inter.use_neighbors, λ_mixing=λ_mixing, scheduler=scheduler, 
-                                    weight_special=inter.weight_special, coulomb_const=inter.coulomb_const,
-                                    α_ewald=inter.α_ewald, approximate_erfc=inter.approximate_erfc)
+function to_lambda_function(inter::CoulombEwald, ::GapsysSoftCore; α=0.3, σQ=1.0u"nm", λ_mixing=MinimumMixing(), 
+                                scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+    return CoulombSoftCoreGapsysEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, α=float_type(α), 
+                                        σQ=float_type(ustrip(σQ))u"nm", use_neighbors=inter.use_neighbors, 
+                                        λ_mixing=λ_mixing, scheduler=scheduler, 
+                                        weight_special=inter.weight_special, coulomb_const=inter.coulomb_const,
+                                        α_ewald=inter.α_ewald, approximate_erfc=inter.approximate_erfc)
 end
 
 @inline function force(inter::CoulombSoftCoreGapsysEwald,

@@ -52,10 +52,12 @@
     core_mapAB[4702] = 4702
 
     # --- Hybrid System Setup ---
-    sys = Hybrid_system(sysA, sysB, FT(0.0), mapping, core_mapAB;
+    sys = RelativeFESystem(sysA, sysB, FT(0.0), mapping, core_mapAB;
                             scheduler=Molly.OpenMMTestScheduler(dual=false),
                             array_type=AT, 
                             float_type=FT, 
+                            LJsoftcore="gapsys",
+                            Csoftcore="scaled"
                             )
 
     #--- Load Positions ---
@@ -125,9 +127,7 @@
     )
 
     # --- Energy and Forces for λ=0 ---
-    println("Testing λ=0.0")
     for inter in inters
-        println(inter)
         if inter == "all"
             pin = test_sys.pairwise_inters
         elseif inter == "nonbonded"
@@ -182,10 +182,12 @@
     end
 
     # --- Hybrid System Setup λ=1 ---
-    sys = Hybrid_system(sysA, sysB, FT(1.0), mapping, core_mapAB;
+    sys = RelativeFESystem(sysA, sysB, FT(1.0), mapping, core_mapAB;
                             scheduler=Molly.OpenMMTestScheduler(dual=false),
                             array_type=AT, 
                             float_type=FT, 
+                            LJsoftcore="gapsys",
+                            Csoftcore="scaled"
                             )
 
     #--- Load Positions ---
@@ -240,13 +242,11 @@
     neighbors = find_neighbors(test_sys)
 
     # --- Energy and Forces for λ=1 ---
-    println("Testing λ=1.0")
     neighbors = find_neighbors(test_sys)
     forces_t = Molly.zero_forces(test_sys)
     buffers = Molly.init_buffers!(test_sys, 1)
 
     for inter in inters
-        println(inter)
         if inter == "all"
             pin = test_sys.pairwise_inters
         elseif inter == "nonbonded"
@@ -301,10 +301,12 @@
     end
 
     # --- Hybrid System Setup λ=0.25 ---
-    sys = Hybrid_system(sysA, sysB, FT(0.25), mapping, core_mapAB;
+    sys = RelativeFESystem(sysA, sysB, FT(0.25), mapping, core_mapAB;
                             scheduler=Molly.OpenMMTestScheduler(dual=false),
                             array_type=AT, 
                             float_type=FT, 
+                            LJsoftcore="gapsys",
+                            Csoftcore="scaled"
                             )
 
     #--- Load Positions ---
@@ -359,13 +361,11 @@
     neighbors = find_neighbors(test_sys)
 
     # --- Energy and Forces for λ=0.5 ---
-    println("Testing λ=0.25")
     neighbors = find_neighbors(test_sys)
     forces_t = Molly.zero_forces(test_sys)
     buffers = Molly.init_buffers!(test_sys, 1)
 
     for inter in inters
-        println(inter)
         if inter == "all"
             pin = test_sys.pairwise_inters
         elseif inter == "nonbonded"
@@ -420,10 +420,12 @@
     end
 
     # --- Hybrid System Setup λ=0.5 ---
-    sys = Hybrid_system(sysA, sysB, FT(0.5), mapping, core_mapAB;
+    sys = RelativeFESystem(sysA, sysB, FT(0.5), mapping, core_mapAB;
                             scheduler=Molly.OpenMMTestScheduler(dual=false),
                             array_type=AT, 
                             float_type=FT, 
+                            LJsoftcore="gapsys",
+                            Csoftcore="scaled"
                             )
 
     #--- Load Positions ---
@@ -478,13 +480,11 @@
     neighbors = find_neighbors(test_sys)
 
     # --- Energy and Forces for λ=0.5 ---
-    println("Testing λ=0.5")
     neighbors = find_neighbors(test_sys)
     forces_t = Molly.zero_forces(test_sys)
     buffers = Molly.init_buffers!(test_sys, 1)
 
     for inter in inters
-        println(inter)
         if inter == "all"
             pin = test_sys.pairwise_inters
         elseif inter == "nonbonded"
@@ -539,10 +539,12 @@
     end
 
   # --- Hybrid System Setup λ=0.75 ---
-    sys = Hybrid_system(sysA, sysB, FT(0.75), mapping, core_mapAB;
+    sys = RelativeFESystem(sysA, sysB, FT(0.75), mapping, core_mapAB;
                             scheduler=Molly.OpenMMTestScheduler(dual=false),
                             array_type=AT, 
                             float_type=FT, 
+                            LJsoftcore="gapsys",
+                            Csoftcore="scaled"
                             )
 
     #--- Load Positions ---
@@ -597,13 +599,11 @@
     neighbors = find_neighbors(test_sys)
 
     # --- Energy and Forces for λ=0.5 ---
-    println("Testing λ=0.75")
     neighbors = find_neighbors(test_sys)
     forces_t = Molly.zero_forces(test_sys)
     buffers = Molly.init_buffers!(test_sys, 1)
 
     for inter in inters
-        println(inter)
         if inter == "all"
             pin = test_sys.pairwise_inters
         elseif inter == "nonbonded"

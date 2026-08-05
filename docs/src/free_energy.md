@@ -633,9 +633,11 @@ Now one can put this into a graph, for example using a scatter for the free ener
 ![PMF along the dipeptide torsion in kBT units](images/dihedral_pmf_kbt.png)
 ![PMF along the dipeptide torsion in energy units](images/dihedral_pmf_enr.png)
 
-## Free energies with Relative Free Energy Perturbation (RBFE)
+## Absolute Solvation/Binding Free Energies
 
-### Method overview
+### Hybrid System Setup and Alchemical Interpolation
+
+## Relative Binding Free energies
 
 Relative Binding Free Energy (RBFE) calculations estimate the difference in binding affinity between two chemically related ligands ($\Delta\Delta G_{bind}$) bound to a target protein. Rather than simulating the physical unbinding process directly, RBFE employs a thermodynamic cycle that transforms Ligand A into Ligand B in both the bound state (complexed with the protein in solvent) and the unbound state (ligand in solvent alone).          
 
@@ -653,7 +655,7 @@ The relative binding free energy is calculated using the thermodynamic cycle clo
 
 $$\Delta\Delta G = \Delta G_{bind}(B) - \Delta G_{bind}(A) = \Delta G_{bound}(A \to B) - \Delta G_{solv}(A \to B)$$
 
-### Hybrid Topology and Alchemical Interpolation
+### Hybrid System Setup and Alchemical Interpolation
 
 To transform Ligand A into Ligand B along a single continuous coordinate, the system can be set up using single toplogy (OpenFE) or dual topology. In a single topology, shared atoms between ligands (Core atoms) retain their physical identity, with parameters (charges, vdW, bonds, angles) linearly interpolated along an alchemical coupling parameter $\lambda \in [0, 1]$. Atoms present in only one ligand (Unique atoms) are smoothly created or decoupled using soft-core potentials for electrostatic and van der Waals interactions to prevent numerical singularities at $\lambda \to 0$ and $\lambda \to 1$. In a dual topology, virtual atoms are added for the core atoms representing the core atoms in ligand B along with the unique atoms for each ligand. 
 
@@ -679,45 +681,8 @@ Molly.OpenMMTestScheduler(dual=false) # Single topology
 ```
 the default is dual topology while in OpenFE single topology is used.
 
-### Replica Exchange Molecular Dynamics (REMD)
-
-To enhance sampling across free energy barriers along the alchemical path, Molly runs $N$ simultaneous replicas across a discrete ladder of $\lambda$-states:
-$$\lambda_0 = 0.0 < \lambda_1 < \lambda_2 < \dots < \lambda_{N-1} = 1.0$$
-
-At fixed intervals (`exchange_freq`), Molly attempts exchanges between adjacent thermodynamic states $i$ and $j$ occupied by configurations $x_i$ and $x_j$. Swaps are accepted according to the Metropolis-Hastings criterion:
-
-$$P_{\text{acc}}(i \leftrightarrow j) = \min\left(1, \exp\left(-\Delta \Delta u\right)\right)$$
-
-where the reduced energy difference is defined as:
-
-$$\Delta \Delta u = \left[ u_j(x_i) + u_i(x_j) \right] - \left[ u_i(x_i) + u_j(x_j) \right]$$
-
-### Free Energy Estimator
-After the simulation completes, Molly uses the Multistate Bennett Acceptance Ratio (MBAR) to reweight the sampled energy differences across all replicas and estimate the free energy difference $\Delta G$ between $\lambda = 0$ and $\lambda = 1$:
-
-$$\hat{f}_k = -\log \sum_{i=1}^K \sum_{n=1}^{N_i} \frac{\exp\left[-u_k(x_{i,n})\right]}{\sum_{j=1}^K N_j \exp\left[\hat{f}_j - u_j(x_{i,n})\right]}$$
-
-### Matching OpenFE default settings
-
-Molly has many more options for running RBFE calculations than OpenFE including different softcore potentials, variety of $\lambda$-scaled bonded energy functions (e.g. CMAP torsions, periodic and harmonic torsion, etc.), lambda schedulers, and the option for either single or dual topology. To match the OpenFE settings and architectural choices for setup, we have implemented the `OpenFEScheduler`. When using `OpenFEScheduler(false)`, the system setup will be performed similar to the system setup in [OpenFE](https://github.com/OpenFreeEnergy/openfe/blob/main/src/openfe/protocols/openmm_rfe/_rfe_utils/relative.py), which uses a single topology and specific setup choices, including:
-
-- Only using a softcore potential for the LennardJones potential, the CoulombEwald direct space is scaled by lambda directly without using a softcore.
-- In CoulombEwald potential, the regular interactions are scaled by lambda as: 
-
-    $$q_{ij} = ((1-\lambda)q^A_i+\lambda q^B_i) \cdot ((1-\lambda)q^A_j+\lambda q^B_j)$$ 
-
-    However, for 1-4 interactions, the charges are scaled as: 
-
-    $$q_{ij} = (1-\lambda)(q^A_iq^A_j) + \lambda(q^B_iq^B_j)$$
-
-- Atoms from the molecules (both core and unique atoms) are not contributing to the LJDispersionCorrection (OpenFE has set epsilons of ligands to 0), but are counted in the number of particles that is used in the averages for the F6 and F12 terms.
-- For all bonded interaction potentials, the parameters are scaled, for example for the Harmonic Bond potential the `k` is scaled as: $$k = (1-\lambda)k_A + \lambda k_B$$. However, for the periodic torsions, the energies are scaled rather than the parameters, like: $$E_{torsion} = (1-\lambda)E^A_{torsion} + \lambda E^B_{torsion}$$
-
-All the settings have been tested by comparing energies and forces between Molly and OpenFE, and test is included in the testing module.
-
-### Example of running RBFE in Molly
-
-Here in this example, we will show how to setup a hybrid system to interpolate between two ligands for TYK2 (ejm31 and ejm50) using the OpenFE settings.
+### Example set up for relative binding free energy
+Here we demonstrate how to set up a hybrid system to interpolate between two ligands for TYK2 (ejm31 and ejm50) using the OpenFE settings. See below how OpenFE settings were matched using Molly settings.
 ![The TYK2 ligands](images/ejm31_ejm50.png)
 
 First, we have to load the individual systems and create a mapping to specify which atom indexes are the unique A, unique B, and core atoms. Also, a map on how the core atoms are mapped between A -> B.
@@ -801,9 +766,42 @@ sys = Hybrid_system(sysA,
                     )
 ```
 
+### Matching OpenFE default settings
+
+Molly has many more options for running RBFE calculations than OpenFE including different softcore potentials, variety of $\lambda$-scaled bonded energy functions (e.g. CMAP torsions, periodic and harmonic torsion, etc.), lambda schedulers, and the option for either single or dual topology. To match the OpenFE settings and architectural choices for setup, we have implemented the `OpenFEScheduler`. When using `OpenFEScheduler(false)`, the system setup will be performed similar to the system setup in [OpenFE](https://github.com/OpenFreeEnergy/openfe/blob/main/src/openfe/protocols/openmm_rfe/_rfe_utils/relative.py), which uses a single topology and specific setup choices, including:
+
+- Only using a softcore potential for the LennardJones potential, the CoulombEwald direct space is scaled by lambda directly without using a softcore.
+- In CoulombEwald potential, the regular interactions are scaled by lambda as: 
+
+    $$q_{ij} = ((1-\lambda)q^A_i+\lambda q^B_i) \cdot ((1-\lambda)q^A_j+\lambda q^B_j)$$ 
+
+    However, for 1-4 interactions, the charges are scaled as: 
+
+    $$q_{ij} = (1-\lambda)(q^A_iq^A_j) + \lambda(q^B_iq^B_j)$$
+
+- Atoms from the molecules (both core and unique atoms) are not contributing to the LJDispersionCorrection (OpenFE has set epsilons of ligands to 0), but are counted in the number of particles that is used in the averages for the F6 and F12 terms.
+- For all bonded interaction potentials, the parameters are scaled, for example for the Harmonic Bond potential the `k` is scaled as: $$k = (1-\lambda)k_A + \lambda k_B$$. However, for the periodic torsions, the energies are scaled rather than the parameters, like: $$E_{torsion} = (1-\lambda)E^A_{torsion} + \lambda E^B_{torsion}$$
+
+All the settings have been tested by comparing energies and forces between Molly and OpenFE, and test is included in the testing module.
+
+## Free energies with REMD
+### Method overview
+To enhance sampling across free energy barriers along the alchemical path, Molly runs $N$ simultaneous replicas across a discrete ladder of $\lambda$-states:
+$$\lambda_0 = 0.0 < \lambda_1 < \lambda_2 < \dots < \lambda_{N-1} = 1.0$$
+
+At fixed intervals (`exchange_freq`), Molly attempts exchanges between adjacent thermodynamic states $i$ and $j$ occupied by configurations $x_i$ and $x_j$. Swaps are accepted according to the Metropolis-Hastings criterion:
+
+$$P_{\text{acc}}(i \leftrightarrow j) = \min\left(1, \exp\left(-\Delta \Delta u\right)\right)$$
+
+where the reduced energy difference is defined as:
+
+$$\Delta \Delta u = \left[ u_j(x_i) + u_i(x_j) \right] - \left[ u_i(x_i) + u_j(x_j) \right]$$
 
 
+### Free Energy Estimator
+After the simulation completes, Molly uses the Multistate Bennett Acceptance Ratio (MBAR) to reweight the sampled energy differences across all replicas and estimate the free energy difference $\Delta G$ between $\lambda = 0$ and $\lambda = 1$:
 
+$$\hat{f}_k = -\log \sum_{i=1}^K \sum_{n=1}^{N_i} \frac{\exp\left[-u_k(x_{i,n})\right]}{\sum_{j=1}^K N_j \exp\left[\hat{f}_j - u_j(x_{i,n})\right]}$$
 
 ## Free energies with AWH
 

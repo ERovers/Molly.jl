@@ -1,3 +1,4 @@
+# Alchemical Roles
 const AlchemicalRole = Int32
 
 const EnvRole::AlchemicalRole    = Int32(0)
@@ -6,6 +7,14 @@ const CoreIRole::AlchemicalRole  = Int32(2)
 const CoreDRole::AlchemicalRole  = Int32(3)
 const InsertRole::AlchemicalRole = Int32(4)
 const DeleteRole::AlchemicalRole = Int32(5)
+
+# SoftCore potential options
+abstract type SoftCore end
+
+struct DefaultSoftCore <: SoftCore end
+struct BeutlerSoftCore <: SoftCore end
+struct GapsysSoftCore  <: SoftCore end
+struct ScaledSoftCore  <: SoftCore end
 
 # Rule for combining roles during a pairwise interaction.
 # Dispatched on the scheduler to allow custom overriding by users.
@@ -50,6 +59,9 @@ function switchAB(alch_role::Val{InsertRole}, A, B)
 end
 
 @kwdef struct DefaultLambdaScheduler
+    dual::Bool = true
+end
+@kwdef struct LinearLambdaScheduler
     dual::Bool = true
 end
 @kwdef struct OpenMMTestScheduler 

@@ -64,6 +64,30 @@ end
     end
 end
 
+###############################
+### Linear Lambda Scheduler ###
+###############################
+
+@inline function scale_sterics(::LinearLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{true}, args...) where T
+    if role == InsertRole || role == CoreIRole
+        return λ, one(λ), one(λ)
+    elseif role == DeleteRole || role == CoreDRole
+        return (1-λ), one(λ), one(λ)
+    else
+        return one(λ), one(λ), one(λ)
+    end
+end
+
+@inline function scale_elec(::DefaultLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{true}, args...) where T
+    if role == InsertRole || role == CoreIRole
+        return λ, one(λ), one(λ)
+    elseif role == DeleteRole || role == CoreDRole
+        return (1-λ), one(λ), one(λ)
+    else
+        return one(λ), one(λ)
+    end
+end
+
 #############################
 ### OpenMM Test Scheduler ###
 #############################
