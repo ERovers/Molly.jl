@@ -1,12 +1,11 @@
 const AlchemicalRole = Int32
 
-const EnvRole::AlchemicalRole    = 0
-const CoreRole::AlchemicalRole   = 1
-const CoreIRole::AlchemicalRole  = 2
-const CoreDRole::AlchemicalRole  = 3
-const InsertRole::AlchemicalRole = 4
-const DeleteRole::AlchemicalRole = 5
-const ProbRole::AlchemicalRole   = 6
+const EnvRole::AlchemicalRole    = Int32(0)
+const CoreRole::AlchemicalRole   = Int32(1)
+const CoreIRole::AlchemicalRole  = Int32(2)
+const CoreDRole::AlchemicalRole  = Int32(3)
+const InsertRole::AlchemicalRole = Int32(4)
+const DeleteRole::AlchemicalRole = Int32(5)
 
 # Rule for combining roles during a pairwise interaction.
 # Dispatched on the scheduler to allow custom overriding by users.
@@ -57,8 +56,5 @@ end
     dual::Bool = true
 end
 @kwdef struct EleScaledLambdaScheduler 
-    dual::Bool = true
-end
-@kwdef struct ProbabilityLambdaScheduler 
     dual::Bool = true
 end
