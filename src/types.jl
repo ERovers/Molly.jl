@@ -1578,7 +1578,7 @@ function ReplicaSystem(sys::ReplicaSystem;
                          typeof(sys.exchange_logger), typeof(sys.data)}(sys.partition, sys.n_replicas, sys.betas, sys.integrators, replica_coords, replica_velocities, 
         sys.replica_boundaries, sys.replica_neighbor_finders, sys.replica_loggers, 
         sys.state_pairwise_inters, sys.state_specific_inter_lists, sys.state_general_inters,
-        sys.state_indices, sys.exchange_logger, sys.data
+        sys.state_indices, sys.exchange_logger, sys.current_step, true, sys.data
     )
 end
 

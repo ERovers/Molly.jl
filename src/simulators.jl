@@ -1767,7 +1767,7 @@ function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
     remaining_steps = n_cycles > 0 ? n_steps % n_cycles : n_steps
     n_attempts = 0
 
-    progress = setup_progress(n_cycles, show_progress)
+    progress = setup_progress(n_steps, show_progress)
     for cycle in 1:n_cycles
         futures = Future[]
         @sync for i in 1:n_proc
@@ -1810,7 +1810,8 @@ function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
             Δ, exchanged = remd_exchange!(sys, remd_sim, n, m; rng=rng)
             
             if run_loggers != false && exchanged && !isnothing(sys.exchange_logger)
-                log_property!(sys.exchange_logger, sys, nothing, nothing, cycle * cycle_length;
+                log_property!(sys.exchange_logger, sys, nothing,
+                              init_step + cycle * cycle_length, nothing;
                               indices=(n, m), delta=Δ, n_threads=n_threads)
             end
         end
@@ -1851,13 +1852,23 @@ function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
             sys.replica_velocities[i] = velocities
             sys.replica_loggers[i] = loggers
         end
-        next_nograd!(progress)
+        sys.initial_log_pending = false
     end
 
     if run_loggers != false && !isnothing(sys.exchange_logger)
-        finish_logs!(sys.exchange_logger; n_steps=n_steps, n_attempts=n_attempts)
+        if sys.exchange_logger isa ReplicaExchangeLogger
+            finish_logs!(
+                sys.exchange_logger;
+                n_steps=n_steps,
+                n_attempts=n_attempts,
+                end_step=init_step + n_steps,
+            )
+        else
+            finish_logs!(sys.exchange_logger; n_steps=n_steps, n_attempts=n_attempts)
+        end
     end
-
+    sys.current_step = init_step + n_steps
+    
     return sys
 end
 
