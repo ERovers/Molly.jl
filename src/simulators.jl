@@ -2161,7 +2161,7 @@ function simulate_remd!(sys::ReplicaSystem,
             # Enforce n_threads >= 1 to prevent buffer chunk crashes
             Threads.@spawn simulate!(active_sys, integrator, cycle_length;
                                      n_threads=max(1, thread_div[i]), run_loggers=run_loggers_used,
-                                     init_step=cycle_start_step, check_nans=check_nans,
+                                     init_step=cycle_start_step, check_nans=check_nans, show_progress=false,
                                      rng=rng, strictness=strictness)
         end
         sys.initial_log_pending = false
@@ -2202,7 +2202,7 @@ function simulate_remd!(sys::ReplicaSystem,
             
             Threads.@spawn simulate!(active_sys, integrator, remaining_steps;
                                      n_threads=max(1, thread_div[i]), run_loggers=run_loggers_used,
-                                     init_step=remainder_start_step, check_nans=check_nans,
+                                     init_step=remainder_start_step, check_nans=check_nans, show_progress=false,
                                      rng=rng, strictness=strictness)
         end
         sys.initial_log_pending = false
@@ -2249,10 +2249,16 @@ function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
                         shortcut=nothing, # Unused
                         init_step::Integer=0, # Unused
                         show_progress=default_show_progress(),
+                        check_nans=default_check_nans(sys, remd_sim),
                         rng=Random.default_rng(),
                         strictness=default_strictness(),
                         gpu_devices=get_gpu_devices(Val(true)))
-    check_strictness(strictness)
+    check_simulate_inputs(init_step, run_loggers, strictness)
+    if rng != Random.default_rng()
+        throw(ArgumentError("rng for simulate_remd! must be Random.default_rng() " *
+                            "to avoid race conditions"))
+    end
+    sys.current_step = init_step
     n_steps = calc_n_steps(n_steps_or_time, remd_sim.dt)
     rep_id_proc, n_proc = divide_gpus((nprocs()-1), gpu_devices, sys.n_replicas, sys)
 
@@ -2268,6 +2274,8 @@ function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
 
     progress = setup_progress(n_steps, show_progress)
     for cycle in 1:n_cycles
+        cycle_start_step = init_step + (cycle - 1) * cycle_length
+        run_loggers_used = (run_loggers == false ? false : (sys.initial_log_pending ? true : :skipstart))
         futures = Future[]
         @sync for i in 1:n_proc
             pid = workers()[i]
@@ -2285,8 +2293,9 @@ function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
                         loggers = sys.replica_loggers[state_idx]
                     )
                     simulate!(active_sys, integrator, cycle_length;
-                                n_threads=1, run_loggers=run_loggers,
-                                rng=rng, strictness=strictness, show_progress=false)
+                                n_threads=1, run_loggers=run_loggers_used,
+                                init_step=cycle_start_step, check_nans=check_nans, show_progress=false,
+                                rng=rng, strictness=strictness)
                     results[id] = (Molly.from_device(active_sys.coords), active_sys.boundary, Molly.from_device(active_sys.velocities), active_sys.loggers)
                 end
                 return results
@@ -2301,6 +2310,7 @@ function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
             sys.replica_velocities[i] = velocities
             sys.replica_loggers[i] = loggers
         end
+        sys.initial_log_pending = false
 
         cycle_parity = cycle % 2
         for n in (1 + cycle_parity):2:(sys.n_replicas - 1)
@@ -2319,6 +2329,8 @@ function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
 
     if remaining_steps > 0
         futures = Future[]
+        remainder_start_step = init_step + n_cycles * cycle_length
+        run_loggers_used = (run_loggers == false ? false : (sys.initial_log_pending ? true : :skipstart))
         @sync for i in 1:n_proc
             pid = workers()[i]
             f = remotecall(pid, rep_id_proc[i], sys, cycle_length, run_loggers, rng, strictness) do rep_ids, sys, cycle_length, run_loggers, rng, strictness
@@ -2335,8 +2347,9 @@ function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
                         loggers = sys.replica_loggers[state_idx]
                     )
                     simulate!(active_sys, integrator, cycle_length;
-                                n_threads=1, run_loggers=run_loggers,
-                                rng=rng, strictness=strictness, show_progress=false)
+                                n_threads=1, run_loggers=run_loggers_used,
+                                init_step=remainder_start_step, check_nans=check_nans, show_progress=false,
+                                rng=rng, strictness=strictness)
                     results[id] = (Molly.from_device(active_sys.coords), active_sys.boundary, Molly.from_device(active_sys.velocities), active_sys.loggers)
                 end
                 return results

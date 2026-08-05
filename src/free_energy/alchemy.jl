@@ -14,8 +14,14 @@ const DeleteRole::AlchemicalRole = Int32(5)
         return InsertRole
     elseif role_i == DeleteRole || role_j == DeleteRole
         return DeleteRole
-    else
+    elseif role_i == CoreIRole || role_j == CoreIRole
+        return CoreIRole
+    elseif role_i == CoreDRole || role_j == CoreDRole
+        return CoreDRole
+    elseif role_i == CoreRole || role_j == CoreRole
         return CoreRole
+    else
+        return EnvRole
     end
 end
 

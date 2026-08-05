@@ -346,7 +346,7 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     S = typeof(at.σ)
     E = typeof(at.ϵ)
     E0 = zero.(at.ϵ)
-    classCounts = Dict{Tuple{S, E, T, Int}, Int}()
+    classCounts = Dict{Tuple{S, E, T, Int32}, Int}()
     nλ_atoms = 0
     for i in 1:n_atoms
         atom_i = atoms_cpu[i]
@@ -595,7 +595,7 @@ end
     T = typeof(ustrip(atom_i.λ))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
@@ -665,7 +665,7 @@ end
     T = typeof(ustrip(atom_i.λ))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
@@ -1067,7 +1067,7 @@ end
 
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
     ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
@@ -1110,7 +1110,7 @@ end
 
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
     ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
@@ -1219,7 +1219,7 @@ end
     dr = vector(coords_i, coords_l, boundary)
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     if λ <= 0
         return SpecificForce2Atoms(zero(dr)*force_units, zero(dr)*force_units)
@@ -1271,7 +1271,7 @@ end
     dr = vector(coords_i, coords_l, boundary)
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role)
+    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     if λ <= 0
         return ustrip(zero(dr[1])) * energy_units

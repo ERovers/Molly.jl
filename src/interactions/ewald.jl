@@ -301,7 +301,7 @@ is based on the smooth PME algorithm from
 Only compatible with 3D systems.
 Not compatible with infinite boundaries.
 """
-struct PME{T, D, A, I, M, BM, C, CB, RB, VB, PB, P, F, B, SCH} <: AbstractEwald
+struct PME{T, D, A, I, M, BM, C, RG, CB, RB, VB, PB, P, F, B, SCH} <: AbstractEwald
     dist_cutoff::D
     error_tol::T
     order::Int
@@ -465,7 +465,7 @@ function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5,
     bsm_z = to_device(bsplines_moduli[3], AT)
 
     return PME(dist_cutoff, error_tol_T, order, T(ϵr), α, mesh_dims, grid_indices, grid_fractions,
-               bsplines_θ, bsplines_dθ, bsm_x, bsm_y, bsm_z, charge_grid, charge_grid_buffer,
+               bsplines_θ, bsplines_dθ, bsm_x, bsm_y, bsm_z, charge_grid, recip_grid, charge_grid_buffer,
                recip_conv_buffer, virial_buffer, partial_charge_buffer, pc_sum, pc_abs2_sum, fft_plan, bfft_plan,
                scheduler, grad_safe)
 end

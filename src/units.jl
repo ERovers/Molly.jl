@@ -111,8 +111,12 @@ function check_other_units(atoms_dev, boundary, sys_units::NamedTuple)
             throw(ArgumentError("Atom σ has $(σ_units[1]) units but length unit on coords " *
                                 "was $(sys_units[:length])"))
         end
-        if hasproperty(at, :ϵ) && at.ϵ != 0.0u"kJ * mol^-1" && unit(at.ϵ) != sys_units[:energy]
-            throw(ArgumentError("Atom ϵ has $(unit(at.ϵ)) units but system energy unit " *
+    end
+
+    if !all(epsilons .== 0.0u"kJ * mol^-1")
+        ϵ_units = unit.(epsilons)
+        if !all(sys_units[:energy] .== ϵ_units)
+            throw(ArgumentError("Atom ϵ has $(ϵ_units[1]) units but system energy unit " *
                                 "was $(sys_units[:energy])"))
         end
     end

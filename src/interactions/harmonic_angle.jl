@@ -163,7 +163,8 @@ end
     λ, λ_params = scale(a.scheduler, λ_glob, pair_role, Val(a.scheduler.dual))
     k = params_mixing(λ_params, a.k)
     θ0 = params_mixing(λ_params, a.θ0)
-    angle_term = -k * (acosbound(dot(ba, bc) / (norm(ba) * norm(bc))) - θ0)
+
+    angle_term = -k * (acos_bound(dot(ba, bc) / (norm(ba) * norm(bc))) - θ0)
     fa = (angle_term / norm(ba)) * pa
     fc = (angle_term / norm(bc)) * pc
     fb = -fa - fc

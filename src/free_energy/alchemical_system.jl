@@ -33,7 +33,7 @@ original system and λ-mediated atoms.
 - `ff`: MolecularForceField struct that is used to parametrize the system.
 - `sys`: The system in which a residue is going to be mutated.
 - `params_dic`: A dictionary of the substitutions and the λ-values
-- `temp = T(298.0)u"K"`: Temperature to generate random velocities for the system, standard is 298K.
+- `temp = 298.0u"K"`: Temperature to generate random velocities for the system, standard is 298K.
 """
 
 
@@ -443,7 +443,7 @@ end
 # System B is only used for the Unique system B atoms and the parameters for Core atoms
 
 function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapAB; 
-                        temp = T(298.0)u"K", 
+                        temp = 298.0u"K", 
                         units=true,
                         scheduler=DefaultLambdaScheduler(dual=true),
                         loggers=(),
@@ -455,6 +455,9 @@ function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapA
     if float_type!=typeof(global_λ)
         @warn "Float type of global_λ does not match float_type argument. Using float_type of global_λ."
         FT = typeof(global_λ)
+    end
+    if float_type!=typeof(ustrip(temp))
+        temp = units ? FT(ustrip(temp))u"K" : FT(ustrip(temp))
     end
     AT = array_type
     S = typeof(sysA.atoms[1].σ)
@@ -495,7 +498,7 @@ function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapA
         cB = sysB.coords[core_mapAB[i]]
         if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=aA.atom_type, mass=aA.mass, charge=aA.charge, σ=aA.σ, ϵ=aA.ϵ, 
-                                                λ=T(global_λ), alch_role=CoreDRole))
+                                                λ=FT(global_λ), alch_role=CoreDRole))
             if chain!=d.chain_id
                 chain = d.chain_id
                 res_n = 0
@@ -512,8 +515,8 @@ function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapA
             push!(unique_groups["sysA"], counter)
             counter += 1
 
-            push!(Atoms, Atom(index=counter, atom_type=aB.atom_type, mass=(units ? T(0.0)u"g/mol" : T(0.0)), charge=aB.charge, σ=aB.σ, ϵ=aB.ϵ, 
-                                                λ=T(global_λ), alch_role=CoreIRole))
+            push!(Atoms, Atom(index=counter, atom_type=aB.atom_type, mass=(units ? FT(0.0)u"g/mol" : FT(0.0)), charge=aB.charge, σ=aB.σ, ϵ=aB.ϵ, 
+                                                λ=FT(global_λ), alch_role=CoreIRole))
             push!(Virtual, OneParticleSite(counter, counter-1))
             push!(Data, AtomData(atom_type=dB.atom_type, atom_name=dB.atom_name, res_number=dB.res_number,
                                         res_name=dB.res_name, chain_id=dB.chain_id, element=dB.element, hetero_atom=dB.hetero_atom))
@@ -523,7 +526,7 @@ function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapA
             counter += 1
         else
             push!(Atoms, Atom(index=counter, atom_type=aA.atom_type, mass=aA.mass, charge=(aA.charge, aB.charge), σ=(aA.σ, aB.σ), ϵ=(aA.ϵ, aB.ϵ),
-                                                λ=T(global_λ), alch_role=CoreRole))
+                                                λ=FT(global_λ), alch_role=CoreRole))
             if chain!=dA.chain_id
                 chain = dA.chain_id
                 res_n = 0
@@ -549,11 +552,11 @@ function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapA
         c = sysA.coords[i]
         if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                                λ=T(global_λ), alch_role=DeleteRole))
+                                                λ=FT(global_λ), alch_role=DeleteRole))
         else
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(a.charge, zero(a.charge)), 
                                     σ=(a.σ, a.σ), ϵ=(a.ϵ, zero(a.ϵ)), 
-                                    λ=T(global_λ), alch_role=DeleteRole))
+                                    λ=FT(global_λ), alch_role=DeleteRole))
         end
         if chain!=d.chain_id
             chain = d.chain_id
@@ -583,7 +586,7 @@ function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapA
         else
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(zero(a.charge), a.charge), 
                                     σ=(a.σ, a.σ), ϵ=(zero(a.ϵ),   a.ϵ),
-                                    λ=T(global_λ), alch_role=InsertRole))
+                                    λ=FT(global_λ), alch_role=InsertRole))
         end
         if chain!=d.chain_id
             chain = d.chain_id
@@ -609,10 +612,10 @@ function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapA
         c = sysA.coords[i]
         if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                                λ=T(1.0), alch_role=EnvRole))
+                                                λ=FT(1.0), alch_role=EnvRole))
         else
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(a.charge, a.charge), σ=(a.σ, a.σ), ϵ=(a.ϵ, a.ϵ),
-                                    λ=T(1.0), alch_role=EnvRole))
+                                    λ=FT(1.0), alch_role=EnvRole))
         end
         if chain!=d.chain_id
             chain = d.chain_id
@@ -811,19 +814,19 @@ function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapA
     PairInteraction = []
     for inter in sysA.pairwise_inters
         if inter isa LennardJones
-            push!(PairInteraction, LennardJonesSoftCoreGapsys(cutoff=inter.cutoff, α=T(0.85), use_neighbors=inter.use_neighbors,  
+            push!(PairInteraction, LennardJonesSoftCoreGapsys(cutoff=inter.cutoff, α=FT(0.85), use_neighbors=inter.use_neighbors,  
                                                     shortcut=inter.shortcut, σ_mixing=inter.σ_mixing, ϵ_mixing=inter.ϵ_mixing,
                                                     λ_mixing=MinimumMixing(),scheduler=scheduler, weight_special=inter.weight_special))
         elseif inter isa Coulomb
             push!(PairInteraction, CoulombSoftCoreGapsys(cutoff=inter.cutoff,
-                                                    α=T(0.6), σQ=units ? T(1.0)u"nm" : T(1.0),
+                                                    α=FT(0.6), σQ=units ? FT(1.0)u"nm" : FT(1.0),
                                                     use_neighbors=inter.use_neighbors, λ_mixing=MinimumMixing(),
                                                     scheduler=scheduler,
                                                     weight_special=inter.weight_special, 
                                                     coulomb_const=inter.coulomb_const))
         elseif inter isa CoulombEwald && scheduler isa DefaultLambdaScheduler
             push!(PairInteraction, CoulombSoftCoreGapsysEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, 
-                                                    α=T(0.6), σQ=units ? T(1.0)u"nm" : T(1.0),
+                                                    α=FT(0.6), σQ=units ? FT(1.0)u"nm" : FT(1.0),
                                                     use_neighbors=inter.use_neighbors, λ_mixing=MinimumMixing(),
                                                     scheduler=scheduler,
                                                     weight_special=inter.weight_special, 
@@ -849,7 +852,7 @@ function Hybrid_system(sysA::System, sysB::System, global_λ, mapping, core_mapA
                                         error_tol=inter.error_tol, fixed_charges=false, scheduler=scheduler),
                         )
             excluded_pairs = find_excluded_pairs(eligible, special)
-            exclusion_data = EwaldExclusionData(T(inter.dist_cutoff); error_tol=T(inter.error_tol), scheduler=scheduler)
+            exclusion_data = EwaldExclusionData(FT(inter.dist_cutoff); error_tol=FT(inter.error_tol), scheduler=scheduler)
             ewald_exclusions = InteractionList2Atoms(
                 to_device([ep[1] for ep in excluded_pairs], AT),
                 to_device([ep[2] for ep in excluded_pairs], AT),
