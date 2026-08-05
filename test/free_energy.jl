@@ -153,7 +153,9 @@
         if inter == "all"
             gis = test_sys.general_inters
         elseif inter == "PME"
-            gis = test_sys.general_inters
+            gis = test_sys.general_inters[1:1]
+        elseif inter == "nonbonded"
+            gis = test_sys.general_inters[2:2]
         else
             gis = ()
         end
@@ -180,8 +182,11 @@
     end
 
     # --- Hybrid System Setup λ=1 ---
-    sys, mappingA, mappingB = Hybrid_system(FT, AT, sysA, sysB, FT(1.0), mapping, core_mapAB, "";
-                                    scheduler=Molly.OpenMMTestScheduler(false), dual=false)
+    sys = Hybrid_system(sysA, sysB, FT(1.0), mapping, core_mapAB;
+                            scheduler=Molly.OpenMMTestScheduler(dual=false),
+                            array_type=AT, 
+                            float_type=FT, 
+                            )
 
     #--- Load Positions ---
     openmm_coords_fp = joinpath(tyk2_dir, "openfe", "positions_openmm.txt")
@@ -267,7 +272,9 @@
         if inter == "all"
             gis = test_sys.general_inters
         elseif inter == "PME"
-            gis = test_sys.general_inters
+            gis = test_sys.general_inters[1:1]
+        elseif inter == "nonbonded"
+            gis = test_sys.general_inters[2:2]
         else
             gis = ()
         end
@@ -294,8 +301,11 @@
     end
 
     # --- Hybrid System Setup λ=0.25 ---
-    sys, mappingA, mappingB = Hybrid_system(FT, AT, sysA, sysB, FT(0.25), mapping, core_mapAB, "";
-                                    scheduler=Molly.OpenMMTestScheduler(false), dual=false)
+    sys = Hybrid_system(sysA, sysB, FT(0.25), mapping, core_mapAB;
+                            scheduler=Molly.OpenMMTestScheduler(dual=false),
+                            array_type=AT, 
+                            float_type=FT, 
+                            )
 
     #--- Load Positions ---
     openmm_coords_fp = joinpath(tyk2_dir, "openfe", "positions_openmm.txt")
@@ -381,7 +391,9 @@
         if inter == "all"
             gis = test_sys.general_inters
         elseif inter == "PME"
-            gis = test_sys.general_inters
+            gis = test_sys.general_inters[1:1]
+        elseif inter == "nonbonded"
+            gis = test_sys.general_inters[2:2]
         else
             gis = ()
         end
@@ -408,8 +420,11 @@
     end
 
     # --- Hybrid System Setup λ=0.5 ---
-    sys, mappingA, mappingB = Hybrid_system(FT, AT, sysA, sysB, FT(0.5), mapping, core_mapAB, "";
-                                    scheduler=Molly.OpenMMTestScheduler(false), dual=false)
+    sys = Hybrid_system(sysA, sysB, FT(0.5), mapping, core_mapAB;
+                            scheduler=Molly.OpenMMTestScheduler(dual=false),
+                            array_type=AT, 
+                            float_type=FT, 
+                            )
 
     #--- Load Positions ---
     openmm_coords_fp = joinpath(tyk2_dir, "openfe", "positions_openmm.txt")
@@ -495,7 +510,9 @@
         if inter == "all"
             gis = test_sys.general_inters
         elseif inter == "PME"
-            gis = test_sys.general_inters
+            gis = test_sys.general_inters[1:1]
+        elseif inter == "nonbonded"
+            gis = test_sys.general_inters[2:2]
         else
             gis = ()
         end
@@ -522,8 +539,11 @@
     end
 
   # --- Hybrid System Setup λ=0.75 ---
-    sys, mappingA, mappingB = Hybrid_system(FT, AT, sysA, sysB, FT(0.75), mapping, core_mapAB, "";
-                                    scheduler=Molly.OpenMMTestScheduler(false), dual=false)
+    sys = Hybrid_system(sysA, sysB, FT(0.75), mapping, core_mapAB;
+                            scheduler=Molly.OpenMMTestScheduler(dual=false),
+                            array_type=AT, 
+                            float_type=FT, 
+                            )
 
     #--- Load Positions ---
     openmm_coords_fp = joinpath(tyk2_dir, "openfe", "positions_openmm.txt")
