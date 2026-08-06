@@ -63,7 +63,7 @@ end
 ### Linear Lambda Scheduler ###
 ###############################
 
-@inline function scale_sterics(::DefaultLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
+@inline function scale_sterics(::LinearLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
     if role == InsertRole 
         return one(λ), λ, λ
     elseif role == DeleteRole 
@@ -75,7 +75,7 @@ end
     end
 end
 
-@inline function scale_elec(::DefaultLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
+@inline function scale_elec(::LinearLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
     if role == InsertRole
         return one(λ), λ
     elseif role == DeleteRole

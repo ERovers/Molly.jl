@@ -51,7 +51,8 @@ end
 @inline electrostatic_lambda(::Any, atom, ::Val{T}) where T = one(T)
 
 @inline function electrostatic_lambda(scheduler, atom::Atom, ::Val{T}) where T
-    return scale_elec(scheduler, T(atom.λ), atom.alch_role, Val(scheduler.dual))
+    dual_val = scheduler.dual ? Val(true) : Val(false)
+    return scale_elec(scheduler, T(atom.λ), atom.alch_role, dual_val)
 end
 
 @inline function effective_charge(atom::Atom, scheduler, ::Val{T}) where T
@@ -387,7 +388,7 @@ end
 
 function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5,
              ϵr=1.0, fixed_charges=true, mesh_dims=nothing, eligible=nothing, special=nothing,
-             scheduler=DefaultLambdaScheduler(), grad_safe=false,
+             scheduler=DefaultLambdaScheduler(dual=true), grad_safe=false,
              n_threads::Integer=Threads.nthreads())
     T = typeof(ustrip(dist_cutoff))
     AT = array_type(atoms)
@@ -759,7 +760,7 @@ end
 # threads of an atom write neighbouring grid points, as in the OpenMM implementation
 @inline function spread_charge_slice!(charge_grid, grid_indices, bsplines_θ, mesh_dims, order,
                                       atoms, scheduler, i, iz, ::Val{T}) where T
-    q = effective_charge(scheduler, atoms[i], Val(T))
+    q = effective_charge(atoms[i], scheduler, Val(T))
     nx, ny, nz = mesh_dims[1], mesh_dims[2], mesh_dims[3]
     @inbounds begin
         x0index, y0index, z0index = grid_indices[1, i], grid_indices[2, i], grid_indices[3, i]
@@ -1043,7 +1044,7 @@ end
     nx, ny, nz = mesh_dims
     fx, fy, fz = zero(T), zero(T), zero(T)
     @inbounds begin
-        q = effective_charge(scheduler, atoms[i], Val(T))
+        q = effective_charge(atoms[i], scheduler, Val(T))
         x0index, y0index, z0index = grid_indices[1, i], grid_indices[2, i], grid_indices[3, i]
         zindex = wrap_grid_index(z0index + iz, nz)
         tz, dtz = bsplines_θ[2*order+iz+1, i], bsplines_dθ[2*order+iz+1, i]

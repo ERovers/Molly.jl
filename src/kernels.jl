@@ -290,7 +290,7 @@ end
             if needs_vir
                 r_ji = vector(coords[j], coords[i], boundary) # Second atom is the reference
                 # Ewald exclusions are already lambda-weighted through charge scaling
-                λ = inters[inter_i] isa EwaldExclusion ? 1 : λ_mixing(MinimumMixing(), atoms[i], atoms[j])
+                λ = inters[inter_i] isa EwaldExclusion ? 1 : λ_mixing(MinimumMixing(), (atoms[i].λ, atoms[j].λ))
                 @inbounds for alpha in 1:D
                     Atomix.@atomic vir[alpha, dim] += λ * ustrip(r_ji[alpha]) * f1val
                 end
@@ -324,8 +324,8 @@ end
             if needs_vir
                 r_ji = vector(coords[j], coords[i], boundary) # r_i - r_j (second atom is the reference, MIC)
                 r_jk = vector(coords[j], coords[k], boundary) # r_k - r_j (second atom is the reference)
-                λ_ji = λ_mixing(MinimumMixing(), atoms[j], atoms[i])
-                λ_jk = λ_mixing(MinimumMixing(), atoms[j], atoms[k])
+                λ_ji = λ_mixing(MinimumMixing(), (atoms[j].λ, atoms[i].λ))
+                λ_jk = λ_mixing(MinimumMixing(), (atoms[j].λ, atoms[k].λ))
                 λ = minimum((λ_ji, λ_jk))
                 @inbounds for alpha in 1:D
                     Atomix.@atomic vir[alpha, dim] += (λ * ustrip(r_ji[alpha]) * f1val +
@@ -364,9 +364,9 @@ end
                 r_ji = vector(coords[j], coords[i], boundary) # r_i - r_j
                 r_jk = vector(coords[j], coords[k], boundary) # r_k - r_j
                 r_jl = vector(coords[j], coords[l], boundary) # r_l - r_j
-                λ_ji = λ_mixing(MinimumMixing(), atoms[j], atoms[i])
-                λ_jk = λ_mixing(MinimumMixing(), atoms[j], atoms[k])
-                λ_jl = λ_mixing(MinimumMixing(), atoms[j], atoms[l])
+                λ_ji = λ_mixing(MinimumMixing(), (atoms[j].λ, atoms[i].λ))
+                λ_jk = λ_mixing(MinimumMixing(), (atoms[j].λ, atoms[k].λ))
+                λ_jl = λ_mixing(MinimumMixing(), (atoms[j].λ, atoms[l].λ))
                 λ = minimum((λ_ji, λ_jk, λ_jl))
                 @inbounds for alpha in 1:D
                     Atomix.@atomic vir[alpha, dim] += (λ * ustrip(r_ji[alpha]) * f1val +
@@ -410,10 +410,10 @@ end
                 r_jk = vector(coords[j], coords[k], boundary) # r_k - r_j
                 r_jl = vector(coords[j], coords[l], boundary) # r_l - r_j
                 r_jm = vector(coords[j], coords[m], boundary) # r_m - r_j
-                λ_ji = λ_mixing(MinimumMixing(), atoms[j], atoms[i])
-                λ_jk = λ_mixing(MinimumMixing(), atoms[j], atoms[k])
-                λ_jl = λ_mixing(MinimumMixing(), atoms[j], atoms[l])
-                λ_jm = λ_mixing(MinimumMixing(), atoms[j], atoms[m])
+                λ_ji = λ_mixing(MinimumMixing(), (atoms[j].λ, atoms[i].λ))
+                λ_jk = λ_mixing(MinimumMixing(), (atoms[j].λ, atoms[k].λ))
+                λ_jl = λ_mixing(MinimumMixing(), (atoms[j].λ, atoms[l].λ))
+                λ_jm = λ_mixing(MinimumMixing(), (atoms[j].λ, atoms[m].λ))
                 λ = minimum((λ_ji, λ_jk, λ_jl, λ_jm))
                 @inbounds for alpha in 1:D
                     Atomix.@atomic vir[alpha, dim] += (λ * ustrip(r_ji[alpha]) * f1val +

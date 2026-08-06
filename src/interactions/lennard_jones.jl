@@ -853,7 +853,11 @@ end
     T = typeof(ustrip(atom_i.mass))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    if inter.scheduler.dual
+        λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(true))
+    else
+        λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(false))
+    end
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
     end
@@ -926,7 +930,11 @@ end
     T = typeof(ustrip(atom_i.mass))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    if inter.scheduler.dual
+        λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(true))
+    else
+        λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(false))
+    end
 
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)

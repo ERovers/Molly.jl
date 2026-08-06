@@ -219,7 +219,7 @@ end
     T = typeof(ustrip(ke))
     pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
     if λ <= 0
-        return zero_pairwise_force(dr, force_units)
+        return zero_pairwise_energy(dr, energy_units)
     end
     qi = params_mixing(λ_params, atom_i.charge)
     qj = params_mixing(λ_params, atom_j.charge)
@@ -1520,7 +1520,6 @@ function to_lambda_function(inter::CoulombEwald, ::DefaultSoftCore; args...)
                                     use_neighbors=inter.use_neighbors, 
                                     weight_special=inter.weight_special, 
                                     coulomb_const=inter.coulomb_const,
-                                    α_ewald=inter.α_ewald,
                                     approximate_erfc=inter.approximate_erfc,
                                     )
 end
@@ -1565,11 +1564,11 @@ end
                        special=false,
                        args...) where T
     r2 = sum(abs2, dr)
-    ke, α = inter.coulomb_const, inter.α
+    ke, α_ewald = inter.coulomb_const, inter.α_ewald
     qi, qj = atom_i.charge, atom_j.charge
     r = sqrt(r2)
     inv_r = inv(r)
-    αr = α * r
+    αr = α_ewald * r
     exp_mαr2 = exp(-αr^2)
     erfc_αr = calc_erfc(αr, exp_mαr2, inter.approximate_erfc)
     f = ke * qi * qj * inv_r^3
@@ -1590,11 +1589,11 @@ end
                                   special=false,
                                   args...)
     r2 = sum(abs2, dr)
-    ke, α = inter.coulomb_const, inter.α
+    ke, α_ewald = inter.coulomb_const, inter.α_ewald
     qi, qj = atom_i.charge, atom_j.charge
     r = sqrt(r2)
     inv_r = inv(r)
-    αr = α * r
+    αr = α_ewald * r
     exp_mαr2 = exp(-αr^2)
     erfc_αr = calc_erfc(αr, exp_mαr2, inter.approximate_erfc)
     pe = ke * qi * qj * inv_r
@@ -1682,7 +1681,7 @@ end
                        force_units=u"kJ * mol^-1 * nm^-1",
                        special=false,
                        args...) where T
-    ke, α = inter.coulomb_const, inter.α
+    ke, α_ewald = inter.coulomb_const, inter.α_ewald
 
     # Logic based on the OpenFE implementation
     # Should be implemented everywhere or not?
@@ -1694,8 +1693,8 @@ end
         qij = atom_i.charge .* atom_j.charge
         qij = params_mixing(λ_params, qij)
     else
-        λ, λi = scale_elec(inter.scheduler, T(atom_i.λ), atom_i.alch_role, Val(inter.scheduler.dual))
-        λ, λj = scale_elec(inter.scheduler, T(atom_j.λ), atom_j.alch_role, Val(inter.scheduler.dual))
+        λ, λi = scale_elec(inter.scheduler, T(atom_i.λ), atom_i.alch_role, Val(false))
+        λ, λj = scale_elec(inter.scheduler, T(atom_j.λ), atom_j.alch_role, Val(false))
         qi = params_mixing(λi, atom_i.charge)
         qj = params_mixing(λj, atom_j.charge)
         qij = qi*qj
@@ -1716,7 +1715,7 @@ end
     end
 
     inv_r = inv(r)
-    αr = α * r
+    αr = α_ewald * r
     exp_mαr2 = exp(-αr^2)
     erfc_αr = calc_erfc(αr, exp_mαr2, inter.approximate_erfc)
     f = ke * qij * inv_r^3
@@ -1738,7 +1737,7 @@ end
                                   energy_units=u"kJ * mol^-1",
                                   special=false,
                                   args...) where T
-    ke, α = inter.coulomb_const, inter.α
+    ke, α_ewald = inter.coulomb_const, inter.α_ewald
     if inter.scheduler.dual
         pair_role, λ, λ_params = softcore_pair_elec_lambda(inter, atom_i, atom_j)
         qij = atom_i.charge * atom_j.charge
@@ -1747,8 +1746,8 @@ end
         qij = atom_i.charge .* atom_j.charge
         qij = params_mixing(λ_params, qij)
     else
-        λ, λi = scale_elec(inter.scheduler, T(atom_i.λ), atom_i.alch_role, Val(inter.scheduler.dual))
-        λ, λj = scale_elec(inter.scheduler, T(atom_j.λ), atom_j.alch_role, Val(inter.scheduler.dual))
+        λ, λi = scale_elec(inter.scheduler, T(atom_i.λ), atom_i.alch_role, Val(false))
+        λ, λj = scale_elec(inter.scheduler, T(atom_j.λ), atom_j.alch_role, Val(false))
         qi = params_mixing(λi, atom_i.charge)
         qj = params_mixing(λj, atom_j.charge)
         qij = qi*qj
@@ -1765,7 +1764,7 @@ end
     end
 
     inv_r = inv(r)
-    αr = α * r
+    αr = α_ewald * r
     exp_mαr2 = exp(-αr^2)
     erfc_αr = calc_erfc(αr, exp_mαr2, inter.approximate_erfc)
     pe = ke * qij * inv_r
@@ -1780,7 +1779,11 @@ end
     T = typeof(ustrip(inter.coulomb_const))
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    if inter.scheduler.dual
+        λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(true))
+    else
+        λ, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(false))
+    end
     return pair_role, λ, λ_params
 end
 
@@ -1894,13 +1897,13 @@ function Base.:+(c1::CoulombSoftCoreBeutlerEwald, c2::CoulombSoftCoreBeutlerEwal
     )
 end
 
-function to_lambda_function(inter::CoulombEwald, ::BeutlerSoftCore; α=0.3, 
-                            λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
+function to_lambda_function(inter::CoulombEwald, ::BeutlerSoftCore; α=0.3, σ_mixing=LorentzMixing(),
+                                     ϵ_mixing=GeometricMixing(), λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
     return CoulombSoftCoreBeutlerEwald(dist_cutoff=inter.dist_cutoff, error_tol=inter.error_tol, α=float_type(α), 
-                                            use_neighbors=inter.use_neighbors, σ_mixing=inter.σ_mixing, 
-                                            ϵ_mixing=inter.ϵ_mixing, λ_mixing=λ_mixing, scheduler=scheduler, 
+                                            use_neighbors=inter.use_neighbors, σ_mixing=σ_mixing, 
+                                            ϵ_mixing=ϵ_mixing, λ_mixing=λ_mixing, scheduler=scheduler, 
                                             weight_special=inter.weight_special, coulomb_const=inter.coulomb_const,
-                                            α_ewald=inter.α_ewald, approximate_erfc=inter.approximate_erfc)
+                                            approximate_erfc=inter.approximate_erfc)
 end
 
 @inline function force(inter::CoulombSoftCoreBeutlerEwald,
@@ -2079,7 +2082,7 @@ function to_lambda_function(inter::CoulombEwald, ::GapsysSoftCore; α=0.3, σQ=1
                                         σQ=float_type(ustrip(σQ))u"nm", use_neighbors=inter.use_neighbors, 
                                         λ_mixing=λ_mixing, scheduler=scheduler, 
                                         weight_special=inter.weight_special, coulomb_const=inter.coulomb_const,
-                                        α_ewald=inter.α_ewald, approximate_erfc=inter.approximate_erfc)
+                                        approximate_erfc=inter.approximate_erfc)
 end
 
 @inline function force(inter::CoulombSoftCoreGapsysEwald,

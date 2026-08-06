@@ -293,7 +293,7 @@ end
     args...
 ) where {C, T}
 
-    λ_glob = T(λ_mixing(inter.λ_mixing, atom_i, atom_j))
+    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     λ = T(sterics_lambda(inter.scheduler, atom_i, atom_j, λ_glob))
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
@@ -339,7 +339,7 @@ end
 ) where {C, T}
 
     # Mix Lambda
-    λ_glob = T(λ_mixing(inter.λ_mixing, atom_i, atom_j))
+    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
     λ = T(sterics_lambda(inter.scheduler, atom_i, atom_j, λ_glob))
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
