@@ -7,6 +7,36 @@ const softcore_dic = Dict("none" => DefaultSoftCore(),
                           "gapsys" => GapsysSoftCore(), 
                           "scaled" => ScaledSoftCore())
 
+"""
+    AbsoluteFESystem(sys, global_λ, mapping; temp = 298.0u"K", units=true,
+                        scheduler=LinearLambdaScheduler(dual=true), loggers=(),
+                        array_type=Array, float_type=Float32, LJsoftcore="gapsys",
+                        Csoftcore="gapsys")
+
+Sets up a absolute free energy system, where atoms are transformed into alchemical atoms based on the
+provided indexes in the mapping. 
+
+# Arguments
+- `sys`: The reference system in which the solute is present.
+- `global_λ`: The global λ for the system.
+- `mapping`: A array with atom indexes for the solute that is annihilated.
+- `temp = 298.0u"K"`: Temperature to generate random velocities for the system, standard is 298K.
+- `units` = true``:  whether to use Unitful quantities.
+- `scheduler = DefaultLambdaScheduler(dual=true)`: Lambda scheduler used to transform global λ into
+lambda for sterics, electrostatics and bonded interactions. Options include: default, linear, openfe,
+    NAMD, quarters, electrostatics scaled. See the plots of the schedulers on the examples page.
+- `loggers = ()`:  the loggers that record properties of interest during a
+    simulation.
+- `array_type = Array`: the array type for the simulation, for example
+    use `CuArray` or `ROCArray` for GPU support.
+- `float_type = Float32`: 
+- `LJsoftcore = "gapsys"`: which softcore type to use for LennardJones potential, options are: "none" = regular LJ,
+"beutler" = softcore described in [Beutler et al. 1994](https://doi.org/10.1016/0009-2614(94)00397-1).,
+"gapsys" = softcore described in [Gapsys et al. 2012](https://doi.org/10.1021/ct300220p),
+"scaled" = potential directly scaled by λ.
+- `Csoftcore = "gapsys"`: which softcore type to use for Coulomb potential, see options above.
+"""
+
 function AbsoluteFESystem(sys::System, global_λ, mapping; 
                         temp = 298.0u"K", 
                         units=true,
@@ -35,15 +65,6 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
         @error "Current parameters scaling for absolute free energy setup is not available, set scheduler(dual=true)"
     end
 
-    # Add environment mapping
-    env = []
-    for i in 1:length(sys.atoms)
-        if !(i in mapping["molecule"])
-            push!(env, i)
-        end
-    end
-    mapping["env"] = env
-
     # Initialize data groups for new system
     Atoms        = []
     Virtual      = []
@@ -63,7 +84,7 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
         a = sys.atoms[i]
         d = sys.atoms_data[i]
         c = sys.coords[i]
-        if i in mapping["molecule"]
+        if i in mapping
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                 λ=FT(global_λ), alch_role=InsertRole))
         else
@@ -189,6 +210,39 @@ end
 
 # System A is the main reference system from which the environment atoms are taken
 # System B is only used for the Unique system B atoms and the parameters for Core atoms
+
+"""
+    RelativeFESystem(sysA, sysB, global_λ, mapping, core_mapAB; temp = 298.0u"K", units=true,
+                        scheduler=LinearLambdaScheduler(dual=true), loggers=(),
+                        array_type=Array, float_type=Float32, LJsoftcore="gapsys",
+                        Csoftcore="gapsys")
+
+Sets up a relative free energy system, where atoms are interpolated between system A and system B. The mapping provides
+the atom indices for the core atoms, unique A and unique B atoms. 
+
+# Arguments
+- `sysA`: System A is the main reference system from which the environment atoms are taken.,
+- `sysB`: System B is only used for the Unique system B atoms and the parameters for Core atoms
+- `global_λ`: The global λ for the system.
+- `mapping`: A dictionary with arrays of atom indexes for "core", "unique_A", "unique_B".
+- `core_mapAB`: A dictionary of mapping for atom indices for core atoms in system A and matching atom indices
+for core atoms in B.
+- `temp = 298.0u"K"`: Temperature to generate random velocities for the system, standard is 298K.
+- `units` = true``:  whether to use Unitful quantities.
+- `scheduler = DefaultLambdaScheduler(dual=true)`: Lambda scheduler used to transform global λ into
+lambda for sterics, electrostatics and bonded interactions. Options include: default, linear, openfe,
+    NAMD, quarters, electrostatics scaled. See the plots of the schedulers on the examples page.
+- `loggers = ()`:  the loggers that record properties of interest during a
+    simulation.
+- `array_type = Array`: the array type for the simulation, for example
+    use `CuArray` or `ROCArray` for GPU support.
+- `float_type = Float32`: 
+- `LJsoftcore = "gapsys"`: which softcore type to use for LennardJones potential, options are: "none" = regular LJ,
+"beutler" = softcore described in [Beutler et al. 1994](https://doi.org/10.1016/0009-2614(94)00397-1).,
+"gapsys" = softcore described in [Gapsys et al. 2012](https://doi.org/10.1021/ct300220p),
+"scaled" = potential directly scaled by λ.
+- `Csoftcore = "gapsys"`: which softcore type to use for Coulomb potential, see options above.
+"""
 
 function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_mapAB; 
                         temp = 298.0u"K", 

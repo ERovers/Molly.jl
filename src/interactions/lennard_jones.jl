@@ -625,8 +625,7 @@ end
 
     # If lambda is 1, the soft core formula reduces to standard LJ
     # We explicity branch to save compute.
-    if λ >= 1
-
+    if λ >= 1 && λR >= 1
         σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
         ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
         σ2 = σ^2
@@ -691,7 +690,7 @@ end
     r = norm(dr)
     # If lambda is 1, the soft core formula reduces to standard LJ
     # We explicity branch to save compute.
-    if λ >= 1
+    if λ >= 1 && λR >= 1
         if iszero_value(r)
             return zero_pairwise_energy(dr, energy_units)
         end

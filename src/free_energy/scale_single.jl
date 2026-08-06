@@ -48,14 +48,14 @@ end
 @inline function scale_elec(::DefaultLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
     if role == InsertRole
         λ = T(λ < T(0.5) ? T(0.0) : T(2.0) * (λ - T(0.5)))
-        return one(λ), λ
+        return one(λ), λ, λ
     elseif role == DeleteRole
         λ = T(λ < T(0.5) ? T(2.0) * λ : T(1.0))
-        return one(λ), λ
+        return one(λ), (1-λ), λ
     elseif role == CoreRole
-        return one(λ), λ
+        return one(λ), one(λ), λ
     else
-        return one(λ), one(λ)
+        return one(λ), one(λ), one(λ)
     end
 end
 
@@ -77,13 +77,13 @@ end
 
 @inline function scale_elec(::LinearLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
     if role == InsertRole
-        return one(λ), λ
+        return one(λ), λ, λ
     elseif role == DeleteRole
-        return one(λ), λ
+        return one(λ), (1-λ), λ
     elseif role == CoreRole
-        return one(λ), λ
+        return one(λ), one(λ), λ
     else
-        return one(λ), one(λ)
+        return one(λ), one(λ), one(λ)
     end
 end
 
@@ -109,14 +109,14 @@ end
 @inline function scale_elec(::OpenMMTestScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
     if role == InsertRole
         λ = T(λ < T(0.5) ? T(0.0) : T(2.0) * (λ - T(0.5)))
-        return one(λ), λ
+        return one(λ), λ, λ
     elseif role == DeleteRole
         λ = T(λ < T(0.5) ? T(2.0) * λ : T(1.0))
-        return one(λ), λ
+        return one(λ), (1-λ), λ
     elseif role == CoreRole
-        return one(λ), λ
+        return one(λ), one(λ), λ
     else
-        return one(λ), one(λ)
+        return one(λ), one(λ), one(λ)
     end
 end
 
@@ -141,14 +141,14 @@ end
 @inline function scale_elec(::NAMDLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
     if role == InsertRole
         λ = T(λ < T(0.5) ? T(0.0) : T(2.0) * (λ - T(0.5)))
-        return one(λ), λ
+        return one(λ), λ, λ
     elseif role == DeleteRole
         λ = T(λ < T(0.5) ? T(2.0) * λ : T(1.0))
-        return one(λ), λ
+        return one(λ), (1-λ), λ
     elseif role == CoreRole
-        return one(λ), λ
+        return one(λ), one(λ), λ
     else
-        return one(λ), one(λ)
+        return one(λ), one(λ), one(λ)
     end
 end
 
@@ -173,14 +173,14 @@ end
 @inline function scale_elec(::QuartersLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
     if role == InsertRole
         λ = λ < T(0.75) ? T(0.0) : T(4.0) * (λ - T(0.75))
-        return one(λ), λ
+        return one(λ), λ, λ
     elseif role == DeleteRole
         λ = λ < T(0.25) ? T(4.0) * λ : T(1.0)
-        return one(λ), λ
+        return one(λ), (1-λ), λ
     elseif role == CoreRole
-        return one(λ), λ
+        return one(λ), one(λ), λ
     else
-        return one(λ), one(λ)
+        return one(λ), one(λ), one(λ)
     end
 end
 
@@ -205,13 +205,13 @@ end
 @inline function scale_elec(::EleScaledLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
     if role == InsertRole
         λ = λ < T(0.5) ? T(0.0) : sqrt(T(2.0) * (λ - T(0.5)))
-        return one(λ), λ
+        return one(λ), λ, λ
     elseif role == DeleteRole
         λ = λ < T(0.5) ? (T(2.0) * λ)^2 : T(1.0)
-        return one(λ), λ
+        return one(λ), (1-λ), λ
     elseif role == CoreRole
-        return one(λ), λ
+        return one(λ), one(λ), λ
     else
-        return one(λ), one(λ)
+        return one(λ), one(λ), one(λ)
     end
 end
