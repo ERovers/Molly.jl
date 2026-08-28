@@ -635,31 +635,75 @@ Now one can put this into a graph, for example using a scatter for the free ener
 
 ## Absolute Solvation/Binding Free Energies
 
-### Hybrid System Setup and Alchemical Interpolation
+### Absolute Solvation Free Energy
 
-## Relative Binding Free energies
+Absolute Solvation Free Energy (ASFE) calculations estimate the thermodynamic work required to transfer a single molecule from the gas phase into a solvent ($\Delta G_{\text{solv}}$). Rather than simulating the physical transfer process, ASFE uses an alchemical transformation pathway that decouples the solute’s electrostatic and van der Waals interactions with the solvent or in vacuum.
+
+```
+                    ΔG_solvation
+    Solute (Vacuum)  ─────────►  Solute (Solvent)
+        │                             │   
+        │ ΔG_vac                      │ ΔG_solv
+        ▼                             ▼   
+    Null (Vacuum)    ─────────►   Null (Solvent)
+                        ΔG=0
+```
+The absolute solvation free energy is calculated via thermodynamic cycle closure:
+
+$$\Delta G_{\text{solv}} = \Delta G_{\text{lig}}^{\text{solv}} - \Delta G_{\text{lig}}^{\text{vac}} + \Delta G_{\text{standard}}$$
+
+where $\Delta G_{\text{standard}}$ includes standard-state concentration corrections.
+
+### Absolute Binding Free Energy
+
+Absolute Binding Free Energy (ABFE) calculations estimate the total binding affinity of a single ligand to a target protein ($\Delta G_{\text{bind}}^{\circ}$). Instead of simulating the slow physical association or dissociation trajectory, ABFE employs a thermodynamic cycle that alchemically annihilates the ligand in the protein-bound complex while also running a simulation in which the interactions are decoupled between ligand and solvent.
+
+```
+              ΔG_bind°
+      Ligand ─────────►  Protein + Ligand
+        │                    │
+        │ ΔG_solv            │ ΔG_complex
+        ▼                    ▼
+       Null  ─────────►  Protein + Null
+                ΔG=0         
+```
+
+The absolute binding free energy is computed by closing the thermodynamic cycle and applying positional/orientational restraints to keep the ligand in the binding pocket during decoupling:
+
+$$\Delta G_{\text{bind}}^{\circ} = \Delta G^{\text{solv}}_{lig} - \Delta G^{\text{complex}}_{lig} + \Delta G_{\text{restraint}}$$
+
+where $\Delta G_{\text{restraint}}$ explicitly accounts for the analytical cost of removing orientational and translational restraints in bulk solvent.
+
+## Relative Binding Free Energies
 
 Relative Binding Free Energy (RBFE) calculations estimate the difference in binding affinity between two chemically related ligands ($\Delta\Delta G_{bind}$) bound to a target protein. Rather than simulating the physical unbinding process directly, RBFE employs a thermodynamic cycle that transforms Ligand A into Ligand B in both the bound state (complexed with the protein in solvent) and the unbound state (ligand in solvent alone).          
 
 ```
-                      ΔG_bind(A)
-  Protein + Ligand A  ─────────►  Complex A
-          │                            │
-          │ ΔG_solv(A→B)               │ ΔG_bound(A→B)
-          ▼                            ▼
-  Protein + Ligand B  ─────────►  Complex B
-                      ΔG_bind(B)
+                ΔG_bind(A)
+      Ligand A  ─────────►  Complex A
+        │                       │
+        │ ΔG_solv(A→B)          │ ΔG_complex(A→B)
+        ▼                       ▼
+      Ligand B  ─────────►  Complex B
+                ΔG_bind(B)
 ```
 
 The relative binding free energy is calculated using the thermodynamic cycle closure:
 
 $$\Delta\Delta G = \Delta G_{bind}(B) - \Delta G_{bind}(A) = \Delta G_{bound}(A \to B) - \Delta G_{solv}(A \to B)$$
 
-### Hybrid System Setup and Alchemical Interpolation
+## Hybrid System Setup
 
-To transform Ligand A into Ligand B along a single continuous coordinate, the system can be set up using single toplogy (OpenFE) or dual topology. In a single topology, shared atoms between ligands (Core atoms) retain their physical identity, with parameters (charges, vdW, bonds, angles) linearly interpolated along an alchemical coupling parameter $\lambda \in [0, 1]$. Atoms present in only one ligand (Unique atoms) are smoothly created or decoupled using soft-core potentials for electrostatic and van der Waals interactions to prevent numerical singularities at $\lambda \to 0$ and $\lambda \to 1$. In a dual topology, virtual atoms are added for the core atoms representing the core atoms in ligand B along with the unique atoms for each ligand. 
+Molly allows for two setup options: single topology (parameter scaling) and dual topology (energy scaling). In a single topology for RBFE, shared atoms between ligands (Core atoms) retain their physical identity, with parameters (charges, vdW, bonds, angles) interpolated along an alchemical coupling parameter $\lambda \in [0, 1]$. Atoms present in only one ligand (Unique atoms) are smoothly created or decoupled using soft-core potentials for electrostatic and van der Waals interactions to prevent numerical singularities at $\lambda \to 0$ and $\lambda \to 1$. In a dual topology for RBFE, virtual atoms are added for the core atoms, these represent the core atoms in ligand B. Unique atoms for ligand B are added as atoms. For ABFE simulations, dual topology is most commonly used where the whole solute is annihilated/decoupled along an alchemical coupling parameter $\lambda \in [0, 1]$, but Molly could run ABFE simulations with single topology.
 
-The mathematical difference between single vs dual topology is in the difference between parameter scaling or energy scaling. In single topology parameter scaling is used and the energy for LennardJones is calculated as:
+The mathematical difference between single vs dual topology is the effect of parameter scaling vs energy scaling on the total energy. In dual topology, energy scaling is used and the energy for LennardJones is calculated as:
+
+$$E^{LJ}_{ij} = (1-\lambda)4\epsilon_{A}\left[ \left(\frac{\sigma_{A}}{r_{ij}}\right)^{12} - \left(\frac{\sigma_{A}}{r_{ij}}\right)^6\right] + \lambda4\epsilon_{B}\left[ \left(\frac{\sigma_{B}}{r_{ij}}\right)^{12} - \left(\frac{\sigma_{B}}{r_{ij}}\right)^6\right]$$
+where
+$$\epsilon_{X} = \sqrt{\epsilon^{X}_{i}\cdot\epsilon^{X}_{j}}$$ and 
+$$\sigma_{X} = \frac{\sigma^{X}_{i}+\sigma^{X}_{j}}{2}$$
+
+whereas in single topology the parameters are scaled:
 
 $$E^{LJ}_{ij} = 4\epsilon_{AB}\left[ \left(\frac{\sigma_{AB}}{r_{ij}}\right)^{12} - \left(\frac{\sigma_{AB}}{r_{ij}}\right)^6\right]$$
 where
@@ -667,25 +711,162 @@ $$\epsilon_{AB} = (1-\lambda)\sqrt{\epsilon^{A}_{i}\cdot\epsilon^{A}_{j}} + \lam
 and
 $$\sigma_{AB} = (1-\lambda)\frac{\sigma^{A}_{i}+\sigma^{A}_{j}}{2} + \lambda\frac{\sigma^{B}_{i}+\sigma^{B}_{j}}{2}$$
 
-whereas in dual topology the energy is scaled, so the energy for dual topology is calculated as:
+However, with a single topology, you could also choose between individual parameter scaling or state parameter scaling, which have different effects on interpolation. State parameter scaling is shown above where sigmas and epsilons are first mixed for each state and then interpolated using lambda. In invidual parameter scaling, the parameters are first scaled before mixing.
 
-$$E^{LJ}_{ij} = (1-\lambda)4\epsilon_{A}\left[ \left(\frac{\sigma_{A}}{r_{ij}}\right)^{12} - \left(\frac{\sigma_{A}}{r_{ij}}\right)^6\right] + \lambda4\epsilon_{B}\left[ \left(\frac{\sigma_{B}}{r_{ij}}\right)^{12} - \left(\frac{\sigma_{B}}{r_{ij}}\right)^6\right]$$
-where
-$$\epsilon_{X} = \sqrt{\epsilon^{X}_{i}\cdot\epsilon^{X}_{j}}$$ and 
-$$\sigma_{X} = \frac{\sigma^{X}_{i}+\sigma^{X}_{j}}{2}$$
+State parameter scaling:
+$$\sigma_{AB} = (1-\lambda)\frac{\sigma^{A}_{i}+\sigma^{A}_{j}}{2} + \lambda\frac{\sigma^{B}_{i}+\sigma^{B}_{j}}{2}$$
 
-In Molly, both representations can be used and is set during hybrid system setup using the lambda scheduler,
+Individual parameter scaling:
+$$\sigma_{i} = (1-\lambda)\sigma^{A}_{i}+\lambda\sigma^{B}_{i}$$
+$$\sigma_{j} = (1-\lambda)\sigma^{A}_{j}+\lambda\sigma^{B}_{j}$$
+$$\sigma_{AB} = \frac{\sigma_{i}+\sigma_{j}}{2}$$
+
+The only exception in a single topology setup are the torsion potentials. These are always energy scaled rather than parameter scaled:
+
+$$E_{torsion} = (1-\lambda)E^A_{torsion} + \lambda E^B_{torsion}$$
+
+In Molly, a topology is chosen together with the lambda scheduler:
 ```julia
-Molly.OpenMMTestScheduler(dual=true) # Dual topology
-Molly.OpenMMTestScheduler(dual=false) # Single topology
+# Default lambda scheduler, where electrostatics are turned off before sterics are turned off.
+# initiated with single topology, state parameter scaling, and 1-4 interactions turned on
+# when using dual topology the other kwargs are ignored except for the intra option.
+Molly.DefaultScheduler(dual=false,               # Single topology (false) 
+                       LJindividual=false,       # State parameter scaling for LJ
+                       LJspecial=false,          # State parameter scaling for LJ 1-4 interactions
+                       Cindividual=false,        # State parameter scaling for Coulomb
+                       Cspecial=false,           # State parameter scaling for Coulomb 1-4 interactions
+                       intra=false,              # Whether 1-4 inter. get decoupled (true) or stay on (false) between alchemical atoms                   
+                       ) 
 ```
-the default is dual topology while in OpenFE single topology is used.
+the default is dual topology while in OpenFE single topology is used, OpenFE also uses other settings during set up and the differences between default and OpenFE are outlined below.
 
-### Example set up for relative binding free energy
+### Matching OpenFE default settings
+
+Molly has many more options for running RBFE calculations than OpenFE including different softcore potentials, variety of $\lambda$-scaled bonded energy functions (e.g. CMAP torsions, periodic and harmonic torsion, etc.), lambda schedulers, and the option for either single or dual topology. To match the OpenFE settings and architectural choices for setup, we have implemented the `OpenFEScheduler`. When using `OpenFEScheduler(), LJsoftcore="gapsys", Csoftcore="scaled"`, the system setup will be performed similar to the system setup in [OpenFE](https://github.com/OpenFreeEnergy/openfe/blob/main/src/openfe/protocols/openmm_rfe/_rfe_utils/relative.py), which uses a single topology and specific setup choices, including:
+
+- Only using a softcore potential for the LennardJones potential, the CoulombEwald direct space is scaled by lambda directly without using a softcore.
+- In CoulombEwald potential, the charges are individually scaled for the regular interactions: 
+
+    $$q_{ij} = ((1-\lambda)q^A_i+\lambda q^B_i) \cdot ((1-\lambda)q^A_j+\lambda q^B_j)$$ 
+
+    But state scaled for the 1-4 interactions: 
+
+    $$q_{ij} = (1-\lambda)(q^A_iq^A_j) + \lambda(q^B_iq^B_j)$$
+
+    For the LennardJones, the gapsys softcore is used and all parameters are state scaled.
+- Atoms from the molecules (both core and unique atoms) are not contributing to the LJDispersionCorrection (OpenFE puts the epsilons of ligands to 0). BUT the alchemical atoms are counted towards the number of particles which is used to calculate averages.
+
+So to run with OpenFE settings:
+```julia
+# OpenFE lambda scheduler, with similar scaling .
+# initiated with single topology, state parameter scaling for LJ, LJ 1-4, and Coul 1-4
+# and individual scaling for Coul.
+# When running OpenfeScheduler() the default settings are similar to the OpenFe settings.
+scheduler = Molly.OpenFeScheduler(dual=false,               # Single topology (false) 
+                                  LJindividual=false,       # State parameter scaling for LJ
+                                  LJspecial=false,          # State parameter scaling for LJ 1-4 interactions
+                                  Cindividual=true,         # State parameter scaling for Coulomb
+                                  Cspecial=false,           # State parameter scaling for Coulomb 1-4 interactions
+                                  intra=false,              # Whether 1-4 inter. get decoupled (true) or stay on (false) between alchemical atoms                   
+                                ) 
+
+# For system setup, set LJsoftcore="gapsys", Csoftcore="scaled"
+# More on system setup, see the example below
+sys = RelativeFESystem(sysA, sysB, global_λ, mapping, core_mapAB; 
+                    scheduler=scheduler,
+                    LJsoftcore="gapsys",
+                    Csoftcore="scaled"
+                    )
+
+```
+
+All the settings have been tested by comparing energies and forces between Molly and OpenFE, and a test is included in the testing module.
+
+### Example set up for ABFE
+Here we demonstrate how to set up a hybrid system to annihilate a ethanol molecule in water and in vacuum. 
+
+First, we load ethanol in water and ethanol in vacuum with respective choices for electrostatic and steric interactions. The solvated system will use PME while the vacuum system uses short-range Coulomb with an infinite boundary and infinite non-bonded cutoff.
+
+```julia
+using Molly
+
+# --- Variables ---
+FT = Float64
+AT = Array
+data_dir = joinpath(dirname(pathof(Molly)), "..", "data")
+ff_dir   = joinpath(data_dir, "force_fields")
+
+# --- Force Field Setup ---
+ff = MolecularForceField(FT, joinpath.(ff_dir, ["tip3p_standard.xml", "gaff.xml", "ethanol.xml"])...; units=true)
+
+# --- Load Systems ---
+sysb_solv = System(
+        joinpath(data_dir, "ethanol_solv.pdb"),
+        ff;
+        array_type=AT,
+        dist_cutoff=FT(1) * u"nm",
+        dist_buffer=FT(0.2) * u"nm",
+        nonbonded_method=:pme,
+        constraints=:hbonds,
+        constraint_algorithm=SetupLINCS(),
+        rigid_water=true,
+        hydrogen_mass=3
+    )
+
+sysb_vac = System(
+        joinpath(data_dir, "ethanol_vac.pdb"),
+        ff;
+        array_type=AT,
+        boundary=CubicBoundary(FT(Inf) * u"nm"),
+        dist_cutoff=FT(Inf) * u"nm",
+        dist_buffer=FT(0) * u"nm",
+        neighbor_finder_type=DistanceNeighborFinder,
+        nonbonded_method=:none,
+        constraints=:hbonds,
+        constraint_algorithm=SetupLINCS(),
+        rigid_water=true,
+        hydrogen_mass=3
+    )
+
+# --- Mapping of solute indexes ---
+mapping = [i for i in 1:9]
+```
+
+Then we can use these systems to set up a hybrid system for each leg (solvated vs vacuum) with a dual topology `dual=true`.
+
+```julia
+# --- Hybrid System Setup ---
+λ = FT(0.0)
+sys_solv = AbsoluteFESystem(sysb_solv, global_λ, mapping; 
+                        temp=298.0u"K", 
+                        units=true,
+                        scheduler=DefaultLambdaScheduler(dual=true),
+                        loggers=(),
+                        array_type=AT,
+                        float_type=FT,
+                        LJsoftcore="gapsys",
+                        Csoftcore="scaled"
+                        )
+
+sys_vac = AbsoluteFESystem(sysb_vac, global_λ, mapping; 
+                        temp=298.0u"K", 
+                        units=true,
+                        scheduler=DefaultLambdaScheduler(dual=true),
+                        loggers=(),
+                        array_type=AT,
+                        float_type=FT,
+                        LJsoftcore="gapsys",
+                        Csoftcore="scaled"
+                        )
+```
+
+These system can then be used in REMD, AWH or TSS simulations for free energy estimation, how to run free energy calculations with each of these methods is described below.
+
+### Example set up for RBFE
 Here we demonstrate how to set up a hybrid system to interpolate between two ligands for TYK2 (ejm31 and ejm50) using the OpenFE settings. See below how OpenFE settings were matched using Molly settings.
 ![The TYK2 ligands](images/ejm31_ejm50.png)
 
-First, we have to load the individual systems and create a mapping to specify which atom indexes are the unique A, unique B, and core atoms. Also, a map on how the core atoms are mapped between A -> B.
+First, we have to load the individual systems and create a mapping to specify which atom indexes are the unique A, unique B, and core atoms. Also, a map on how the atom indexes are mapped between core A -> core B.
 
 ```julia
 using Molly
@@ -695,7 +876,6 @@ FT = Float64
 AT = Array
 data_dir = joinpath(dirname(pathof(Molly)), "..", "data")
 ff_dir     = joinpath(data_dir, "force_fields")
-tyk2_dir   = joinpath(data_dir, "openmm_tyk2")
 
 # --- Force Field Setup ---
 ff_A = MolecularForceField(FT, joinpath.(ff_dir, ["tip3p_standard.xml", "amber14/protein.ff14SB.xml"])...,
@@ -748,41 +928,24 @@ end
 core_mapAB[4702] = 4702
 ```
 
-Now we can use SystemA and SystemB to set up a hybrid system with single topology. By specifying `dual=false` in the scheduler, the single topology set up is iniated.
+Then we can use SystemA and SystemB to set up a hybrid system with a single topology. By specifying `dual=false` in the scheduler, a single topology is used rather than the default dual topology. (Below shows how you would set up using the OpenFE settings)
 
 ```julia
 # --- Hybrid System Setup ---
 λ = FT(0.0)
-loggers = (writer=TrajectoryWriter(1_000, "hybrid_traj.xtc"),)
-sys = Hybrid_system(sysA, 
-                    sysB, 
-                    λ,   
-                    mapping, 
-                    core_mapAB; 
-                    scheduler=Molly.OpenMMTestScheduler(dual=false),
-                    array_type=AT, 
-                    float_type=FT, 
-                    loggers=loggers
+sys = RelativeFESystem(sysA, sysB, global_λ, mapping, core_mapAB; 
+                    temp=298.0u"K", 
+                    units=true,
+                    scheduler=OpenFEScheduler(dual=false),
+                    loggers=(),
+                    array_type=AT,
+                    float_type=FT,
+                    LJsoftcore="gapsys",
+                    Csoftcore="scaled"
                     )
 ```
 
-### Matching OpenFE default settings
-
-Molly has many more options for running RBFE calculations than OpenFE including different softcore potentials, variety of $\lambda$-scaled bonded energy functions (e.g. CMAP torsions, periodic and harmonic torsion, etc.), lambda schedulers, and the option for either single or dual topology. To match the OpenFE settings and architectural choices for setup, we have implemented the `OpenFEScheduler`. When using `OpenFEScheduler(false)`, the system setup will be performed similar to the system setup in [OpenFE](https://github.com/OpenFreeEnergy/openfe/blob/main/src/openfe/protocols/openmm_rfe/_rfe_utils/relative.py), which uses a single topology and specific setup choices, including:
-
-- Only using a softcore potential for the LennardJones potential, the CoulombEwald direct space is scaled by lambda directly without using a softcore.
-- In CoulombEwald potential, the regular interactions are scaled by lambda as: 
-
-    $$q_{ij} = ((1-\lambda)q^A_i+\lambda q^B_i) \cdot ((1-\lambda)q^A_j+\lambda q^B_j)$$ 
-
-    However, for 1-4 interactions, the charges are scaled as: 
-
-    $$q_{ij} = (1-\lambda)(q^A_iq^A_j) + \lambda(q^B_iq^B_j)$$
-
-- Atoms from the molecules (both core and unique atoms) are not contributing to the LJDispersionCorrection (OpenFE has set epsilons of ligands to 0), but are counted in the number of particles that is used in the averages for the F6 and F12 terms.
-- For all bonded interaction potentials, the parameters are scaled, for example for the Harmonic Bond potential the `k` is scaled as: $$k = (1-\lambda)k_A + \lambda k_B$$. However, for the periodic torsions, the energies are scaled rather than the parameters, like: $$E_{torsion} = (1-\lambda)E^A_{torsion} + \lambda E^B_{torsion}$$
-
-All the settings have been tested by comparing energies and forces between Molly and OpenFE, and test is included in the testing module.
+This system can then be used in REMD, AWH or TSS simulations for free energy estimation, how to run free energy calculations with each of these methods is described below.
 
 ## Free energies with REMD
 ### Method overview
