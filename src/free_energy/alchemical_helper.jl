@@ -7,7 +7,8 @@ export
     print_interaction,
     kabsch_AA,
     step_logger,
-    dict_reverse
+    dict_reverse,
+    read_trajectory
 
 function print_interaction(interaction; start_idx=1, end_idx=1)
     field_names = getfield.((interaction,), fieldnames(typeof(interaction)))
@@ -108,6 +109,29 @@ function step_logger(sys, buffers, neighbors, step_n::Integer; n_threads::Intege
         return current_potential_energy
     end
 end
+
+function read_trajectory(sys, traj_file, units)
+    traj = Chemfiles.Trajectory(traj_file)
+    size = traj.size()
+    total_traj = []
+    for i in range(1,traj.size())
+        frame = Chemfiles.read_step(traj, i - 1) # Zero-based indexing
+        coord_unit = unit(length_type(sys.boundary))
+        sys.boundary = boundary_from_chemfiles(Chemfiles.UnitCell(frame), T, coord_unit)
+
+        coords_arr_Å = T.(Chemfiles.positions(frame)) * u"Å"
+        if units
+            coords_arr = ustrip.(u"nm", coords_arr_Å) # Assume nm
+        else
+            coords_arr = uconvert.(coord_unit, coords_arr_Å)
+        end
+        coords = SVector{3}.(eachcol(coords_arr))
+        coords .= wrap_coords.(coords, (sys.boundary,))
+        push!(total_traj, coords)
+    end
+    return total_traj
+end
+
 
 function dict_reverse(dic::AbstractDict)
     ks = collect(keys(dic))

@@ -40,7 +40,7 @@ lambda for sterics, electrostatics and bonded interactions. Options include: def
 function AbsoluteFESystem(sys::System, global_λ, mapping; 
                         temp = 298.0u"K", 
                         units=true,
-                        scheduler=LinearLambdaScheduler(dual=true),
+                        scheduler=DefaultLambdaScheduler(dual=true),
                         loggers=(),
                         array_type=Array,
                         float_type=Float32,
@@ -67,7 +67,6 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
 
     # Initialize data groups for new system
     Atoms        = []
-    Virtual      = []
     Data         = []
     Coords       = []
     Interactions = []
@@ -86,7 +85,7 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
         c = sys.coords[i]
         if i in mapping
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                λ=FT(global_λ), alch_role=InsertRole))
+                                λ=FT(global_λ), alch_role=DeleteRole))
         else
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
                                 λ=FT(1.0), alch_role=EnvRole))
@@ -100,45 +99,10 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
 
     # Ensure all arrays have correct typing
     Atoms = Vector{typeof(Atoms[1])}(Atoms)
-    if scheduler.dual
-        Virtual = Vector{typeof(Virtual[1])}(Virtual)
-    end
     Coords = Vector{typeof(Coords[1])}(Coords)
     Data = Vector{typeof(Data[1])}(Data)
-    Interactions = sys.specific_inter_lists
 
     # Pairwise Interactions
-    n_atoms = length(Coords)
-    eligible = trues(n_atoms, n_atoms)
-    for i in 1:n_atoms
-        eligible[i, i] = false
-    end
-
-    for (i, j) in zip(Interactions[1].is, Interactions[1].js)
-        eligible[i, j] = false
-        eligible[j, i] = false
-    end
-
-    for (i, k) in zip(Interactions[2].is, Interactions[2].ks)
-        eligible[i, k] = false
-        eligible[k, i] = false
-    end
-
-    special = falses(n_atoms, n_atoms)
-    for (i, l) in zip(Interactions[3].is, Interactions[3].ls)
-        special[i, l] = true
-        special[l, i] = true
-    end
-
-    if AT <:AbstractGPUArray
-        nf = GPUNeighborFinder(eligible=to_device(eligible, AT), special=to_device(special, AT), n_steps_reorder=10,
-                                dist_cutoff=sys.neighbor_finder.dist_cutoff)
-    else
-        nf = CellListMapNeighborFinder(eligible=to_device(eligible, AT), special=to_device(special, AT),
-                                        n_steps=10, boundary=Boundary, x0=Coords,
-                                        dist_cutoff=sys.neighbor_finder.dist_cutoff)
-    end
-
     PairInteraction = []
     for inter in sys.pairwise_inters
         if inter isa LennardJones
@@ -156,22 +120,11 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
 
     # General interactions
     GenerInteraction = []
-    for inter in sysA.general_inters
+    for inter in sys.general_inters
         if inter isa PME
             push!(GenerInteraction, PME(inter.dist_cutoff, to_device(Atoms, AT), Boundary, grad_safe=inter.grad_safe; 
                                         error_tol=inter.error_tol, fixed_charges=false, scheduler=scheduler),
                         )
-            excluded_pairs = find_excluded_pairs(eligible, special)
-            exclusion_data = EwaldExclusionData(FT(inter.dist_cutoff); error_tol=FT(inter.error_tol), scheduler=scheduler)
-            ewald_exclusions = InteractionList2Atoms(
-                to_device([ep[1] for ep in excluded_pairs], AT),
-                to_device([ep[2] for ep in excluded_pairs], AT),
-                to_device(fill(EwaldExclusion(), length(excluded_pairs)), AT),
-                fill("", length(excluded_pairs)),
-                exclusion_data,
-            )
-            push!(Interactions, ewald_exclusions)
-
         elseif inter isa LJDispersionCorrection
             push!(GenerInteraction, LJDispersionCorrectionλ(to_device(Atoms, AT), inter.dist_cutoff, scheduler, 
                             MinimumMixing(), LorentzMixing(), GeometricMixing()),
@@ -182,23 +135,33 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
     end
 
     # Create all interaction tuples
-    specific_inter_lists = tuple(Interactions...)
     pairwise_inters = tuple(PairInteraction...)
     general_inters = tuple(GenerInteraction...)
 
     # Setup new system
     vels_gpu = [random_velocity(a.mass, temp) for a in Atoms]
 
+    # For the purposes of assigning molecules, add connections from atoms to virtual sites
+    bonds_all = sys.specific_inter_lists[1]
+    bonds_all_vs_is, bonds_all_vs_js = copy(bonds_all.is), copy(bonds_all.js)
+
+    if length(bonds_all_vs_is) > 0
+        topology = MolecularTopology(bonds_all_vs_is, bonds_all_vs_js, length(Coords))
+    else
+        topology = nothing
+    end
+
     sys_final = System(
         atoms=to_device(Atoms, AT),
         coords=to_device(Coords, AT),
         atoms_data=Data,
         boundary=Boundary,
-        virtual_sites=to_device(Virtual,AT),
+        topology=topology,
         velocities=to_device(vels_gpu, AT),
         pairwise_inters=pairwise_inters,
-        specific_inter_lists=to_device.(specific_inter_lists,AT),
-        neighbor_finder=nf,
+        specific_inter_lists=to_device.(sys.specific_inter_lists,AT),
+        neighbor_finder=sys.neighbor_finder,
+        constraints=sys.constraints,
         general_inters=general_inters,
         loggers=loggers,
         force_units=(units ? u"kJ * mol^-1 * nm^-1" : NoUnits),
@@ -669,6 +632,7 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         coords=to_device(Coords, AT),
         atoms_data=Data,
         boundary=Boundary,
+        # constraints=sys
         virtual_sites=to_device(Virtual,AT),
         velocities=to_device(vels_gpu, AT),
         pairwise_inters=pairwise_inters,

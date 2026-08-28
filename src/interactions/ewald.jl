@@ -48,15 +48,13 @@ function AtomsCalculators.energy_forces(sys::System,
     return (energy=pe, forces=fs)
 end
 
-@inline electrostatic_lambda(::Any, atom, ::Val{T}) where T = one(T)
-
 @inline function electrostatic_lambda(scheduler, atom::Atom, ::Val{T}) where T
     dual_val = scheduler.dual ? Val(true) : Val(false)
     return scale_elec(scheduler, T(atom.λ), atom.alch_role, dual_val)
 end
 
 @inline function effective_charge(atom::Atom, scheduler, ::Val{T}) where T
-    λ, λ_params = electrostatic_lambda(scheduler, atom, Val(T))
+    λ, λR, λ_params = electrostatic_lambda(scheduler, atom, Val(T))
     if scheduler.dual
         return λ*atom.charge
     else
@@ -65,7 +63,7 @@ end
 end
 
 @inline function effective_charge_sqrt(atom::Atom, scheduler, ::Val{T}) where T
-    λ, λ_params = electrostatic_lambda(scheduler, atom, Val(T))
+    λ, λR, λ_params = electrostatic_lambda(scheduler, atom, Val(T))
     if scheduler.dual
         return sqrt(λ)*atom.charge
     else
@@ -443,9 +441,10 @@ function PME(dist_cutoff, atoms, boundary; error_tol=0.0005, order=5,
     end
 
     if fixed_charges && !grad_safe
-        partial_charge_buffer .= effective_charge_sqrt.(atoms, Ref(scheduler), Val(T))
+        partial_charge_buffer = effective_charge.(atoms, Ref(scheduler), Val(T))
+        partial_charge_buffer_sqrt = effective_charge_sqrt.(atoms, Ref(scheduler), Val(T))
         pc_sum = sum(partial_charge_buffer)
-        pc_abs2_sum = sum(abs2, partial_charge_buffer)
+        pc_abs2_sum = sum(abs2, partial_charge_buffer_sqrt)
     else
         pc_sum, pc_abs2_sum = nothing, nothing
     end
@@ -485,7 +484,6 @@ function Base.deepcopy(pme::PME)
     grad_safe      = pme.grad_safe
 
     # 2. Duplicate GPU/CPU Arrays cleanly via deepcopy or copy
-    excluded_pairs      = deepcopy(pme.excluded_pairs)
     grid_indices        = deepcopy(pme.grid_indices)
     grid_fractions      = deepcopy(pme.grid_fractions)
     bsplines_θ          = deepcopy(pme.bsplines_θ)
@@ -498,22 +496,28 @@ function Base.deepcopy(pme::PME)
     # Critical allocations: Main charge grid and working buffers
     charge_grid         = deepcopy(pme.charge_grid)
     charge_grid_buffer  = deepcopy(pme.charge_grid_buffer)
-    excluded_buffer_Fs  = deepcopy(pme.excluded_buffer_Fs)
-    excluded_buffer_Es  = deepcopy(pme.excluded_buffer_Es)
+    recip_grid          = deepcopy(pme.recip_grid)
     recip_conv_buffer   = deepcopy(pme.recip_conv_buffer)
     virial_buffer       = deepcopy(pme.virial_buffer)
 
     # 3. CRITICAL FIX: Re-plan the FFTs on the NEW charge_grid buffer
     # Do NOT copy the old fft_plan; it contains shared handles/streams.
-    fft_plan  = plan_fft!(charge_grid)
-    bfft_plan = plan_bfft!(charge_grid)
+    AT = array_type(charge_grid)
+    if AT <: AbstractGPUArray
+        fft_plan  = plan_rfft(charge_grid)
+        bfft_plan = plan_brfft(recip_grid, mesh_dims[3])
+    else
+        fft_plan  = plan_rfft( charge_grid, 1:3; flags=FFTW.MEASURE, num_threads=Threads.nthreads())
+        bfft_plan = plan_brfft(recip_grid, mesh_dims[3], 1:3; flags=FFTW.MEASURE,
+                               num_threads=Threads.nthreads())
+    end
 
     # 4. Return the brand new, isolated PME struct
     return PME(
-        dist_cutoff, error_tol, order, ϵr, excluded_pairs, α, mesh_dims,
+        dist_cutoff, error_tol, order, ϵr, α, mesh_dims,
         grid_indices, grid_fractions, bsplines_θ, bsplines_dθ, 
         bsplines_moduli_x, bsplines_moduli_y, bsplines_moduli_z,
-        charge_grid, charge_grid_buffer, excluded_buffer_Fs, excluded_buffer_Es,
+        charge_grid, recip_grid, charge_grid_buffer,
         recip_conv_buffer, virial_buffer, partial_charge_buffer, pc_sum, pc_abs2_sum, 
         fft_plan, bfft_plan, scheduler, grad_safe
     )
@@ -1143,11 +1147,13 @@ function ewald_pe_forces!(Fs, vir, inter::PME{T}, atoms, coords, boundary, force
 
     if needs_pe || needs_vir
         if isnothing(inter.pc_sum) || inter.grad_safe
-        inter.partial_charge_buffer .= effective_charge_sqrt.(atoms, Ref(inter.scheduler), Val(T))
-        pc_sum = sum(inter.partial_charge_buffer)
-        pc_abs2_sum = sum(abs2, inter.partial_charge_buffer)
-    else
-        pc_sum, pc_abs2_sum = inter.pc_sum, inter.pc_abs2_sum
+            partial_charge_buffer = effective_charge.(atoms, Ref(inter.scheduler), Val(T))
+            # partial_charge_buffer_sqrt = effective_charge_sqrt.(atoms, Ref(inter.scheduler), Val(T))
+            partial_charge_buffer_sqrt = effective_charge.(atoms, Ref(inter.scheduler), Val(T))
+            pc_sum = sum(partial_charge_buffer)
+            pc_abs2_sum = sum(abs2, partial_charge_buffer_sqrt)
+        else
+            pc_sum, pc_abs2_sum = inter.pc_sum, inter.pc_abs2_sum
         end
         charge_E = -f_div_ϵr * T(π) * pc_sum^2 / (2 * V * α^2)
         self_E = f_div_ϵr * -pc_abs2_sum * α / sqrt(T(π)) + charge_E
@@ -1201,28 +1207,29 @@ Only compatible with 3D systems.
 Base.zero(::EwaldExclusion) = EwaldExclusion()
 Base.:+(::EwaldExclusion, ::EwaldExclusion) = EwaldExclusion()
 
-struct EwaldExclusionData{T, D, A, F, S}
+struct EwaldExclusionData{T, D, A, F, S, LM}
     dist_cutoff::D
     error_tol::T
     ϵr::T
     α::A
     f_div_ϵr::F
     scheduler::S
+    λ_mixing::LM
 end
 
 function EwaldExclusionData(dist_cutoff; error_tol=0.0005, ϵr=1.0,
-                            scheduler=DefaultLambdaScheduler())
+                            scheduler=DefaultLambdaScheduler(), λ_mix=MinimumMixing())
     T = typeof(ustrip(dist_cutoff))
     error_tol_T = T(error_tol)
     α = inv(dist_cutoff) * sqrt(-log(2 * error_tol_T))
     f = (unit(dist_cutoff) == NoUnits ? ustrip(T(Molly.coulomb_const)) : T(Molly.coulomb_const))
     ϵr_T = T(ϵr)
     f_div_ϵr = f / ϵr_T
-    return EwaldExclusionData(dist_cutoff, error_tol_T, ϵr_T, α, f_div_ϵr, scheduler)
+    return EwaldExclusionData(dist_cutoff, error_tol_T, ϵr_T, α, f_div_ϵr, scheduler, λ_mix)
 end
 
 function Base.zero(inter::EwaldExclusionData{T, D, A, F}) where {T, D, A, F}
-    return EwaldExclusionData(zero(D), zero(T), zero(T), zero(A), zero(F), inter.scheduler)
+    return EwaldExclusionData(zero(D), zero(T), zero(T), zero(A), zero(F), inter.scheduler, inter.λ_mixing)
 end
 
 function Base.:+(i1::EwaldExclusionData, i2::EwaldExclusionData)
@@ -1233,13 +1240,14 @@ function Base.:+(i1::EwaldExclusionData, i2::EwaldExclusionData)
         i1.α + i2.α,
         i1.f_div_ϵr + i2.f_div_ϵr,
         i1.scheduler,
+        i1.λ_mixing
     )
 end
 
 to_device(x::EwaldExclusionData, ::Type{AT}) where AT = x
 
 function to_lambda_function(inter::EwaldExclusion; λ_mixing=MinimumMixing(), scheduler=DefaultLambdaScheduler())
-    return EwaldExclusion()
+    return EwaldExclusion(inter.dist_cutoff, inter.error_tol, inter.ϵr, inter.α, inter.f_div_ϵr, scheduler, λ_mixing)
 end
 
 @inline function force(::EwaldExclusion, coord_i, coord_j, boundary, atom_i, atom_j,
@@ -1248,14 +1256,20 @@ end
     vec_ij = vector(coord_i, coord_j, boundary)
     r = sqrt(sum(abs2, vec_ij))
     scheduler, α, f_div_ϵr = data.scheduler, data.α, data.f_div_ϵr
-    charge_ij = effective_charge(atom_i, scheduler, Val(T)) *
-                effective_charge(atom_j, scheduler, Val(T))
+    pair_role, λ, λR, λ_params, qij = softcore_pair_elec_lambda(data, atom_i, atom_j)
+
+    # qi = effective_charge(atom_i, data.scheduler, Val(T))
+    # qj = effective_charge(atom_j, data.scheduler, Val(T))
+    # qij = qi*qj
+    # λ = T(1.0)
+    # λR = T(1.0)
+
     αr = α * r
     erf_αr = erf(αr)
     if erf_αr > T(1e-6)
         inv_r = inv(r)
-        dE_dr = f_div_ϵr * charge_ij * inv_r^3 * (erf_αr - 2 * αr * exp(-αr^2) / sqrt(T(π)))
-        F = dE_dr * vec_ij
+        dE_dr = f_div_ϵr * qij * inv_r^3 * (erf_αr - 2 * αr * exp(-αr^2) / sqrt(T(π)))
+        F = λ * dE_dr * vec_ij
         return SpecificForce2Atoms(F, -F)
     else
         zf = zero(SVector{3, T}) * force_units
@@ -1263,21 +1277,46 @@ end
     end
 end
 
-@inline function potential_energy(::EwaldExclusion, coord_i, coord_j, boundary, atom_i, atom_j,
+@inline function potential_energy(inter::EwaldExclusion, coord_i, coord_j, boundary, atom_i, atom_j,
                                   energy_units, velocities_i, velocities_j, step_n,
                                   data::EwaldExclusionData{T}) where T
     vec_ij = vector(coord_i, coord_j, boundary)
     r = sqrt(sum(abs2, vec_ij))
     scheduler, α, f_div_ϵr = data.scheduler, data.α, data.f_div_ϵr
-    qi = effective_charge(atom_i, scheduler, Val(T))
-    qj = effective_charge(atom_j, scheduler, Val(T))
-    charge_ij =  qi * qj
+    pair_role, λ, λR, λ_params, qij = softcore_pair_elec_lambda(data, atom_i, atom_j)
+
+    # qi = effective_charge(atom_i, data.scheduler, Val(T))
+    # qj = effective_charge(atom_j, data.scheduler, Val(T))
+    # qij = qi*qj
+    # λ = T(1.0)
+    # λR = T(1.0)
     
     erf_αr = erf(α * r)
     if erf_αr > T(1e-6)
-        E = -f_div_ϵr * charge_ij * inv(r) * erf_αr
+        E = λ * -f_div_ϵr * qij * inv(r) * erf_αr
     else
-        E = -α * 2 * f_div_ϵr * charge_ij / sqrt(T(π))
+        E = λ * -α * 2 * f_div_ϵr * qij / sqrt(T(π))
     end
     return E
+end
+
+@inline function softcore_pair_elec_lambda(inter::EwaldExclusionData{T}, atom_i, atom_j) where T
+    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
+    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
+    if inter.scheduler.dual
+        λ, λR, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(true))
+        qij = atom_i.charge * atom_j.charge
+    elseif !(inter.scheduler.Cspecial)
+        λ, λR, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(false))
+        qij = atom_i.charge .* atom_j.charge
+        qij = params_mixing(λ_params, qij)
+    else
+        λ, λR, λ_params = scale_elec(inter.scheduler, λ_glob, pair_role, Val(false))
+        λ, λi = scale_elec(inter.scheduler, T(atom_i.λ), atom_i.alch_role, Val(false))
+        λ, λj = scale_elec(inter.scheduler, T(atom_j.λ), atom_j.alch_role, Val(false))
+        qi = params_mixing(λi, atom_i.charge)
+        qj = params_mixing(λj, atom_j.charge)
+        qij = qi*qj
+    end
+    return pair_role, λ, λR, λ_params, qij
 end

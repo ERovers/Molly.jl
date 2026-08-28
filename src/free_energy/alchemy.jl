@@ -16,25 +16,63 @@ struct BeutlerSoftCore <: SoftCore end
 struct GapsysSoftCore  <: SoftCore end
 struct ScaledSoftCore  <: SoftCore end
 
-# Rule for combining roles during a pairwise interaction.
-# Dispatched on the scheduler to allow custom overriding by users.
-@inline function mix_roles(::Any, role_i::AlchemicalRole, role_j::AlchemicalRole)
-    if role_i == InsertRole || role_j == InsertRole
-        return InsertRole
-    elseif role_i == DeleteRole || role_j == DeleteRole
-        return DeleteRole
-    elseif role_i == CoreIRole || role_j == CoreIRole
-        return CoreIRole
-    elseif role_i == CoreDRole || role_j == CoreDRole
-        return CoreDRole
-    elseif role_i == CoreRole || role_j == CoreRole
-        return CoreRole
-    else
-        return EnvRole
-    end
+# Lambda Schedulers
+@kwdef struct DefaultLambdaScheduler
+    dual::Bool = true
+    LJindividual::Bool = false
+    LJspecial::Bool = false
+    Cindividual::Bool = false
+    Cspecial::Bool = false
+    intraLJ::Bool = false
+    intraC::Bool = true
+end
+@kwdef struct LinearLambdaScheduler
+    dual::Bool = true
+    LJindividual::Bool = false
+    LJspecial::Bool = false
+    Cindividual::Bool = false
+    Cspecial::Bool = false
+    intraLJ::Bool = false
+    intraC::Bool = true
+end
+@kwdef struct OpenFEScheduler 
+    dual::Bool = false
+    LJindividual::Bool = false
+    LJspecial::Bool = false
+    Cindividual::Bool = true
+    Cspecial::Bool = false
+    intraLJ::Bool = false
+    intraC::Bool = true
+end
+@kwdef struct NAMDLambdaScheduler
+    dual::Bool = true
+    LJindividual::Bool = false
+    LJspecial::Bool = false
+    Cindividual::Bool = false
+    Cspecial::Bool = false
+    intraLJ::Bool = false
+    intraC::Bool = true
+end
+@kwdef struct QuartersLambdaScheduler 
+    dual::Bool = true
+    LJindividual::Bool = false
+    LJspecial::Bool = false
+    Cindividual::Bool = false
+    Cspecial::Bool = false
+    intraLJ::Bool = false
+    intraC::Bool = true
+end
+@kwdef struct EleScaledLambdaScheduler 
+    dual::Bool = true
+    LJindividual::Bool = false
+    LJspecial::Bool = false
+    Cindividual::Bool = false
+    Cspecial::Bool = false
+    intraLJ::Bool = false
+    intraC::Bool = true
 end
 
-@inline function mix_roles(::Any, roles::Tuple{Vararg{AlchemicalRole}})
+@inline function mix_default(roles::Tuple{Vararg{AlchemicalRole}})
     if any(x->x==InsertRole, roles)
         return InsertRole
     elseif any(x->x==DeleteRole, roles)
@@ -50,6 +88,36 @@ end
     end
 end
 
+@inline function mix_special(roles::Tuple{Vararg{AlchemicalRole}})
+    if all(x->x==InsertRole, roles)
+        return EnvRole
+    elseif any(x->x==InsertRole, roles)
+        return InsertRole
+    elseif all(x->x==DeleteRole, roles)
+        return EnvRole
+    elseif any(x->x==DeleteRole, roles)
+        return DeleteRole
+    elseif any(x->x==CoreRole, roles)
+        return CoreRole
+    elseif any(x->x==CoreIRole, roles)
+        return CoreIRole
+    elseif any(x->x==CoreDRole, roles)
+        return CoreDRole
+    else
+        return EnvRole
+    end
+end
+
+@inline function mix_roles(inter::Any, roles::Tuple{Vararg{AlchemicalRole}}; type="")
+    if type=="coulomb" && inter.intraC
+        return mix_special(roles)
+    elseif type=="LJ" && inter.intraLJ
+        return mix_special(roles)
+    else
+        return mix_default(roles)
+    end
+end
+
 function switchAB(alch_role::Val{DeleteRole}, A, B)
     return A,A
 end
@@ -58,21 +126,3 @@ function switchAB(alch_role::Val{InsertRole}, A, B)
     return B,B
 end
 
-@kwdef struct DefaultLambdaScheduler
-    dual::Bool = true
-end
-@kwdef struct LinearLambdaScheduler
-    dual::Bool = true
-end
-@kwdef struct OpenMMTestScheduler 
-    dual::Bool = true
-end
-@kwdef struct NAMDLambdaScheduler
-    dual::Bool = true
-end
-@kwdef struct QuartersLambdaScheduler 
-    dual::Bool = true
-end
-@kwdef struct EleScaledLambdaScheduler 
-    dual::Bool = true
-end

@@ -53,7 +53,7 @@
 
     # --- Hybrid System Setup ---
     sys = RelativeFESystem(sysA, sysB, FT(0.0), mapping, core_mapAB;
-                            scheduler=Molly.OpenMMTestScheduler(dual=false),
+                            scheduler=Molly.OpenFEScheduler(dual=false),
                             array_type=AT, 
                             float_type=FT, 
                             LJsoftcore="gapsys",
@@ -183,7 +183,7 @@
 
     # --- Hybrid System Setup λ=1 ---
     sys = RelativeFESystem(sysA, sysB, FT(1.0), mapping, core_mapAB;
-                            scheduler=Molly.OpenMMTestScheduler(dual=false),
+                            scheduler=Molly.OpenFEScheduler(dual=false),
                             array_type=AT, 
                             float_type=FT, 
                             LJsoftcore="gapsys",
@@ -302,7 +302,7 @@
 
     # --- Hybrid System Setup λ=0.25 ---
     sys = RelativeFESystem(sysA, sysB, FT(0.25), mapping, core_mapAB;
-                            scheduler=Molly.OpenMMTestScheduler(dual=false),
+                            scheduler=Molly.OpenFEScheduler(dual=false),
                             array_type=AT, 
                             float_type=FT, 
                             LJsoftcore="gapsys",
@@ -421,7 +421,7 @@
 
     # --- Hybrid System Setup λ=0.5 ---
     sys = RelativeFESystem(sysA, sysB, FT(0.5), mapping, core_mapAB;
-                            scheduler=Molly.OpenMMTestScheduler(dual=false),
+                            scheduler=Molly.OpenFEScheduler(dual=false),
                             array_type=AT, 
                             float_type=FT, 
                             LJsoftcore="gapsys",
@@ -540,7 +540,7 @@
 
   # --- Hybrid System Setup λ=0.75 ---
     sys = RelativeFESystem(sysA, sysB, FT(0.75), mapping, core_mapAB;
-                            scheduler=Molly.OpenMMTestScheduler(dual=false),
+                            scheduler=Molly.OpenFEScheduler(dual=false),
                             array_type=AT, 
                             float_type=FT, 
                             LJsoftcore="gapsys",

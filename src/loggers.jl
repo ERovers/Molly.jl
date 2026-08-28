@@ -654,7 +654,6 @@ function write_chemfiles!(topology, filepath, sys, format, correction, atom_inds
             atom_inds_all_res,
         )
     end
-
     if calc_topology
         if isnothing(sys.atoms_data) || length(sys) != length(sys.atoms_data)
             throw(ArgumentError("structure writing requires atoms_data to be set"))
@@ -826,14 +825,15 @@ mutable struct TrajectoryWriter{I, T}
     topology::T
     topology_written::Bool
     structure_n::Int
+    suppress_warn::Bool
 end
 
 function TrajectoryWriter(n_steps::Integer, filepath::AbstractString;
                           format::AbstractString="", correction::Symbol=:pbc, atom_inds=Int[],
                           excluded_res=String[], write_velocities::Bool=false,
-                          write_boundary::Bool=true)
+                          write_boundary::Bool=true, suppress_warn::Bool=false)
     check_correction_arg(correction)
-    if isfile(filepath)
+    if isfile(filepath) && !(suppress_warn)
         @warn "TrajectoryWriter created with a file path ($filepath) that already exists, " *
               "will try to append to this file"
     end
@@ -846,7 +846,7 @@ function TrajectoryWriter(n_steps::Integer, filepath::AbstractString;
     end
     return TrajectoryWriter(n_steps, filepath, format_used, correction, atom_inds,
                     Set(excluded_res), write_velocities, write_boundary, topology,
-                    false, 0)
+                    false, 0, suppress_warn)
 end
 
 function Base.deepcopy(tw::TrajectoryWriter)
@@ -1183,30 +1183,35 @@ mutable struct ReplicaExchangeLogger{T}
     n_attempts::Int
     n_exchanges::Int
     indices::Vector{Tuple{Int, Int}}
+    replica_indices::Vector{Vector{Int}}
     steps::Vector{Int}
     deltas::Vector{T}
     end_step::Int
 end
 
 function ReplicaExchangeLogger(T::DataType, n_replicas::Integer)
-    return ReplicaExchangeLogger{T}(n_replicas, 0, 0, Tuple{Int, Int}[], Int[], T[], 0)
+    return ReplicaExchangeLogger{T}(n_replicas, 0, 0, Tuple{Int, Int}[], Vector{Int}[], Int[], T[], 0)
 end
 
 ReplicaExchangeLogger(n_replicas::Integer) = ReplicaExchangeLogger(DefaultFloat, n_replicas)
 
-function log_property!(rexl::ReplicaExchangeLogger,
+function log_exchange!(rexl::ReplicaExchangeLogger,
                        sys::ReplicaSystem,
                        neighbors=nothing,
                        step_n::Integer=0,
                        buffers=nothing;
-                       indices,
-                       delta,
+                       indices=nothing,
+                       delta=nothing,
                        n_threads::Integer=Threads.nthreads(),
                        kwargs...)
-    push!(rexl.indices, indices)
-    push!(rexl.steps, step_n)
-    push!(rexl.deltas, delta)
-    rexl.n_exchanges += 1
+    if !isnothing(indices)
+        push!(rexl.indices, indices)
+        push!(rexl.steps, step_n)
+        push!(rexl.deltas, delta)
+        rexl.n_exchanges += 1
+    else
+        push!(rexl.replica_indices, deepcopy(sys.state_indices))
+    end
 end
 
 function finish_logs!(rexl::ReplicaExchangeLogger;

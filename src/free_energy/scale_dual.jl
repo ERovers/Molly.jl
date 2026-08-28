@@ -92,7 +92,7 @@ end
 ### OpenMM Test Scheduler ###
 #############################
 
-@inline function scale_sterics(::OpenMMTestScheduler, λ::T, role::AlchemicalRole, dual::Val{true}, args...) where T
+@inline function scale_sterics(::OpenFEScheduler, λ::T, role::AlchemicalRole, dual::Val{true}, args...) where T
     if role == InsertRole
         λ = λ < T(0.5) ? T(2.0) * λ : T(1.0)
         return λ, one(λ), one(λ)
@@ -108,7 +108,7 @@ end
     end
 end
 
-@inline function scale_elec(::OpenMMTestScheduler, λ::T, role::AlchemicalRole, dual::Val{true}, args...) where T
+@inline function scale_elec(::OpenFEScheduler, λ::T, role::AlchemicalRole, dual::Val{true}, args...) where T
     if role == InsertRole
         λ = T(λ < T(0.5) ? T(0.0) : T(2.0) * (λ - T(0.5)))
         return λ, one(λ), one(λ)

@@ -1617,12 +1617,38 @@ from_device(x) = Array(x)
 from_device(x::StructArray) = replace_storage(Array, x)
 
 to_device(x::Nothing, ::Type{AT}) where AT = nothing
-to_device(x::Array, ::Type{<:Array}) = x
 to_device(x::AT, ::Type{AT}) where {AT <: AbstractArray} = x
 to_device(x, ::Type{AT}) where AT = AT(x)
 
 function Base.deepcopy(t::Tuple)
     return map(deepcopy, t)
+end
+
+function Base.deepcopy_internal(t::Tuple, dict::IdDict)
+    return map(deepcopy, t)
+end
+
+reference_array(t::Tuple) = Any[t...]
+
+function Base.deepcopy_internal(sys::System, dict::IdDict)
+    # 1. Check if already copied to handle references/cycles
+    if haskey(dict, sys)
+        return dict[sys]::typeof(sys)
+    end
+
+    # 2. Extract and recursively deepcopy fields via Julia dispatch
+    field_copies = ntuple(fieldcount(typeof(sys))) do i
+        fname = fieldname(typeof(sys), i)
+        fval  = getfield(sys, fname)
+        Base.deepcopy_internal(fval, dict)
+    end
+
+    # 3. Construct a new System instance with the copied fields
+    new_sys = ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), 
+                    typeof(sys), reference_array(field_copies), length(field_copies))
+    
+    dict[sys] = new_sys
+    return new_sys::typeof(sys)
 end
 
 function to_device(t::Tuple)

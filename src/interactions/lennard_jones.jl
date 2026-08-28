@@ -356,12 +356,12 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     S = typeof(at.σ)
     E = typeof(at.ϵ)
     E0 = zero.(at.ϵ)
-    classCounts = Dict{Tuple{S, E, T, Int32}, Int}()
+    classCounts = Dict{Tuple{S, E, T, Int32}, Tacc}()
     nλ_atoms = 0
     for i in 1:n_atoms
         atom_i = atoms_cpu[i]
         λ, λR, λ_params = scale_sterics(scheduler, atom_i.λ, atom_i.alch_role, Val(scheduler.dual))
-        if !scheduler.dual && scheduler isa OpenMMTestScheduler
+        if !scheduler.dual && scheduler isa OpenFEScheduler
             if atom_i.alch_role in [CoreRole, DeleteRole, InsertRole]
                 classCounts[(atom_i.σ,E0,atom_i.λ,atom_i.alch_role)] = get(classCounts,(atom_i.σ,E0,atom_i.λ,atom_i.alch_role),0) + λ
                 nλ_atoms += λ
@@ -511,6 +511,30 @@ end
     return λ * ((91 * C12 * (invR6 * invR6)) - (28 * C6 * invR6))
 end
 
+@inline function λ_params_function(scheduler, λ_mix, σ_mix, ϵ_mix, atom_i, atom_j, special)
+    λ_glob = λ_mixing(λ_mix, (atom_i.λ, atom_j.λ))
+    pair_role = mix_roles(scheduler, (atom_i.alch_role, atom_j.alch_role); type="LJ")
+    dual = scheduler.dual ? Val(true) : Val(false)
+    if scheduler.dual
+        λ, λR, λ_params = scale_sterics(scheduler, λ_glob, pair_role, Val(true))
+        σ = σ_mixing(σ_mix, atom_i, atom_j)
+        ϵ = ϵ_mixing(ϵ_mix, atom_i, atom_j)
+    # elseif !(scheduler.LJindividual) || (!(scheduler.LJspecial) && special)
+    #     λ, λR, λ_params = scale_sterics(scheduler, λ_glob, pair_role, Val(false))
+    #     σ = σ_mixing(σ_mix, atom_i, atom_j, λ_params, pair_role)
+    #     ϵ = ϵ_mixing(ϵ_mix, atom_i, atom_j, λ_params, pair_role)
+    # else
+    #     λ, λR, λ_params = scale_sterics(scheduler, λ_glob, pair_role, Val(false))
+    #     σi = params_mixing(atom_i.σ, λ_params)
+    #     σj = params_mixing(atom_j.σ, λ_params)
+    #     ϵi = params_mixing(atom_i.ϵ, λ_params)
+    #     ϵj = params_mixing(atom_j.ϵ, λ_params)
+    #     σ = xy_mixing(σ_mix, σi, σj)
+    #     ϵ = xy_mixing(ϵ_mix, ϵi, ϵj)
+    end
+    return λ, λR, λ_params, σ, ϵ
+end
+
 @doc raw"""
     LennardJonesSoftCoreBeutler(; cutoff, α, λ, use_neighbors, shortcut, σ_mixing,
                                 ϵ_mixing, weight_special)
@@ -588,7 +612,7 @@ function Base.:+(l1::LennardJonesSoftCoreBeutler, l2::LennardJonesSoftCoreBeutle
     )
 end
 
-function to_lambda_function(inter::LennardJones, ::BeutlerSoftCore; α=0.3, λ_mixing=MinimumMixing(), 
+function to_lambda_function(inter::LennardJones, ::BeutlerSoftCore; α=0.5, λ_mixing=MinimumMixing(), 
                             scheduler=DefaultLambdaScheduler(), float_type=Float32, args...)
     return LennardJonesSoftCoreBeutler(cutoff=inter.cutoff, α=float_type(α), 
                                         use_neighbors=inter.use_neighbors, shortcut=inter.shortcut, 
@@ -606,9 +630,9 @@ end
                        args...)
     # Mix Lambda
     T = typeof(ustrip(atom_i.λ))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    λ, λR, λ_params, σ, ϵ = λ_params_function(inter.scheduler, inter.λ_mixing, 
+                                              inter.σ_mixing, inter.ϵ_mixing, 
+                                              atom_i, atom_j, special)
 
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
@@ -626,8 +650,6 @@ end
     # If lambda is 1, the soft core formula reduces to standard LJ
     # We explicity branch to save compute.
     if λ >= 1 && λR >= 1
-        σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
-        ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
         σ2 = σ^2
         params = (σ2, ϵ, nothing, nothing)
         
@@ -638,10 +660,7 @@ end
         return special ? fdr * inter.weight_special : fdr
     end
 
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
     σ6 = σ^6
-
     C6 = 4 * ϵ * σ6
     C12 = C6 * σ6
     σ6_shift = inter.α * (1 - (λ*λR)) * σ6
@@ -675,9 +694,9 @@ end
                                   args...)
     # Mix Lambda
     T = typeof(ustrip(atom_i.λ))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
+    λ, λR, λ_params, σ, ϵ = λ_params_function(inter.scheduler, inter.λ_mixing, 
+                                            inter.σ_mixing, inter.ϵ_mixing, 
+                                            atom_i, atom_j, special)
 
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
@@ -695,9 +714,6 @@ end
             return zero_pairwise_energy(dr, energy_units)
         end
 
-        σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
-        ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
-
         r = sqrt(sum(abs2, dr))
         σ2 = σ^2
         params = (σ2, ϵ, nothing, nothing)
@@ -711,10 +727,7 @@ end
         end
     end
 
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
     σ6 = σ^6
-
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
     C6 = 4 * ϵ * σ6
@@ -850,13 +863,10 @@ end
                        args...)
 
     T = typeof(ustrip(atom_i.mass))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    if inter.scheduler.dual
-        λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(true))
-    else
-        λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(false))
-    end
+    λ, λR, λ_params, σ, ϵ = λ_params_function(inter.scheduler, inter.λ_mixing, 
+                                            inter.σ_mixing, inter.ϵ_mixing, 
+                                            atom_i, atom_j, special)
+
     if λ <= 0
         return zero_pairwise_force(dr, force_units)
     end
@@ -871,9 +881,6 @@ end
         return zero_pairwise_force(dr, force_units)
     end
     
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
-
     # 3. Fast Path: Standard Lennard Jones
     if λ >= 1 && λR>=1
         # Pass standard LJ params tuple (Length 2)
@@ -927,13 +934,9 @@ end
                                   special=false,
                                   args...)
     T = typeof(ustrip(atom_i.mass))
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    if inter.scheduler.dual
-        λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(true))
-    else
-        λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(false))
-    end
+    λ, λR, λ_params, σ, ϵ = λ_params_function(inter.scheduler, inter.λ_mixing, 
+                                            inter.σ_mixing, inter.ϵ_mixing, 
+                                            atom_i, atom_j, special)
 
     if λ <= 0
         return zero_pairwise_energy(dr, energy_units)
@@ -945,8 +948,6 @@ end
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
 
     # 3. Fast Path: Standard Lennard Jones
     if λ >= 1 && λR>=1
@@ -1088,12 +1089,9 @@ end
         return zero_pairwise_force(dr, force_units)
     end
 
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
-
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
+    λ, λR, λ_params, σ, ϵ = λ_params_function(inter.scheduler, inter.λ_mixing, 
+                                            inter.σ_mixing, inter.ϵ_mixing, 
+                                            atom_i, atom_j, special)
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
@@ -1131,12 +1129,9 @@ end
         return zero_pairwise_energy(dr, energy_units)
     end
 
-    λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
-    λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
-
-    σ = σ_mixing(inter.σ_mixing, atom_i, atom_j, λ_params, pair_role)
-    ϵ = ϵ_mixing(inter.ϵ_mixing, atom_i, atom_j, λ_params, pair_role)
+    λ, λR, λ_params, σ, ϵ = λ_params_function(inter.scheduler, inter.λ_mixing, 
+                                            inter.σ_mixing, inter.ϵ_mixing, 
+                                            atom_i, atom_j, special)
 
     cutoff = inter.cutoff
     r = sqrt(sum(abs2, dr))
@@ -1296,7 +1291,7 @@ end
     T = typeof(ustrip(atoms_i.σ))
     dr = vector(coords_i, coords_l, boundary)
     λ_glob = T(λ_mixing(inter.λ_mixing, (atom_i.λ, atom_j.λ)))
-    pair_role = mix_roles(inter.scheduler, (atom_i.alch_role, atom_j.alch_role))
+    pair_role = mix_roles(scheduler, (atom_i.alch_role, atom_j.alch_role))
     λ, λR, λ_params = scale_sterics(inter.scheduler, λ_glob, pair_role, Val(inter.scheduler.dual))
 
     if λ <= 0
