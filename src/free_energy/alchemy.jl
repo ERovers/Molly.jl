@@ -40,6 +40,7 @@ struct OpenFESchedule end
 struct NAMDSchedule end
 struct QuartersSchedule end
 struct EleScaledSchedule end
+struct DiffusionSchedule end
 
 """
     LambdaScheduler(schedule=DefaultSchedule(); dual=true, LJindividual=false,
@@ -229,6 +230,9 @@ full coupling and quickly close to decoupling.
 A [`LambdaScheduler`](@ref), see there for the keyword arguments.
 """
 const EleScaledLambdaScheduler = LambdaScheduler{EleScaledSchedule}
+
+# DiffusionLambdaScheduler to scale bonded interactions before sterics and electrostatics.
+const DiffusionLambdaScheduler = LambdaScheduler{DiffusionSchedule}
 
 # `Val(scheduler.dual)` builds a type from a runtime field, which the GPU compiler cannot
 # lower. Branching on the Bool instead keeps both `Val`s compile-time literals, so these are

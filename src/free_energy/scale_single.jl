@@ -272,3 +272,82 @@ end
         return one(λ), one(λ), one(λ)
     end
 end
+
+
+##################################
+### Diffusion Lambda Scheduler ###
+##################################
+
+@inline function scale(::DiffusionLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
+    if role == DeleteRole
+        if λ < T(0.9)
+            λ = one(λ)
+        elseif λ < T(1.0)
+            λ = (T(1.0) - λ) / T(0.1)
+        else
+            λ = zero(λ)
+        end
+        return one(λ), λ
+    else
+        return one(λ), one(λ)
+    end
+end
+
+@inline function scale_torsion(::DiffusionLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
+    if role == DeleteRole
+        if λ < T(0.8)
+            λ = one(λ)
+        elseif λ < T(0.9)
+            λ = (T(0.9) - λ) / T(0.1)
+        else
+            λ = zero(λ)
+        end
+        return return ((1-λ),(1-λ),(1-λ),(1-λ),(1-λ),(1-λ),λ,λ,λ,λ,λ,λ)
+    else
+        λ = one(λ)
+        return (λ,λ,λ,λ,λ,λ,λ,λ,λ,λ,λ,λ)
+    end
+end
+
+@inline function scale_bias(::DiffusionLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T
+    if role == DeleteRole
+        if λ < T(0.8)
+            λ = one(λ)
+        elseif λ < T(1.0)
+            λ = (T(1.0) - λ) / T(0.2)
+        else
+            λ = zero(λ)
+        end
+        return λ
+    else
+        return one(λ)
+    end
+end
+
+@inline function scale_sterics(::DiffusionLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T    
+    if role == DeleteRole
+        if λ < T(0.4)
+            λ = one(λ)
+        elseif λ < T(0.8)
+            λ = (T(0.8) - λ) / T(0.4)
+        else
+            λ = zero(λ)
+        end
+        return one(λ), (1-λ), λ
+    else
+        return one(λ), one(λ), one(λ)
+    end
+end
+
+@inline function scale_elec(::DiffusionLambdaScheduler, λ::T, role::AlchemicalRole, dual::Val{false}, args...) where T 
+    if role == DeleteRole 
+        if λ < T(0.4)
+            λ = (T(0.4) - λ) / T(0.4)
+        else
+            λ = zero(λ)
+        end
+        return one(λ), (1-λ), λ
+    else
+        return one(λ), one(λ), one(λ)
+    end
+end
