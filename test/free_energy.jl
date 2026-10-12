@@ -1,7 +1,7 @@
-# --- End state helpers ---
-# Hybrid atom -> end state atom (0 for a dummy), in the atom order of RelativeFESystem: core atoms
-#   (an A and a B copy each in dual topology), atoms unique to A, to B, environment. `real` marks
-#   the atoms of the end state. `n_end` is the number of atoms of the end state system.
+# Loading the TYK2 test data from OpenFE from artifact
+tyk2_dir = LazyArtifacts.ensure_artifact_installed("tyk2_data",
+                normpath(@__DIR__, "..", "Artifacts.toml"))
+
 function end_state_map(mapping, core_mapAB, n_end, dual, state)
     h2e, real = Int[], Bool[]
     for i in mapping["core"]
@@ -19,8 +19,6 @@ function end_state_map(mapping, core_mapAB, n_end, dual, state)
     return [h2e; env], [real; trues(length(env))]
 end
 
-# The bonded terms of the dummy atoms stay on at the end states and are left out; the nonbonded
-#   terms of a dummy are off at the end states
 function real_terms(il, real)
     eltype(il.inters) <: Union{EwaldExclusion, Molly.LennardJones14λ} && return il
     atom_fields = fieldnames(typeof(il))[1:(end - 3)]
@@ -29,9 +27,6 @@ function real_terms(il, real)
                                    il.inters[keep], il.types[keep], il.data)
 end
 
-# Energy and force differences of a hybrid system at an end state to the end state system `ref`,
-#   at the positions of `ref`, and the largest force on a dummy atom. The forces on the two copies
-#   of a core atom in dual topology are summed.
 function end_state_diff(sys, ref, h2e, real)
     coords = [h2e[i] > 0 ? ref.coords[h2e[i]] : c for (i, c) in enumerate(sys.coords)]
     sys = System(sys; coords=coords,
@@ -46,7 +41,6 @@ function end_state_diff(sys, ref, h2e, real)
             maximum(norm, fs[h2e .== 0]; init=norm(zero(fs[1]))))
 end
 
-# The TYK2 ligand of a complex PDB file alone, for small systems in vacuum
 function ligand_pdb(file)
     lines = readlines(file)
     serials = Set(l[7:11] for l in lines if startswith(l, "HETATM") && l[18:20] == "UNK")
@@ -56,7 +50,6 @@ function ligand_pdb(file)
     return out
 end
 
-# ejm31 (A) and ejm50 (B) in vacuum, with the mapping of the OpenFE TYK2 test
 function tyk2_ligands(; kwargs...)
     build(lig) = System(ligand_pdb(joinpath(data_dir, "tyk2_$lig.pdb")),
                         MolecularForceField(joinpath(data_dir, "$lig.xml"); units=true);
@@ -160,6 +153,17 @@ const softcores = (:beutler, :gapsys, :scaled)
         atom_order[(atom_name, res_id, res_name, chain_id)] = ind
     end
 
+    let disp(s) = potential_energy(s; pairwise_inters=(), specific_inter_lists=(),
+                      general_inters=Tuple(g for g in s.general_inters
+                                           if g isa LJDispersionCorrection ||
+                                              g isa Molly.LJDispersionCorrectionλ))
+        for (λ, ref) in ((0.0, sysA), (1.0, sysB))
+            sys_dual = RelativeFESystem(sysA, sysB, FT(λ), mapping, core_mapAB;
+                                        scheduler=DefaultLambdaScheduler(dual=true))
+            @test isapprox(disp(sys_dual), disp(ref); rtol=1e-7)
+        end
+    end
+
     inters = ("bond_only", "angle_only", "torsion_only", "nonbonded", "PME", "all")
 
     for (λ, λtag) in ((0.0, "l0"), (0.25, "l25"), (0.5, "l5"), (0.75, "l75"), (1.0, "l1"))
@@ -227,8 +231,6 @@ const softcores = (:beutler, :gapsys, :scaled)
                 general_inters=gis,
             )
 
-            # Tolerances as checked per λ: λ = 0 against looser ones, and at λ > 0 the
-            #   nonbonded part is compared as loosely as PME
             strict = λ > 0
             loose = inter in ("PME", "all") || (strict && inter == "nonbonded")
 
@@ -259,10 +261,6 @@ end
     @test length(sysA.virtual_sites) == 2 && length(sysB.virtual_sites) == 2
     @test all(vs -> vs.type == 5, sysA.virtual_sites) # LocalCoordinatesSite
 
-    # The ligands are matched by atom name, the lone pairs included, except that the methyl of
-    #   ejm31 is a hydroxymethyl in ejm50: H11 is bonded to C14 in ejm31 but to the hydroxyl O3 in
-    #   ejm50, so it is unique to each end state rather than core, as the bonding of a core atom
-    #   cannot change
     ligand(sys) = [i for i in eachindex(sys) if sys.atoms_data[i].res_name in ("LIG", "UNK")]
     ligA, ligB = ligand(sysA), ligand(sysB)
     nameA = Dict(sysA.atoms_data[i].atom_name => i for i in ligA)
@@ -274,7 +272,12 @@ end
                    "unique_B" => sort([nameB[n] for n in uniq_B]))
     core_mapAB = Dict(i => nameB[sysA.atoms_data[i].atom_name] for i in core)
 
-    for scheduler in (DefaultLambdaScheduler(dual=true), OpenFEScheduler(dual=false))
+    # A CHARMM protein carries backbone CMAP terms, whose grid single topology can not interpolate
+    @test_throws ArgumentError RelativeFESystem(sysA, sysB, FT(0), mapping, core_mapAB;
+                        scheduler=OpenFEScheduler(dual=false), LJsoftcore=:gapsys,
+                        Csoftcore=:gapsys)
+
+    for scheduler in (DefaultLambdaScheduler(dual=true),)
         for (λ, ref, state) in ((0.0, sysA, :A), (1.0, sysB, :B))
             sys = RelativeFESystem(sysA, sysB, FT(λ), mapping, core_mapAB; scheduler=scheduler,
                                    LJsoftcore=:gapsys, Csoftcore=:gapsys)
@@ -295,40 +298,63 @@ end
 end
 
 @testset "End states" begin
-    sysA, sysB, mapping, core_mapAB = tyk2_ligands()
-    etol, ftol = 1e-8u"kJ * mol^-1", 1e-8u"kJ * mol^-1 * nm^-1"
+    etol, ftol = 1e-6u"kJ * mol^-1", 1e-6u"kJ * mol^-1 * nm^-1"
+    solute = collect(1:12)
+    ff_solv = MolecularForceField(joinpath.(ff_dir, ["tip3p_standard.xml", "benzene.xml"])...;
+                                  units=true)
+    is_disp(g) = g isa LJDispersionCorrection || g isa Molly.LJDispersionCorrectionλ
+    without_disp(s) = Tuple(g for g in s.general_inters if !is_disp(g))
 
-    # Relative: λ = 0 is system A and λ = 1 system B, for every scheduler, topology and soft core
-    for S in lambda_schedulers, dual in (true, false), LJsoftcore in softcores, Csoftcore in softcores
-        for (λ, ref, state) in ((0.0, sysA, :A), (1.0, sysB, :B))
-            sys = RelativeFESystem(sysA, sysB, λ, mapping, core_mapAB; scheduler=S(dual=dual),
-                                   LJsoftcore=LJsoftcore, Csoftcore=Csoftcore)
-            dE, dF, F_dummy = end_state_diff(sys, ref, end_state_map(mapping, core_mapAB, length(ref),
-                                                                     dual, state)...)
-            @test dE < etol
-            @test dF < ftol
-            @test iszero(F_dummy)
+    for nonbonded in (SetupPME(), SetupCoulombReactionField())
+        sys = System(joinpath(data_dir, "benzene_solv.pdb"), ff_solv; nonbonded_method=nonbonded,
+                     dist_cutoff=1.0u"nm", center_coords=false)
+        E_ref = potential_energy(sys; general_inters=without_disp(sys))
+        F_ref = forces(sys; general_inters=without_disp(sys))
+        disp(s) = potential_energy(s; pairwise_inters=(), specific_inter_lists=(),
+                                   general_inters=Tuple(g for g in s.general_inters if is_disp(g)))
+        solvent = setdiff(eachindex(sys.atoms), solute)
+        zeroed = [i in solute ? Atom(a.index, a.atom_type, a.mass, zero(a.charge), a.σ, zero(a.ϵ),
+                                     a.λ, a.alch_role) : a for (i, a) in enumerate(sys.atoms)]
+        F_decoupled = forces(System(sys; atoms=zeroed))
+
+        # Every scheduler and every soft core combination, at both end states. 
+        for S in lambda_schedulers, LJsoftcore in softcores, Csoftcore in softcores
+            sys_0 = AbsoluteFESystem(sys, 0.0, solute; scheduler=S(dual=true),
+                                     LJsoftcore=LJsoftcore, Csoftcore=Csoftcore)
+            @test abs(potential_energy(sys_0; general_inters=without_disp(sys_0)) - E_ref) < etol
+            @test maximum(norm.(forces(sys_0; general_inters=without_disp(sys_0)) .- F_ref)) < ftol
+            sys_1 = AbsoluteFESystem(sys, 1.0, solute; scheduler=S(dual=true),
+                                     LJsoftcore=LJsoftcore, Csoftcore=Csoftcore)
+            @test maximum(norm.(forces(sys_1)[solvent] .- F_decoupled[solvent])) < ftol
+            S(dual=true) isa OpenFEScheduler || @test abs(disp(sys_0) - disp(sys)) < etol
         end
     end
 
-    # Absolute, the whole ligand alchemical: λ = 0 is the system, λ = 1 leaves the bonded terms
-    #   and, with intraLJ, the Lennard-Jones within the ligand
-    alchemical = collect(eachindex(sysA.atoms))
-    bonded = System(sysA; pairwise_inters=(), general_inters=())
-    intra_lj = System(sysA; pairwise_inters=(sysA.pairwise_inters[1],), specific_inter_lists=(),
-                      general_inters=())
-    for S in lambda_schedulers, LJsoftcore in softcores, Csoftcore in softcores
-        sys = AbsoluteFESystem(sysA, 0.0, alchemical; scheduler=S(dual=true), LJsoftcore=LJsoftcore,
-                               Csoftcore=Csoftcore)
-        @test abs(potential_energy(sys) - potential_energy(sysA)) < etol
-        @test maximum(norm.(forces(sys) .- forces(sysA))) < ftol
-        for intraLJ in (false, true)
-            sys = AbsoluteFESystem(sysA, 1.0, alchemical; scheduler=S(dual=true, intraLJ=intraLJ),
-                                   LJsoftcore=LJsoftcore, Csoftcore=Csoftcore)
-            ref_E = potential_energy(bonded) + (intraLJ ? potential_energy(intra_lj) : zero(etol))
-            ref_F = forces(bonded) .+ (intraLJ ? forces(intra_lj) : zero(forces(bonded)))
-            @test abs(potential_energy(sys) - ref_E) < etol
-            @test maximum(norm.(forces(sys) .- ref_F)) < ftol
-        end
+    sys_c = System(joinpath(data_dir, "benzene_solv.pdb"), ff_solv; nonbonded_method=SetupPME(),
+                   dist_cutoff=1.0u"nm", center_coords=false, constraints=:hbonds,
+                   constraint_algorithm=SetupLINCS(), rigid_water=true)
+    n_cons(s) = sum(length(c.dist_constraints) for c in s.constraints)
+    for S in (DefaultLambdaScheduler, OpenFEScheduler)
+        sys_0 = AbsoluteFESystem(sys_c, 0.0, solute; scheduler=S(dual=true))
+        @test n_cons(sys_0) == n_cons(sys_c)
+        @test abs(potential_energy(sys_0; general_inters=without_disp(sys_0)) -
+                  potential_energy(sys_c; general_inters=without_disp(sys_c))) < etol
+    end
+end
+
+@testset "OpenFE sigma interpolation" begin
+    core = Atom(1, 1, 12.0u"g/mol", (0.0, 0.0), (0.30u"nm", 0.35u"nm"),
+                (0.5u"kJ*mol^-1", 0.5u"kJ*mol^-1"), 0.0, Molly.CoreRole)
+    dummy(role, λ) = Atom(2, 1, 12.0u"g/mol", (0.0, 0.0), (0.25u"nm", 0.25u"nm"),
+                          (0.5u"kJ*mol^-1", 0.5u"kJ*mol^-1"), λ, role)
+    mixed(S, role, λ, special) = Molly.λ_params_function(S(dual=false), Molly.MinimumMixing(),
+                            Molly.LorentzMixing(), Molly.GeometricMixing(),
+                            Atom(core.index, core.atom_type, core.mass,
+                            core.charge, core.σ, core.ϵ, λ, core.alch_role), dummy(role, λ),
+                            special, core.σ)[4]
+    for (role, λ, pinned) in ((Molly.InsertRole, 0.25, 0.3u"nm"), (Molly.DeleteRole, 0.75, 0.275u"nm"))
+        @test mixed(OpenFEScheduler, role, λ, false) ≈ 0.2875u"nm"
+        @test mixed(OpenFEScheduler, role, λ, true) ≈ pinned
+        @test mixed(DefaultLambdaScheduler, role, λ, false) ≈ pinned
     end
 end

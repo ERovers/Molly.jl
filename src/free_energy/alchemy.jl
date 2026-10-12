@@ -243,9 +243,6 @@ const DiffusionLambdaScheduler = LambdaScheduler{DiffusionSchedule}
 @inline scale_torsion_dual(s, λ, role) =
     s.dual ? scale_torsion(s, λ, role, Val(true)) : scale_torsion(s, λ, role, Val(false))
 
-@inline scale_bias_dual(s, λ, role) =
-    s.dual ? scale_bias(s, λ, role, Val(true)) : scale_bias(s, λ, role, Val(false))
-
 @inline scale_sterics_dual(s, λ, role) =
     s.dual ? scale_sterics(s, λ, role, Val(true)) : scale_sterics(s, λ, role, Val(false))
 
@@ -324,19 +321,34 @@ end
     end
 end
 
+# Single topology interpolates the parameters of the two end states, which needs a convention per
+# interaction. `RBTorsion` and `MorseBond` have none that holds for a staged scheduler: GROMACS
+# interpolates their parameters but only ever with a linear bonded λ, and OpenFE supports neither.
+function no_single_topology(inter)
+    throw(ArgumentError("$(typeof(inter).name.name) has no single topology version, so its " *
+                        "parameters cannot be interpolated between the end states; use a scheduler " *
+                        "with dual=true for this system"))
+end
+
+to_lambda_function_single(interA, interB; kwargs...) =
+    no_single_topology(isnothing(interA) ? interB : interA)
+
 @inline is_torsion(inter) = false
+
+@inline torsion_scaled(inter, roles) =
+    is_torsion(inter) && inter.scheduler.Tscaled && mix_torsion(roles) != EnvRole
 
 @inline virial_lambda_factor(inter, atoms) = 1
 
 # `AbsoluteFESystem` and `RelativeFESystem` convert every specific interaction to its λ
 # counterpart, so only the λ types can appear on an alchemical atom and only they need the
-# coupling supplied.
+# coupling supplied. Weighting the bonded virial by the coupling comes from master (`6ec6ef4c`,
+# JuliaMolSim/Molly.jl#258); here the default of 1 keeps terms that scale their own forces from
+# being scaled twice, and the coupling has the sense of the role rather than raw `atom.λ`.
 @inline function virial_lambda_factor(inter::AlchemicalBondedInteraction, atoms)
     λ_glob = λ_mixing(inter.λ_mixing, atoms)
     roles = map(a -> a.alch_role, atoms)
-    if is_torsion(inter) && inter.scheduler.Tscaled && mix_torsion(roles) != EnvRole
-        return one(λ_glob)
-    end
+    torsion_scaled(inter, roles) && return one(λ_glob)
     return scale_virial_dual(inter.scheduler, λ_glob, mix_default(roles))
 end
 
@@ -344,5 +356,6 @@ end
     T = typeof(ustrip(first(atoms).λ))
     λ_glob = T(λ_mixing(inter.λ_mixing, atoms))
     role = mix_roles(inter.scheduler, map(a -> a.alch_role, atoms); torsion=is_torsion(inter))
-    return scale_dual(inter.scheduler, λ_glob, role)
+    return is_torsion(inter) ? scale_torsion_dual(inter.scheduler, λ_glob, role) :
+                               scale_dual(inter.scheduler, λ_glob, role)
 end

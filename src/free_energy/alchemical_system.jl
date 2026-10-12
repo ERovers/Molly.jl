@@ -1,5 +1,6 @@
 export
     AbsoluteFESystem,
+    set_lambda!,
     RelativeFESystem
 
 ### Checks for hybrid system ###
@@ -68,7 +69,12 @@ function unmap_changing_constraints!(mapping, core_mapAB, sysA, sysB)
     moved = Int[]
     for (i, j) in pairs
         dist_B = get(dists_B, minmax(core_mapAB[i], core_mapAB[j]), nothing)
-        get(dists_A, (i, j), nothing) == dist_B && continue
+        dist_A = get(dists_A, (i, j), nothing)
+        # Two force fields can store the same length with different rounding, so compare with a
+        #   tolerance rather than exactly
+        same = (isnothing(dist_A) || isnothing(dist_B)) ? isnothing(dist_A) == isnothing(dist_B) :
+               isapprox(dist_A, dist_B; rtol=1e-6)
+        same && continue
         if is_H(i)
             push!(moved, i)
         elseif is_H(j)
@@ -149,7 +155,7 @@ end
 
 ### Functions to change interactions to λ versions ###
 # Specific interactions
-function to_lambda_inter_list(inter_list, scheduler, AT, FT, lj_sc)
+function to_lambda_inter_list(inter_list, scheduler, AT, FT, lj_sc, lj_params=(;))
     inters_cpu = from_device(inter_list.inters)
     isempty(inters_cpu) && return inter_list
     if !(eltype(inters_cpu) <: LennardJones14) && !hasmethod(to_lambda_function, Tuple{eltype(inters_cpu)})
@@ -157,28 +163,30 @@ function to_lambda_inter_list(inter_list, scheduler, AT, FT, lj_sc)
               "virial will not follow the alchemical coupling"
         return inter_list
     end
-    new_inters = [lambda_specific(x, scheduler, FT, lj_sc) for x in inters_cpu]
+    new_inters = [lambda_specific(x, scheduler, FT, lj_sc, lj_params) for x in inters_cpu]
     IT = typeof(inter_list).name.wrapper
     fields = getfield.((inter_list,), fieldnames(typeof(inter_list)))
     return IT(fields[1:(end - 3)]..., to_device(new_inters, AT), inter_list.types,
               inter_list.data)
 end
 
-lambda_specific(inter, scheduler, FT, lj_sc) = to_lambda_function(inter; λ_mixing=MinimumMixing(),
-                                                                  scheduler=scheduler)
-lambda_specific(inter::LennardJones14, scheduler, FT, lj_sc) = to_lambda_function(inter, lj_sc;
-        λ_mixing=MinimumMixing(), scheduler=scheduler, float_type=FT)
+lambda_specific(inter, scheduler, FT, lj_sc, lj_params=(;)) = to_lambda_function(inter;
+        λ_mixing=MinimumMixing(), scheduler=scheduler)
+lambda_specific(inter::LennardJones14, scheduler, FT, lj_sc, lj_params=(;)) =
+    to_lambda_function(inter, lj_sc; λ_mixing=MinimumMixing(), scheduler=scheduler, float_type=FT,
+                       lj_params...)
 
-lambda_single(interA, interB, scheduler, lj_sc) = to_lambda_function_single(interA, interB;
-                                                                            scheduler=scheduler)
-lambda_single(interA::LennardJones14, interB::Nothing, scheduler, lj_sc) =
-    to_lambda_function_single(interA, interB, lj_sc; scheduler=scheduler)
-lambda_single(interA::Nothing, interB::LennardJones14, scheduler, lj_sc) =
-    to_lambda_function_single(interA, interB, lj_sc; scheduler=scheduler)
+lambda_single(interA, interB, scheduler, lj_sc, lj_params=(;)) =
+    to_lambda_function_single(interA, interB; scheduler=scheduler)
+lambda_single(interA::LennardJones14, interB::Nothing, scheduler, lj_sc, lj_params=(;)) =
+    to_lambda_function_single(interA, interB, lj_sc; scheduler=scheduler, lj_params...)
+lambda_single(interA::Nothing, interB::LennardJones14, scheduler, lj_sc, lj_params=(;)) =
+    to_lambda_function_single(interA, interB, lj_sc; scheduler=scheduler, lj_params...)
     
-lambda_single_A(inter, scheduler, lj_sc, deleted) = lambda_single(inter, nothing, scheduler, lj_sc)
-function lambda_single_A(inter::LennardJones14, scheduler, lj_sc, deleted)
-    lj14 = lambda_single(inter, nothing, scheduler, lj_sc)
+lambda_single_A(inter, scheduler, lj_sc, deleted, lj_params=(;)) =
+    lambda_single(inter, nothing, scheduler, lj_sc, lj_params)
+function lambda_single_A(inter::LennardJones14, scheduler, lj_sc, deleted, lj_params=(;))
+    lj14 = lambda_single(inter, nothing, scheduler, lj_sc, lj_params)
     return deleted ? update_lambda_function(lj14, LennardJones14(inter.σ14_mixed, zero(inter.ϵ14_mixed),
                                                                   inter.weight_14)) : lj14
 end
@@ -188,30 +196,51 @@ const softcore_dic = Dict(:beutler => BeutlerSoftCore(),
                           :gapsys  => GapsysSoftCore(),
                           :scaled  => ScaledSoftCore())
                           
-function check_scheduler(scheduler)
+function check_scheduler(scheduler, sys)
     if scheduler isa Union{GROMACSLambdaABFEScheduler, GROMACSLambdaRBFEScheduler} &&
                 !scheduler.dual
-        @warn "the GROMACS schedulers mix the energies of the two end states, which is dual " *
-              "topology, so with dual=false the result does not match GROMACS and PME is not " *
-              "supported"
+        msg = "the GROMACS schedulers mix the energies of the two end states, which is dual " *
+              "topology, so with dual=false the result does not match GROMACS"
+        if any(inter isa AbstractEwald for inter in sys.general_inters)
+            throw(ArgumentError(msg * ", and the two grid mesh it needs is not available in " *
+                                "single topology; use dual=true or another scheduler"))
+        end
+        @warn msg
     end
     return nothing
 end
 
-function check_softcores(LJsoftcore, Csoftcore)
+# The parameters each soft core takes, so a name that would otherwise be ignored is caught here
+const softcore_param_names = Dict((:beutler, :LJ) => (:α,), (:gapsys, :LJ) => (:α,),
+                                  (:scaled, :LJ) => (), (:beutler, :C) => (:α,),
+                                  (:gapsys, :C) => (:α, :σQ), (:scaled, :C) => ())
+
+function check_softcores(LJsoftcore, Csoftcore, LJsoftcore_params=(;), Csoftcore_params=(;))
     if !(LJsoftcore in (:beutler, :gapsys, :scaled))
         throw(ArgumentError("LJsoftcore is $(repr(LJsoftcore)), use :beutler, :gapsys or :scaled"))
     end
     if !(Csoftcore in (:beutler, :gapsys, :scaled))
         throw(ArgumentError("Csoftcore is $(repr(Csoftcore)), use :beutler, :gapsys or :scaled"))
     end
+    for (side, softcore, params) in ((:LJ, LJsoftcore, LJsoftcore_params),
+                                     (:C, Csoftcore, Csoftcore_params))
+        allowed = softcore_param_names[(softcore, side)]
+        for name in keys(params)
+            if !(name in allowed)
+                throw(ArgumentError("$(side)softcore_params has $name, but the $(repr(softcore)) " *
+                    "soft core takes $(isempty(allowed) ? "no parameters" : join(allowed, ", "))"))
+            end
+        end
+    end
 end
 
-function lambda_pairwise_inters(sys, scheduler, LJsoftcore, Csoftcore, FT)
+function lambda_pairwise_inters(sys, scheduler, LJsoftcore, Csoftcore, FT, LJsoftcore_params=(;),
+                                Csoftcore_params=(;))
     return map(sys.pairwise_inters) do inter
-        softcore = softcore_dic[inter isa LennardJones ? LJsoftcore : Csoftcore]
+        lj = inter isa LennardJones
+        softcore = softcore_dic[lj ? LJsoftcore : Csoftcore]
         to_lambda_function(inter, softcore; scheduler=scheduler, λ_mixing=MinimumMixing(),
-                           float_type=FT)
+                           float_type=FT, (lj ? LJsoftcore_params : Csoftcore_params)...)
     end
 end
 
@@ -224,21 +253,64 @@ function lambda_general_inters(sys, atoms, boundary, scheduler, global_λ)
         if inter isa PME && two_grid
             push!(inters, PME_λ(inter.dist_cutoff, to_device(atoms, AT), boundary;
                                 grad_safe=inter.grad_safe, error_tol=inter.error_tol,
+                                order=inter.order, ϵr=inter.ϵr, mesh_dims=inter.mesh_dims,
                                 fixed_charges=false, scheduler=scheduler, λ=FT(global_λ)))
         elseif inter isa PME
             push!(inters, PME(inter.dist_cutoff, to_device(atoms, AT), boundary;
                               grad_safe=inter.grad_safe, error_tol=inter.error_tol,
+                              order=inter.order, ϵr=inter.ϵr, mesh_dims=inter.mesh_dims,
                               fixed_charges=false, scheduler=scheduler))
+        elseif inter isa Ewald
+            push!(inters, Ewald(inter.dist_cutoff; error_tol=inter.error_tol, scheduler=scheduler))
         elseif inter isa LJDispersionCorrection
             push!(inters, LJDispersionCorrectionλ(to_device(atoms, AT), inter.dist_cutoff,
-                                                  scheduler, MinimumMixing(), inter.σ_mix,
-                                                  inter.ϵ_mix))
+                                                  MinimumMixing(), inter.σ_mix, inter.ϵ_mix;
+                                                  scheduler=scheduler))
         else
             @warn "$(typeof(inter).name.name) has no alchemical version yet and is left out of " *
                   "the system, so its contribution is missing at every λ, the end states included"
         end
     end
     return tuple(inters...)
+end
+
+"""
+    set_lambda!(sys, λ)
+
+Set the global λ of an alchemical system in place, without rebuilding it.
+
+Only the λ of the alchemical atoms, the mesh weight of [`PME`](@ref)'s two grid form and the
+precomputed factors of the λ dispersion correction depend on λ; the neighbor masks, the interaction
+lists, the topology, the constraints and the virtual sites do not, which is what makes this much
+cheaper than building the system again. Environment atoms keep λ = 1.
+
+A ladder of states can share everything λ-independent:
+
+```julia
+states = [set_lambda!(System(sys), λ) for λ in 0:0.1:1]
+```
+
+`System(sys)` shares its arrays, so the masks exist once, but the states then also share the scratch
+buffers of `PME` and of any constraint algorithm. States run at the same time need their own, which
+`ReplicaSystem` arranges through `remd_unshared`; a hand-written threaded loop over states does not.
+"""
+function set_lambda!(sys::System, λ)
+    FT = float_type(sys)
+    # A new vector rather than a write into the old one, so a system copied from another keeps its λ
+    sys.atoms = to_device([a.alch_role == EnvRole ? a :
+                           Atom(a.index, a.atom_type, a.mass, a.charge, a.σ, a.ϵ, FT(λ),
+                                a.alch_role) for a in from_device(sys.atoms)], array_type(sys))
+    sys.general_inters = map(sys.general_inters) do inter
+        if inter isa PME_λ
+            pme_lambda_reweight(inter, λ)
+        elseif inter isa LJDispersionCorrectionλ
+            LJDispersionCorrectionλ(sys.atoms, inter.dist_cutoff, MinimumMixing(), inter.σ_mix,
+                                    inter.ϵ_mix; scheduler=inter.scheduler)
+        else
+            inter
+        end
+    end
+    return sys
 end
 
 ### General functions for settings and setup ###
@@ -305,11 +377,13 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
                         scheduler=DefaultLambdaScheduler(dual=true),
                         loggers=(),
                         LJsoftcore=:gapsys,
-                        Csoftcore=:gapsys
+                        Csoftcore=:gapsys,
+                        LJsoftcore_params=(;),
+                        Csoftcore_params=(;)
                         )
     FT, units, temp, AT, grad_safe = alchemical_settings(sys, temp)
-    check_softcores(LJsoftcore, Csoftcore)
-    check_scheduler(scheduler)
+    check_softcores(LJsoftcore, Csoftcore, LJsoftcore_params, Csoftcore_params)
+    check_scheduler(scheduler, sys)
     lj_sc = softcore_dic[LJsoftcore]
     sys_atoms  = from_device(sys.atoms)
     sys_coords = from_device(sys.coords)
@@ -345,7 +419,8 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
     Coords = Vector{typeof(Coords[1])}(Coords)
     Data = Vector{typeof(Data[1])}(Data)
 
-    pairwise_inters = lambda_pairwise_inters(sys, scheduler, LJsoftcore, Csoftcore, FT)
+    pairwise_inters = lambda_pairwise_inters(sys, scheduler, LJsoftcore, Csoftcore, FT,
+                                           LJsoftcore_params, Csoftcore_params)
     general_inters = lambda_general_inters(sys, Atoms, Boundary, scheduler, global_λ)
     SpecificInteraction = Any[]
     for inter_list in sys.specific_inter_lists
@@ -357,7 +432,7 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
                                    scheduler=scheduler, λ_mix=d.λ_mixing),
             ))
         else
-            push!(SpecificInteraction, to_lambda_inter_list(inter_list, scheduler, AT, FT, lj_sc))
+            push!(SpecificInteraction, to_lambda_inter_list(inter_list, scheduler, AT, FT, lj_sc, LJsoftcore_params))
         end
     end
 
@@ -419,11 +494,13 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
                         scheduler=DefaultLambdaScheduler(dual=true),
                         loggers=(),
                         LJsoftcore=:gapsys,
-                        Csoftcore=:gapsys
+                        Csoftcore=:gapsys,
+                        LJsoftcore_params=(;),
+                        Csoftcore_params=(;)
                         )
     FT, units, temp, AT, grad_safe = alchemical_settings(sysA, temp)
-    check_softcores(LJsoftcore, Csoftcore)
-    check_scheduler(scheduler)
+    check_softcores(LJsoftcore, Csoftcore, LJsoftcore_params, Csoftcore_params)
+    check_scheduler(scheduler, sysA)
     lj_sc = softcore_dic[LJsoftcore]
     # To-do: Currently not implemented a 1-4 intramolecular LJ interaction for single topology that
     #   is not decoupled
@@ -482,6 +559,28 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         if (i in vs_inds_A) != (core_mapAB[i] in vs_inds_B)
             throw(ArgumentError("core atom $i of system A is a virtual site in only one of the " *
                 "end states, make it a unique atom of both instead"))
+        end
+    end
+    # Single topology keeps one copy of a core atom, so its site is system A's definition; system B
+    #   defining it differently would mean λ = 1 is not system B
+    if !scheduler.dual
+        site_of(vs, ind) = vs[findfirst(v -> v.atom_ind == ind, vs)]
+        for i in mapping["core"]
+            i in vs_inds_A || continue
+            vA, vB = site_of(vsA, i), site_of(vsB_all, core_mapAB[i])
+            # `core_mapAB` maps A to B, and a frame atom that is not a core atom has no counterpart
+            same_atoms = all((getfield(vA, f) == 0) == (getfield(vB, f) == 0) &&
+                             (getfield(vA, f) == 0 ||
+                              get(core_mapAB, getfield(vA, f), nothing) == getfield(vB, f))
+                             for f in (:atom_1, :atom_2, :atom_3))
+            same_shape = all(getfield(vA, f) == getfield(vB, f) for f in
+                (:type, :weight_1, :weight_2, :weight_3, :weight_12, :weight_13, :weight_cross,
+                 :local_weights, :local_position))
+            if !(same_atoms && same_shape)
+                throw(ArgumentError("core atom $i of system A is a virtual site defined " *
+                    "differently in the two end states, which single topology cannot interpolate; " *
+                    "make it a unique atom of both instead"))
+            end
         end
     end
     Data         = []
@@ -662,9 +761,9 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         field_types = fieldtypes(typeof(interaction))[1:end-1]
         
         if scheduler.dual
-            converted_type = typeof(lambda_specific(interaction.inters[1], scheduler, FT, lj_sc))
+            converted_type = typeof(lambda_specific(interaction.inters[1], scheduler, FT, lj_sc, LJsoftcore_params))
         else
-            converted_type = typeof(lambda_single(interaction.inters[1], nothing, scheduler, lj_sc))
+            converted_type = typeof(lambda_single(interaction.inters[1], nothing, scheduler, lj_sc, LJsoftcore_params))
         end
         
         field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
@@ -687,10 +786,10 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
                 end
                 
                 if scheduler.dual
-                    push!(tmp[n_fields-1], lambda_specific(field_tuple[end-1], scheduler, FT, lj_sc))
+                    push!(tmp[n_fields-1], lambda_specific(field_tuple[end-1], scheduler, FT, lj_sc, LJsoftcore_params))
                 else
                     deleted = any(in(unique_A), field_tuple[1:(n_fields - 2)])
-                    push!(tmp[n_fields-1], lambda_single_A(field_tuple[end-1], scheduler, lj_sc, deleted))
+                    push!(tmp[n_fields-1], lambda_single_A(field_tuple[end-1], scheduler, lj_sc, deleted, LJsoftcore_params))
                     single_top_atom_maps[(IT,IIT,P)][Tuple(mapped_atoms)] = length(tmp[n_fields-1])
                 end
                 
@@ -711,7 +810,7 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         field_types = fieldtypes(typeof(interaction))[1:end-1]
         
         if scheduler.dual
-            converted_type = typeof(lambda_specific(interaction.inters[1], scheduler, FT, lj_sc))
+            converted_type = typeof(lambda_specific(interaction.inters[1], scheduler, FT, lj_sc, LJsoftcore_params))
             field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
             tmp = [T() for T in field_types]
             
@@ -725,13 +824,13 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
                     for (k, i) in enumerate(atoms_B)
                         push!(tmp[k], haskey(mapping_B, i) ? mapping_B[i] : mapping_A[env_BA[i]])
                     end
-                    push!(tmp[n_fields-1], lambda_specific(field_tuple[end-1], scheduler, FT, lj_sc))
+                    push!(tmp[n_fields-1], lambda_specific(field_tuple[end-1], scheduler, FT, lj_sc, LJsoftcore_params))
                     push!(tmp[n_fields], field_tuple[end])
                 end
             end
             Interactions = push!(Interactions, IT(tmp..., interaction.data))
         else
-            converted_type = typeof(lambda_single(nothing, interaction.inters[1], scheduler, lj_sc))
+            converted_type = typeof(lambda_single(nothing, interaction.inters[1], scheduler, lj_sc, LJsoftcore_params))
             field_types = [field_types[1:end-2]..., Vector{converted_type}, field_types[end]]
             
             tmp_unique_B = [T() for T in field_types]
@@ -765,7 +864,7 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
                     for i in 1:n_fields-2
                         push!(tmp_unique_B[i], mapped_tuple[i])
                     end
-                    push!(tmp_unique_B[n_fields-1], lambda_single(nothing, field_tuple[end-1], scheduler, lj_sc))
+                    push!(tmp_unique_B[n_fields-1], lambda_single(nothing, field_tuple[end-1], scheduler, lj_sc, LJsoftcore_params))
                     push!(tmp_unique_B[n_fields], field_tuple[end])
                 end
 
@@ -777,7 +876,7 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         end
     end
 
-    Interactions = merge(Interactions)
+    Interactions = merge_interactions(Interactions)
 
     # A pair of atoms is excluded, or special, if it is so in either end state
     #   Have to take information from neighbourfinder, since constraints drop 
@@ -837,14 +936,16 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         )
     end
 
-    pairwise_inters = lambda_pairwise_inters(sysA, scheduler, LJsoftcore, Csoftcore, FT)
+    pairwise_inters = lambda_pairwise_inters(sysA, scheduler, LJsoftcore, Csoftcore, FT,
+                                           LJsoftcore_params, Csoftcore_params)
     general_inters = lambda_general_inters(sysA, Atoms, Boundary, scheduler, global_λ)
 
     # The Ewald exclusions follow the hybrid masks
     for inter in sysA.general_inters
-        if inter isa PME
+        if inter isa AbstractEwald
             excluded_pairs = find_excluded_pairs(eligible, special)
-            exclusion_data = EwaldExclusionData(FT(inter.dist_cutoff); error_tol=FT(inter.error_tol), scheduler=scheduler)
+            exclusion_data = EwaldExclusionData(FT(inter.dist_cutoff); error_tol=FT(inter.error_tol),
+                                    ϵr=(inter isa PME ? FT(inter.ϵr) : one(FT)), scheduler=scheduler)
             ewald_exclusions = InteractionList2Atoms(
                 to_device([ep[1] for ep in excluded_pairs], AT),
                 to_device([ep[2] for ep in excluded_pairs], AT),
@@ -856,9 +957,8 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         end
     end
 
-    # The virtual sites of system A, unique virtual sites of B, core (virtual) atoms of B mappend 
-    #   to atoms of A
-    # To-do: @Joe please check this part
+    # The virtual sites of system A, the unique sites of B, and in dual topology the sites of the
+    #   core atoms of B, whose atoms are mapped to the A copies since those are the real ones
     core_mapBA = Dict(j => i for (i, j) in core_mapAB)
     map_B_real(i) = (haskey(core_mapBA, i) ? mapping_A[core_mapBA[i]] : map_B(i))
     unique_B = Set(mapping["unique_B"])
@@ -898,15 +998,22 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
                     push!(constrained, Set([i, j]))
                 end
             end
-            # Adding an AngleConstraint that's in system B on a core atom, might result
-            #   in an error if the core atom already has a distance constraint.
-            #   So, a constrained angle of B is added as its three distance constraints. Similarly, to how 
-            #   GROMACS represents every constrained angle (`h-angles`) and as LINCS does internally.
-            # To-do: @Joe please check this part
-            for c in angle_csB, dc in to_distance_constraints(remap_angle_constraint(c, map_B_real))
-                if !(Set([dc.i, dc.j]) in constrained)
-                    push!(dist_cs, dc)
-                    push!(constrained, Set([dc.i, dc.j]))
+            # An angle constraint of system B stays one when none of its three pairs is
+            #   constrained already, which is what LINCS needs. A pair of a core atom that is
+            #   constrained in system A makes the triangle coupled, so there it falls back to three
+            #   distance constraints, as GROMACS represents `h-angles` and as LINCS does internally.
+            for c in angle_csB
+                cB = remap_angle_constraint(c, map_B_real)
+                if !any(p in constrained for p in angle_pairs(cB))
+                    push!(angle_cs, cB)
+                    foreach(p -> push!(constrained, p), angle_pairs(cB))
+                    continue
+                end
+                for dc in to_distance_constraints(cB)
+                    if !(Set([dc.i, dc.j]) in constrained)
+                        push!(dist_cs, dc)
+                        push!(constrained, Set([dc.i, dc.j]))
+                    end
                 end
             end
         end

@@ -280,7 +280,7 @@ AtomsCalculators.@generate_interface function AtomsCalculators.forces!(
 end
 
 @doc raw"""
-    LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix, ϵ_mix)
+    LJDispersionCorrectionλ(atoms, dist_cutoff, λ_mix, σ_mix, ϵ_mix; scheduler)
 
 The long-range dispersion correction for the [`LennardJones`](@ref) interaction, scaled by λ for
 alchemical transformations.
@@ -306,15 +306,18 @@ volume can change).
 Only compatible with 3D systems.
 Not compatible with cutoffs other than [`DistanceCutoff`](@ref).
 """
-struct LJDispersionCorrectionλ{F6,F12, D,S,E}
+struct LJDispersionCorrectionλ{F6,F12, D,S,E,SCH}
     factor_6::F6
     factor_12::F12
     dist_cutoff::D
     σ_mix::S
     ϵ_mix::E
+    # Kept so that `set_lambda!` can rebuild the factors, which are precomputed from the coupling
+    scheduler::SCH
 end
 
-function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix, ϵ_mix)
+# The scheduler is a keyword so that this does not clash with the type's own 6 field constructor
+function LJDispersionCorrectionλ(atoms, dist_cutoff, λ_mix, σ_mix, ϵ_mix; scheduler)
     T = typeof(ustrip(dist_cutoff))
     n_atoms = length(atoms)
     atoms_cpu = from_device(atoms)
@@ -361,9 +364,14 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
     end
     rep(key) = Atom(σ=key[1], ϵ=key[2], λ=key[3], alch_role=key[4])
 
+    # A dual topology hybrid excludes every pair of an A side atom with a B side atom, so those
+    #   class pairs carry no interaction and must not be counted
+    a_side, b_side = (DeleteRole, CoreDRole), (InsertRole, CoreIRole)
+    excluded_pair(r1, r2) = (r1 in a_side && r2 in b_side) || (r1 in b_side && r2 in a_side)
     ks = collect(keys(classCounts))
     for a in eachindex(ks), b in 1:a
         k1, k2 = ks[a], ks[b]
+        excluded_pair(k1[4], k2[4]) && continue
         n1, n2 = classCounts[k1], classCounts[k2]
         npair = Tacc(a == b ? (n1 * (n1 + 1)) / 2 : n1 * n2)
         λ, _, _, σ, ϵ = λ_params_function(scheduler, λ_mix, σ_mix, ϵ_mix, rep(k1), rep(k2), false)
@@ -397,6 +405,7 @@ function LJDispersionCorrectionλ(atoms, dist_cutoff, scheduler, λ_mix, σ_mix,
         dist_cutoff,
         σ_mix,
         ϵ_mix,
+        scheduler,
     )
 end
 
@@ -472,8 +481,11 @@ end
     pair_role = mix_roles(scheduler, (atom_i.alch_role, atom_j.alch_role); lj=true)
     λ, λR, λ_params = scale_sterics(scheduler, λ_glob, pair_role, Val(false))
     if !scheduler.LJindividual || (!scheduler.LJspecial && special)
-        # Mix the two end states, then interpolate the pair.
-        σ = σ_mixing(σ_mix, atom_i, atom_j, λ_params, pair_role)
+        # Mix the two end states, then interpolate the pair. OpenFE interpolates σ of an ordinary
+        #   pair with a dummy atom (`relative.py:979`), but for a 1-4 pair it duplicates σ of the
+        #   state the dummy exists in (`:2337`, `:2368`), which is what `switchAB` gives
+        σ_role = (scheduler isa OpenFEScheduler && !special ? CoreRole : pair_role)
+        σ = σ_mixing(σ_mix, atom_i, atom_j, λ_params, σ_role)
         ϵ = ϵ_mixing(ϵ_mix, atom_i, atom_j, λ_params, pair_role)
     else
         # Interpolate each atom, then mix. `params_mixing` takes λ_params first.

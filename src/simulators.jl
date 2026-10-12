@@ -2156,7 +2156,10 @@ end
 # Total steps, exchange cycles, steps per cycle and steps left over after the last cycle
 function remd_schedule(remd_sim::ReplicaExchangeMD, n_steps_or_time)
     n_steps = calc_n_steps(n_steps_or_time, remd_sim.dt)
-    n_cycles = convert(Int, (n_steps * remd_sim.dt) ÷ remd_sim.exchange_time)
+    # In steps, not in time, and rounded: dividing times floors a float, which gave 49 cycles for
+    #   500 steps of 2 fs with a 0.02 ps exchange time, and `cld` rounds 0.1 ps / 1 fs up to 101
+    steps_per_cycle = max(1, round(Int, remd_sim.exchange_time / remd_sim.dt))
+    n_cycles = n_steps ÷ steps_per_cycle
     cycle_length = n_cycles > 0 ? n_steps ÷ n_cycles : 0
     remaining_steps = n_cycles > 0 ? n_steps % n_cycles : n_steps
     return n_steps, n_cycles, cycle_length, remaining_steps
@@ -2265,11 +2268,14 @@ function simulate_remd!(sys::ReplicaSystem,
     thread_div = equal_parts(n_threads, sys.n_replicas)
     general_inters = remd_unshared(sys.state_general_inters)
     integrators = remd_unshared(sys.integrators)
+    # The states run concurrently and a constraint algorithm holds a scratch workspace, so no two
+    #   states may share one
+    constraints = remd_unshared([sys.partition.master_sys.constraints for _ in 1:sys.n_replicas])
 
     n_attempts = 0
     progress = setup_progress(n_cycles, show_progress)
     for cycle in 1:n_cycles
-        remd_propagate_cpu!(sys, general_inters, integrators, cycle_length,
+        remd_propagate_cpu!(sys, general_inters, integrators, constraints, cycle_length,
                             init_step + (cycle - 1) * cycle_length, remd_logger_mode(sys, run_loggers),
                             thread_div, check_nans, rng, strictness)
         n_attempts += remd_exchange_sweep!(sys, remd_sim, cycle, init_step + cycle * cycle_length,
@@ -2278,7 +2284,7 @@ function simulate_remd!(sys::ReplicaSystem,
     end
 
     if remaining_steps > 0
-        remd_propagate_cpu!(sys, general_inters, integrators, remaining_steps,
+        remd_propagate_cpu!(sys, general_inters, integrators, constraints, remaining_steps,
                             init_step + n_cycles * cycle_length, remd_logger_mode(sys, run_loggers),
                             thread_div, check_nans, rng, strictness)
     end
@@ -2288,8 +2294,8 @@ end
 
 # State k integrates the replica currently in it, `state_indices[k]`, and records into its own
 # loggers. Coordinates, velocities and the boundary are written back to that replica.
-function remd_propagate_cpu!(sys::ReplicaSystem, general_inters, integrators, n_steps, start_step,
-                             run_loggers, thread_div, check_nans, rng, strictness)
+function remd_propagate_cpu!(sys::ReplicaSystem, general_inters, integrators, constraints, n_steps,
+                             start_step, run_loggers, thread_div, check_nans, rng, strictness)
     master_sys = sys.partition.master_sys
     active_systems = Vector{Any}(undef, sys.n_replicas)
     @sync for k in 1:sys.n_replicas
@@ -2302,6 +2308,7 @@ function remd_propagate_cpu!(sys::ReplicaSystem, general_inters, integrators, n_
             pairwise_inters=sys.state_pairwise_inters[k],
             specific_inter_lists=sys.state_specific_inter_lists[k],
             general_inters=general_inters[k],
+            constraints=constraints[k],
             neighbor_finder=sys.replica_neighbor_finders[k],
             loggers=sys.replica_loggers[k],
         )
