@@ -158,7 +158,7 @@ end
 function to_lambda_inter_list(inter_list, scheduler, AT, FT, lj_sc, lj_params=(;))
     inters_cpu = from_device(inter_list.inters)
     isempty(inters_cpu) && return inter_list
-    if !(eltype(inters_cpu) <: LennardJones14) && !hasmethod(to_lambda_function, Tuple{eltype(inters_cpu)})
+    if !(eltype(inters_cpu) <: LennardJones14Any) && !hasmethod(to_lambda_function, Tuple{eltype(inters_cpu)})
         @warn "no to_lambda_function for $(eltype(inters_cpu)), leaving it unscaled; its " *
               "virial will not follow the alchemical coupling"
         return inter_list
@@ -172,7 +172,7 @@ end
 
 lambda_specific(inter, scheduler, FT, lj_sc, lj_params=(;)) = to_lambda_function(inter;
         λ_mixing=MinimumMixing(), scheduler=scheduler)
-lambda_specific(inter::LennardJones14, scheduler, FT, lj_sc, lj_params=(;)) =
+lambda_specific(inter::LennardJones14Any, scheduler, FT, lj_sc, lj_params=(;)) =
     to_lambda_function(inter, lj_sc; λ_mixing=MinimumMixing(), scheduler=scheduler, float_type=FT,
                        lj_params...)
 
@@ -194,7 +194,8 @@ end
 # Pairwise interactions
 const softcore_dic = Dict(:beutler => BeutlerSoftCore(),
                           :gapsys  => GapsysSoftCore(),
-                          :scaled  => ScaledSoftCore())
+                          :scaled  => ScaledSoftCore(),
+                          :msld    => MSLDSoftCore())
                           
 function check_scheduler(scheduler, sys)
     if scheduler isa Union{GROMACSLambdaABFEScheduler, GROMACSLambdaRBFEScheduler} &&
@@ -213,14 +214,15 @@ end
 # The parameters each soft core takes, so a name that would otherwise be ignored is caught here
 const softcore_param_names = Dict((:beutler, :LJ) => (:α,), (:gapsys, :LJ) => (:α,),
                                   (:scaled, :LJ) => (), (:beutler, :C) => (:α,),
-                                  (:gapsys, :C) => (:α, :σQ), (:scaled, :C) => ())
+                                  (:gapsys, :C) => (:α, :σQ), (:scaled, :C) => (),
+                                  (:msld, :LJ) => (:r_soft,), (:msld, :C) => (:r_soft,))
 
 function check_softcores(LJsoftcore, Csoftcore, LJsoftcore_params=(;), Csoftcore_params=(;))
-    if !(LJsoftcore in (:beutler, :gapsys, :scaled))
-        throw(ArgumentError("LJsoftcore is $(repr(LJsoftcore)), use :beutler, :gapsys or :scaled"))
-    end
-    if !(Csoftcore in (:beutler, :gapsys, :scaled))
-        throw(ArgumentError("Csoftcore is $(repr(Csoftcore)), use :beutler, :gapsys or :scaled"))
+    for (name, softcore) in ((:LJsoftcore, LJsoftcore), (:Csoftcore, Csoftcore))
+        if !haskey(softcore_dic, softcore)
+            throw(ArgumentError("$name is $(repr(softcore)), use one of " *
+                                join(sort([repr(k) for k in keys(softcore_dic)]), ", ")))
+        end
     end
     for (side, softcore, params) in ((:LJ, LJsoftcore, LJsoftcore_params),
                                      (:C, Csoftcore, Csoftcore_params))
