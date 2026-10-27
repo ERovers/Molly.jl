@@ -117,11 +117,6 @@ end
 # The smooth cosine cutoff f_C ([ANI-1] Eq. 2) is defined once in core Molly as
 # `cosine_cutoff` (imported via `using Molly`) and shared by the CPU and GPU AEV paths.
 
-# Replace the d-th component of SVector sv with value x.
-@inline function setcomp(sv::SVector{D,T}, d::Int, x::T) where {D,T}
-    SVector{D,T}(ntuple(k -> k == d ? x : sv[k], Val(D)))
-end
-
 # Radial AEV — radial symmetry function G^R, [ANI-1] Eq. (3):
 #   G^R_{η,R_s} = Σ_{j≠i} exp(−η·(R_ij − R_s)²) · f_C(R_ij)
 # One element per (η_R, r_s_R) pair, computed separately per neighbour species (the
@@ -1427,27 +1422,31 @@ end
 
 """
     Molly.compute_aevs_ka(coords, species_indices, p, n_species;
-                          backend=nothing, neighbors=nothing, workgroup=256)
+                          backend=nothing, neighbors=nothing, workgroup=256,
+                          write_reduce=:auto)
 
-GPU-portable AEV computation using KernelAbstractions. One thread per atom.
+GPU-portable AEV computation using KernelAbstractions.
 `coords` can be a CPU Vector{SVector} or a GPU array (CuArray, ROCArray, etc.).
 Pass `backend=MetalBackend()`/`CUDABackend()` to run on GPU; defaults to the
 backend of `coords`.
 
 `neighbors` selects the algorithm:
   * `nothing`     — O(N²)/O(N³) all-pairs kernel (only viable for tiny systems).
-  * a `NeighborList` — consume the neighbours from the system's finder (production path;
-                    `DistanceNeighborFinder` on GPU, `CellListMapNeighborFinder` on CPU) →
-                    O(N·k)/O(N·k²) neighbour-list kernel. Preferred for ≥1000 atoms.
-  * `:auto`       — O(N²) host build from coords, then the neighbour-list kernel
+  * a [`NeighborList`](@ref) — consume the neighbors from the system's finder (production
+                    path; [`DistanceNeighborFinder`](@ref) on GPU,
+                    [`CellListMapNeighborFinder`](@ref) on CPU) →
+                    O(N·k)/O(N·k²) neighbor-list kernel. Preferred for ≥1000 atoms.
+  * `:auto`       — O(N²) host build from coords, then the neighbor-list kernel
                     (benchmarking fallback only — does not use a real finder).
-  * `(off, idx)`  — a precomputed CSR neighbour list (Int32 offsets + indices).
+  * `(off, idx)`  — a precomputed CSR neighbor list (Int32 offsets + indices).
 
 `workgroup` sets the KA workgroup size (tunable per backend).
 
-`write_reduce=true` (with a neighbour list) uses the one-workgroup-per-atom kernel that
+`write_reduce=true` (with a neighbor list) uses the one-workgroup-per-atom kernel that
 accumulates each atom's AEV row in shared threadgroup memory and writes it to global once,
 instead of a global read-modify-write per term. Results match to Float32 rounding (~1e-6).
+`write_reduce=false` uses one thread per atom, and the default `:auto` uses the
+one-workgroup-per-atom kernel on GPU and one thread per atom on CPU.
 
 Returns the AEV matrix on the same device as `coords`.
 """

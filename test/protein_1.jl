@@ -104,7 +104,7 @@ tyk2_dir = LazyArtifacts.ensure_artifact_installed("tyk2_data",
         @test float_type(sys_float.boundary) == T
         @test typeof(ustrip(potential_energy(sys_float))) == TH
         @test typeof(ustrip(total_energy(sys_float))) == TH
-        @test typeof(ustrip(kinetic_energy_tensor(sys_float)[1][1])) == TH
+        @test typeof(ustrip(Molly.kinetic_energy_tensor(sys_float)[1][1])) == TH
         @test typeof(ustrip(kinetic_energy(sys_float))) == TH
         @test typeof(ustrip(temperature(sys_float))) == TH
         @test typeof(ustrip(pressure(sys_float)[1][1])) == TH
@@ -125,8 +125,8 @@ tyk2_dir = LazyArtifacts.ensure_artifact_installed("tyk2_data",
     @test sys.data == "data_string"
 
     @test length(sys) == length(sys.atoms) == length(sys.coords) == length(sys.velocities) == 15954
-    @test count(i -> is_any_atom(  sys.atoms[i], sys.atoms_data[i]), eachindex(sys)) == 15954
-    @test count(i -> is_heavy_atom(sys.atoms[i], sys.atoms_data[i]), eachindex(sys)) == 5502
+    @test count(i -> Molly.is_any_atom(  sys.atoms[i], sys.atoms_data[i]), eachindex(sys)) == 15954
+    @test count(i -> Molly.is_heavy_atom(sys.atoms[i], sys.atoms_data[i]), eachindex(sys)) == 5502
     @test length(sys.topology.atom_molecule_inds) == 15954
     @test sys.topology.atom_molecule_inds[10] == 1
     @test length(sys.topology.molecule_atom_counts) == 4929
@@ -290,6 +290,21 @@ tyk2_dir = LazyArtifacts.ensure_artifact_installed("tyk2_data",
     )
     @test potential_energy(sys_ljcut) ≈ 42906.57411130544u"kJ * mol^-1"
 
+    # The dispersion correction includes the part removed by the switching function
+    sys_ljcut_dc = System(
+        joinpath(data_dir, "6mrr_equil.pdb"),
+        ff;
+        nonbonded_method=SetupCoulombReactionField(),
+        center_coords=false,
+        lj_cutoff=PolynomialCutoff(0.8u"nm", 1.0u"nm"),
+        dispersion_correction=true,
+        strictness=:nowarn,
+    )
+    @test only(gi for gi in sys_ljcut_dc.general_inters if gi isa LJDispersionCorrection).cutoff ==
+            PolynomialCutoff(0.8u"nm", 1.0u"nm")
+    @test isapprox(potential_energy(sys_ljcut_dc), 41781.805721469114u"kJ * mol^-1";
+                   atol=1e-5u"kJ * mol^-1")
+
     # Test with no units
     ff_nounits = MolecularForceField(
         joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml"])...;
@@ -374,7 +389,7 @@ tyk2_dir = LazyArtifacts.ensure_artifact_installed("tyk2_data",
                 @test float_type(sys_float.boundary) == T
                 @test typeof(ustrip(potential_energy(sys_float))) == TH
                 @test typeof(ustrip(total_energy(sys_float))) == TH
-                @test typeof(ustrip(kinetic_energy_tensor(sys_float)[1][1])) == TH
+                @test typeof(ustrip(Molly.kinetic_energy_tensor(sys_float)[1][1])) == TH
                 @test typeof(ustrip(kinetic_energy(sys_float))) == TH
                 @test typeof(ustrip(temperature(sys_float))) == TH
                 @test typeof(ustrip(pressure(sys_float)[1][1])) == TH
@@ -492,6 +507,7 @@ end
 
 @testset "Implicit solvent" begin
     ff = MolecularForceField(joinpath.(ff_dir, ["ff99SBildn.xml"])...)
+    ff_nounits = MolecularForceField(joinpath(ff_dir, "ff99SBildn.xml"); units=false)
 
     for AT in array_list
         for solvent_model in (:obc2, :gbn2)
@@ -550,9 +566,49 @@ end
             end
 
             if AT == Array
+                # Parameters survive extraction and injection, and equal dielectrics with no
+                #   salt or surface tension remove the implicit solvent energy
+                sys_nu = System(joinpath(data_dir, "6mrr_nowater.pdb"), ff_nounits; units=false,
+                                boundary=CubicBoundary(100.0), dist_cutoff=5.0,
+                                nonbonded_method=DistanceCutoff(5.0), dispersion_correction=false,
+                                implicit_solvent=implicit_solvent, strictness=:nowarn, n_threads=1)
+                params = extract_parameters(sys_nu)
+                @test potential_energy(inject_gradients(sys_nu, params); n_threads=1) ≈
+                        ustrip(E_molly)
+                prefix = (solvent_model == :obc2 ? "inter_OBC_" : "inter_GB_")
+                params[prefix * "solvent_dielectric"] = params[prefix * "solute_dielectric"]
+                params[prefix * "kappa"] = params[prefix * "sa_factor"] = 0.0
+                @test potential_energy(inject_gradients(sys_nu, params); n_threads=1) ≈
+                        potential_energy(System(sys_nu; general_inters=()); n_threads=1)
+
+                # Implicit solvent uses the Coulomb constant of the non-bonded method unless
+                #   it sets its own, and without the surface area term its energy is
+                #   proportional to the constant
+                c0 = Molly.coulomb_const
+                is_c = (solvent_model == :obc2 ?
+                    c -> SetupImplicitSolventOBC(use_OBC2=true, kappa=1.0u"nm^-1",
+                                                 use_ACE=false, coulomb_const=c) :
+                    c -> SetupImplicitSolventGBN2(kappa=1.0u"nm^-1", use_ACE=false,
+                                                  coulomb_const=c))
+                function gb_energy(nonbonded_method, is)
+                    sys_gb = System(joinpath(data_dir, "6mrr_nowater.pdb"), ff;
+                                    boundary=CubicBoundary(100.0u"nm"), dist_cutoff=5.0u"nm",
+                                    nonbonded_method=nonbonded_method,
+                                    dispersion_correction=false, implicit_solvent=is,
+                                    strictness=:nowarn, n_threads=1)
+                    return potential_energy(sys_gb; pairwise_inters=(), specific_inter_lists=(),
+                                            n_threads=1)
+                end
+                coul_2 = SetupCoulomb(cutoff=DistanceCutoff(5.0u"nm"), coulomb_const=(2 * c0))
+                E_gb_1 = gb_energy(DistanceCutoff(5.0u"nm"), is_c(nothing))
+                @test gb_energy(coul_2, is_c(nothing)) ≈ 2 * E_gb_1
+                @test gb_energy(coul_2, is_c(c0)) ≈ E_gb_1
+
                 bench_result = @benchmark AtomsCalculators.forces!($forces_molly, $sys_1,
                                     $(sys_1.general_inters[1]); n_threads=1) samples=5 evals=1
-                @test bench_result.allocs == 0
+                if VERSION >= v"1.11-" # On CI this sometimes fails for Julia 1.10
+                    @test bench_result.allocs == 0
+                end
                 bench_result = @benchmark AtomsCalculators.potential_energy($sys_1,
                                     $(sys_1.general_inters[1]); n_threads=1) samples=5 evals=1
                 @test bench_result.allocs == 0
@@ -579,6 +635,110 @@ end
                 @test rmsd(coords_start, sys_min.coords) < 0.1u"nm"
             end
         end
+    end
+end
+
+@testset "Implicit solvent salt and cutoff forces" begin
+    # With salt screening the cutoff shift of the energy depends on the distance, so it
+    #   contributes to the forces, which are compared to finite differences of the energy
+    ff = MolecularForceField(joinpath(ff_dir, "ff99SBildn.xml"))
+    for implicit_solvent in (
+                SetupImplicitSolventOBC(use_OBC2=true, kappa=1.0u"nm^-1", dist_cutoff=1.0u"nm"),
+                SetupImplicitSolventGBN2(kappa=1.0u"nm^-1", dist_cutoff=1.0u"nm"))
+        sys = System(
+            joinpath(data_dir, "6mrr_nowater.pdb"),
+            ff;
+            boundary=CubicBoundary(100.0u"nm"),
+            dispersion_correction=false,
+            implicit_solvent=implicit_solvent,
+            n_threads=1,
+            strictness=:nowarn,
+        )
+        sys_gb = System(sys; pairwise_inters=(), specific_inter_lists=())
+        fs = forces(sys_gb; n_threads=1)
+        for i in 1:200:length(sys), dim in 1:3
+            grad_fd = central_fdm(5, 1; max_range=1e-5)(ustrip(u"nm", sys.coords[i][dim])) do x
+                coords_mod = copy(sys.coords)
+                coords_mod[i] = setindex(coords_mod[i], x * u"nm", dim)
+                E = potential_energy(System(sys_gb; coords=coords_mod); n_threads=1)
+                return ustrip(u"kJ * mol^-1", E)
+            end
+            @test ustrip(u"kJ * mol^-1 * nm^-1", fs[i][dim]) ≈ -grad_fd atol=1e-4
+        end
+    end
+end
+
+@testset "GBn2 carboxylate radii" begin
+    # Carboxylate O atoms are found from the bonds, so force fields with different
+    #   atom type names give the same radii
+    radii = map(["ff99SBildn.xml", "protein.ff19SB.xml"]) do ff_file
+        ff = MolecularForceField(joinpath(ff_dir, ff_file))
+        sys = System(
+            joinpath(data_dir, "6mrr_nowater.pdb"),
+            ff;
+            boundary=CubicBoundary(100.0u"nm"),
+            implicit_solvent=SetupImplicitSolventGBN2(),
+            strictness=:nowarn,
+        )
+        return Molly.mbondi3_radii(sys.atoms_data, Molly.gb_bonds(sys))
+    end
+    @test count(==(0.14u"nm"), radii[1]) == 34
+    @test radii[1] == radii[2]
+end
+
+@testset "Implicit solvent parameter injection" begin
+    # Parameters given when setting up the system are kept when they are extracted and
+    #   injected again, and a changed value in the dictionary is used
+    ff = MolecularForceField(joinpath(ff_dir, "ff99SBildn.xml"); units=false)
+    radii = merge(Molly.mbondi2_element_to_radius, Dict("N" => 0.165u"nm"))
+    for (implicit_solvent, key) in (
+                (SetupImplicitSolventOBC(element_to_radius=radii,
+                    element_to_screen=merge(Molly.obc_element_to_screen, Dict("O" => 0.9))),
+                 "inter_OBC_radius_O"),
+                (SetupImplicitSolventGBN2(element_to_radius=radii,
+                    atom_params=merge(Molly.gbn2_atom_params, Dict("C_α" => 0.8))),
+                 "inter_GB_radius_O"))
+        sys = System(
+            joinpath(data_dir, "6mrr_nowater.pdb"),
+            ff;
+            units=false,
+            boundary=CubicBoundary(100.0),
+            dispersion_correction=false,
+            implicit_solvent=implicit_solvent,
+            strictness=:nowarn,
+        )
+        gb_energy(s) = potential_energy(System(s; pairwise_inters=(), specific_inter_lists=()))
+        params_dic = Molly.extract_parameters(sys, ff)
+        @test gb_energy(inject_gradients(sys, params_dic)) ≈ gb_energy(sys)
+        params_dic[key] += 0.01
+        @test !(gb_energy(inject_gradients(sys, params_dic)) ≈ gb_energy(sys))
+    end
+end
+
+@testset "GBn2 sulfur forces" begin
+    # Sulfur has a negative GBn2 screening parameter, so for close pairs only the neck
+    #   term contributes, the GB forces on disulfide S atoms are checked against the energy
+    ff = MolecularForceField(joinpath(ff_dir, "ff99SBildn.xml"))
+    sys = System(
+        joinpath(data_dir, "openmm_refs", "hewl.pdb"),
+        ff;
+        boundary=CubicBoundary(100.0u"nm"),
+        dispersion_correction=false,
+        implicit_solvent=SetupImplicitSolventGBN2(),
+        n_threads=1,
+        strictness=:nowarn,
+    )
+    sys_gb = System(sys; pairwise_inters=(), specific_inter_lists=())
+    fs = forces(sys_gb; n_threads=1)
+    sg_inds = findall(ad -> ad.res_name == "CYS" && ad.atom_name == "SG", sys.atoms_data)
+    for i in sg_inds[1:3], dim in 1:3
+        grad_fd = central_fdm(5, 1)(ustrip(u"nm", sys.coords[i][dim])) do x
+            coords_mod = copy(sys.coords)
+            coords_mod[i] = setindex(coords_mod[i], x * u"nm", dim)
+            E = potential_energy(System(sys_gb; coords=coords_mod); n_threads=1)
+            return ustrip(u"kJ * mol^-1", E)
+        end
+        @test ustrip(u"kJ * mol^-1 * nm^-1", fs[i][dim]) ≈ -grad_fd atol=1e-4
     end
 end
 

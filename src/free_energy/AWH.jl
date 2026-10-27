@@ -25,16 +25,17 @@ Base.show(io::IO, ::MIME"text/plain", stats::AWHStats) = show(io, stats)
 
 
 @doc raw"""
-    AWHState(thermo_states::AbstractArray{ThermoState};
+    AWHState(thermo_states::AbstractArray{<:ThermoState};
              <keyword arguments>)
 
-State of an Accelerated Weight Histogram (AWH) simulation.
+State of an Accelerated Weight Histogram (AWH) simulation, see
+[Lindahl et al. 2014](https://doi.org/10.1063/1.4890371).
 
 Maintains the physical state of the system across multiple λ windows, as well as the
 accumulated statistical weights, free energy estimates, and target distribution parameters.
 
 # Arguments
-- `thermo_states::AbstractArray{ThermoState}`: Iterable containing the [`ThermoState`](@ref) structs 
+- `thermo_states::AbstractArray{<:ThermoState}`: Iterable containing the [`ThermoState`](@ref) structs
     defining each λ window of the AWH simulation.
 - `first_state::Int=1`: The index of the initial active λ state.
 - `n_bias::Int=100`: Fictitious effective sampling size used during the initial stage. Smaller values
@@ -43,6 +44,7 @@ accumulated statistical weights, free energy estimates, and target distribution 
     a uniform distribution is used.
 - `reuse_neighbors::Bool=true`: Whether to reuse the active system's neighbor list when calculating
     energies for adjacent λ windows. Generally improves performance.
+
 Loggers are attached by [`AWHSimulation`](@ref), not by `AWHState`.
 """
 mutable struct AWHState{T, ES, AS}
@@ -220,8 +222,8 @@ function awh_target_beta_pressure(sys, ::Type{T}, target_temp, target_pressure) 
 
     target_press = nothing
     if !isnothing(target_pressure)
-        l_unit = unit(sys.boundary.side_lengths[1])
-        p_unit = e_unit / l_unit^3
+        # The volume is an area in 2D, so 2D pressures have units of force per length
+        p_unit = e_unit / unit(volume(sys.boundary))
         e_val = one(T) * e_unit
         p_val_scaled = target_pressure * (e_val / energy_remove_mol(e_val))
         target_press = T(ustrip(uconvert(p_unit, p_val_scaled)))
@@ -332,11 +334,12 @@ end
     AWHSimulation(awh_state::AWHState{T};
                   <keyword arguments>)
 
-Prepares an Accelerated Weight Histogram (AWH) simulation.
+Prepare an Accelerated Weight Histogram (AWH) simulation, which is run with
+[`simulate!`](@ref).
 
 This struct stores the parameters controlling the AWH updates. It can optionally update a
 [`PMFDeconvolution`](@ref) object on the fly to obtain an unbiased PMF, as described in
-[Lindahl et al. (2014)](https://doi.org/10.1063/1.4890371). Deconvolution is recommended
+[Lindahl et al. 2014](https://doi.org/10.1063/1.4890371). Deconvolution is recommended
 for simulations where the λ coordinate represents a biased reaction coordinate (e.g. an
 umbrella potential). It is typically not required for standard alchemical transformations.
 

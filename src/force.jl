@@ -4,7 +4,6 @@
 export
     accelerations,
     force,
-    pairwise_force,
     SpecificForce1Atoms,
     SpecificForce2Atoms,
     SpecificForce3Atoms,
@@ -12,6 +11,11 @@ export
     SpecificForce5Atoms,
     forces,
     forces_virial
+
+@public force_gpu,
+    pairwise_force,
+    zero_forces,
+    forces!
 
 # Apply F = ma but give massless particles zero acceleration
 calc_accels(f, m) = (iszero(m) ? zero(f / oneunit(m)) : (f / m))
@@ -38,23 +42,34 @@ end
 """
     force(inter, vec_ij, atom_i, atom_j, force_units, special, coord_i, coord_j,
           boundary, velocity_i, velocity_j, step_n)
-    force(inter, coord_i, boundary, atom_i, force_units, velocity_i, step_n)
+    force(inter, coord_i, boundary, atom_i, force_units, velocity_i, step_n, data)
     force(inter, coord_i, coord_j, boundary, atom_i, atom_j, force_units, velocity_i,
-          velocity_j, step_n)
+          velocity_j, step_n, data)
     force(inter, coord_i, coord_j, coord_k, boundary, atom_i, atom_j, atom_k,
-          force_units, velocity_i, velocity_j, velocity_k, step_n)
+          force_units, velocity_i, velocity_j, velocity_k, step_n, data)
     force(inter, coord_i, coord_j, coord_k, coord_l, boundary, atom_i, atom_j, atom_k,
-          atom_l, force_units, velocity_i, velocity_j, velocity_k, velocity_l, step_n)
+          atom_l, force_units, velocity_i, velocity_j, velocity_k, velocity_l, step_n, data)
+    force(inter, coord_i, coord_j, coord_k, coord_l, coord_m, boundary, atom_i, atom_j,
+          atom_k, atom_l, atom_m, force_units, velocity_i, velocity_j, velocity_k,
+          velocity_l, velocity_m, step_n, data)
 
 Calculate the force between atoms due to a given interaction type.
 
 For pairwise interactions returns a single force vector and for specific interactions
 returns a type such as [`SpecificForce2Atoms`](@ref).
 Custom pairwise and specific interaction types should implement this function.
+Pairwise interactions can use [`Molly.pairwise_force`](@ref) to apply a cutoff.
+A GPU-specific version can be defined with [`Molly.force_gpu`](@ref), but this
+is not generally required.
 """
 function force end
 
-# Allow GPU-specific force functions to be defined if required
+"""
+Calculate the force between atoms due to a given interaction type on GPU.
+
+See [`force`](@ref) for more details.
+This function is only required when a different code path is required on CPU and GPU.
+"""
 force_gpu(inter, dr, ai, aj, fu, sp, ci, cj, bnd, vi, vj, sn) = force(inter, dr, ai, aj, fu, sp, ci, cj, bnd, vi, vj, sn)
 force_gpu(inter, ci, bnd, ai, fu, vi, sn, data) = force(inter, ci, bnd, ai, fu, vi, sn, data)
 force_gpu(inter, ci, cj, bnd, ai, aj, fu, vi, vj, sn, data) = force(inter, ci, cj, bnd, ai, aj, fu, vi, vj, sn, data)
@@ -97,6 +112,7 @@ end
 Calculate the force magnitude between two atoms separated by distance `r` due to a
 pairwise interaction.
 
+A positive force causes the atoms to move apart.
 This function is used in [`force`](@ref) to apply cutoff strategies by calculating
 the force at different values of `r`.
 Consequently, the parameters `params` should not include terms that depend on distance.
@@ -220,11 +236,6 @@ function invalidate_interaction_virial!(v::BufferValidity)
     return v
 end
 
-function invalidate_constraint_virial!(v::BufferValidity)
-    v.constraint_virial_step = INVALID_BUFFER_STEP
-    return v
-end
-
 function invalidate_total_virial!(v::BufferValidity)
     v.total_virial_step = INVALID_BUFFER_STEP
     return v
@@ -232,11 +243,6 @@ end
 
 function invalidate_pressure!(v::BufferValidity)
     v.pressure_step = INVALID_BUFFER_STEP
-    return v
-end
-
-function invalidate_pre_coupling_virial!(v::BufferValidity)
-    v.pre_coupling_virial_step = INVALID_BUFFER_STEP
     return v
 end
 
@@ -419,7 +425,7 @@ function init_buffers!(sys::System{D, <:Any, <:Any, TH}, n_threads) where {D, TH
     constr_vir    = zero(vir)
     constr_vir_nu = zero(vir_nounits)
     kin           = zero(vir)
-    pres          = zero(vir_nounits) .* (sys.energy_units == NoUnits ? NoUnits : u"bar")
+    pres          = zero(vir_nounits) .* pressure_units(sys)
     # Enzyme errors with nothing when n_threads is 1
     n_copies = (n_threads == 1 ? 0 : n_threads)
     fs_chunks         = [zero(fs_nounits)  for _ in 1:n_copies]
@@ -445,6 +451,17 @@ end
 
 upper_tile_count(n_blocks::Integer) = (Int64(n_blocks) * (Int64(n_blocks) + 1)) ÷ 2
 
+# Number of nodes above the blocks in the tree of block bounding boxes used by the CUDA
+#   tile search, where level k has cld(n_blocks, 2^k) nodes and the top level one node
+function block_tree_n_nodes(n_blocks::Integer)
+    n_nodes, n = 0, n_blocks
+    while n > 1
+        n = cld(n, 2)
+        n_nodes += n
+    end
+    return n_nodes
+end
+
 #=
     BuffersGPU
 
@@ -467,12 +484,15 @@ energy calculations.
   Reusable scratch arrays for constraint virial snapshots and initial-step previews.
 - `validity`: Step metadata describing which tensor buffers are current.
 - `box_mins`, `box_maxs`: Bounding boxes for each 32-atom block.
+- `tree_mins`, `tree_maxs`: Bounding boxes of runs of consecutive blocks, the internal
+  nodes of the tree searched for interacting tiles in large systems.
 - `morton_seq`, `morton_seq_buffer_1`, `morton_seq_buffer_2`, `morton_seq_inv`:
   Morton-order indices and temporary buffers for reordering atoms on the GPU.
-- `compressed_masks`: 32x32 bitmasks (eligibility and special flags) for each
-  upper-triangular tile in Morton order.
-- `tile_is_clean`: Boolean flag for each tile indicating whether it contains no
-  exclusions or special pairs and can skip mask lookups.
+- `excluded_pos`, `special_pos`: Morton position of the partner atom of each entry
+  of the sparse excluded and special lists of a [`GPUNeighborFinder`](@ref).
+- `block_exc_min`, `block_exc_max`: for each 32-atom block, the lowest and highest
+  block holding an exception partner of one of its atoms, used to rule out
+  exceptions in most tiles without looking at the atoms.
 - `interacting_tiles_i`, `interacting_tiles_j`, `interacting_tiles_type`:
   parallel 1D vectors describing the compact list of tiles currently inside the
   interaction cutoff.
@@ -490,13 +510,16 @@ energy calculations.
   and tile metadata.
 - `num_pairs`: host-side cached copy of the current interacting-tile count,
   used to size kernel launches.
-- `masks_initialized`: whether `compressed_masks`/`tile_is_clean` hold a full
-  exception-free initialization. Once set, later refreshes only restore the tiles
-  the previous sparse scatter dirtied instead of rewriting the whole
-  `O(n_blocks^2)` array.
+
+Every buffer takes memory proportional to the number of atoms or the number of
+exceptions, apart from the interacting-tile vectors which are sized from the number
+of atom blocks.
+The Morton order, block, tile, exception and reordered buffers are only used by the
+CUDA tiled kernels of [`GPUNeighborFinder`](@ref), so they are empty for other neighbor
+finders.
 =#
-mutable struct BuffersGPU{F, P, V, VN, KT, PT, C, M, R, IT, ITT, ITD, NIT, OIT, CR, VR, AR,
-                          fs_re, TIC}
+mutable struct BuffersGPU{F, P, V, VN, KT, PT, C, M, IT, ITT, ITD, NIT, OIT, CR, VR, AR,
+                          fs_re}
     fs_mat::F
     pe_vec_nounits::P
     virial::V
@@ -515,12 +538,16 @@ mutable struct BuffersGPU{F, P, V, VN, KT, PT, C, M, R, IT, ITT, ITD, NIT, OIT, 
     validity::BufferValidity
     box_mins::C
     box_maxs::C
+    tree_mins::C
+    tree_maxs::C
     morton_seq::M
     morton_seq_buffer_1::M
     morton_seq_buffer_2::M
     morton_seq_inv::M
-    compressed_masks::R
-    tile_is_clean::TIC
+    excluded_pos::M
+    special_pos::M
+    block_exc_min::M
+    block_exc_max::M
     interacting_tiles_i::IT
     interacting_tiles_j::IT
     interacting_tiles_type::ITT
@@ -535,18 +562,17 @@ mutable struct BuffersGPU{F, P, V, VN, KT, PT, C, M, R, IT, ITT, ITD, NIT, OIT, 
     step_n_preprocessed::Int
     sparse_pair_generation::UInt64
     num_pairs::Int
-    masks_initialized::Bool
 end
 
 function BuffersGPU(fs_mat, pe_vec_nounits, virial, virial_nounits, kin_tensor, pres_tensor,
-                    box_mins, box_maxs, morton_seq, morton_seq_buffer_1,
-                    morton_seq_buffer_2, morton_seq_inv, compressed_masks, tile_is_clean,
+                    box_mins, box_maxs, tree_mins, tree_maxs, morton_seq, morton_seq_buffer_1,
+                    morton_seq_buffer_2, morton_seq_inv, excluded_pos, special_pos,
+                    block_exc_min, block_exc_max,
                     interacting_tiles_i, interacting_tiles_j, interacting_tiles_type,
                     interacting_tiles_diag, num_interacting_tiles,
                     interacting_tiles_overflow, coords_reordered,
                     velocities_reordered, atoms_reordered, fs_mat_reordered,
-                    step_n_preprocessed, sparse_pair_generation, num_pairs,
-                    masks_initialized::Bool=false)
+                    step_n_preprocessed, sparse_pair_generation, num_pairs)
     constraint_virial = zero(virial)
     constraint_virial_nounits = similar(virial_nounits)
     fill!(constraint_virial_nounits, zero(eltype(virial_nounits)))
@@ -555,15 +581,15 @@ function BuffersGPU(fs_mat, pe_vec_nounits, virial, virial_nounits, kin_tensor, 
                       pre_coupling_ref(), pre_coupling_ref(), pre_coupling_ref(),
                       constraint_scratch_ref(), constraint_scratch_ref(),
                       constraint_scratch_ref(), constraint_scratch_ref(),
-                      BufferValidity(), box_mins, box_maxs, morton_seq,
+                      BufferValidity(), box_mins, box_maxs, tree_mins, tree_maxs, morton_seq,
                       morton_seq_buffer_1, morton_seq_buffer_2, morton_seq_inv,
-                      compressed_masks, tile_is_clean, interacting_tiles_i,
+                      excluded_pos, special_pos, block_exc_min, block_exc_max,
+                      interacting_tiles_i,
                       interacting_tiles_j, interacting_tiles_type, interacting_tiles_diag,
                       num_interacting_tiles,
                       interacting_tiles_overflow, coords_reordered, velocities_reordered,
                       atoms_reordered, fs_mat_reordered, Base.RefValue{Any}(nothing),
-                      step_n_preprocessed, sparse_pair_generation, num_pairs,
-                      masks_initialized)
+                      step_n_preprocessed, sparse_pair_generation, num_pairs)
 end
 
 function clear_constraint_virial!(buffers::BuffersCPU, step_n::Integer)
@@ -636,29 +662,44 @@ function init_buffers!(sys::System{D, <:AbstractGPUArray, T, TH}, n_threads,
                        for_pe::Bool=false) where {D, T, TH}
     N = length(sys)
     C = eltype(eltype(sys.coords))
-    n_blocks = cld(N, 32)
+    tiled = sys.neighbor_finder isa GPUNeighborFinder
+    N_tiled = (tiled ? N : 0)
+    n_blocks = cld(N_tiled, 32)
     n_upper_tiles = upper_tile_count(n_blocks)
     backend = get_backend(sys.coords)
 
     fs_mat       = KernelAbstractions.zeros(backend, T, D, N)
-    fs_mat_reordered = KernelAbstractions.zeros(backend, T, D, N)
+    fs_mat_reordered = KernelAbstractions.zeros(backend, T, D, N_tiled)
     pe_vec_noun  = KernelAbstractions.zeros(backend, TH, 1)
     virial       = zeros(TH, D, D) .* sys.energy_units
     virial_nu    = KernelAbstractions.zeros(backend, TH, D, D)
     constr_vir   = zero(virial)
     constr_vir_nu = KernelAbstractions.zeros(backend, TH, D, D)
     kin          = zero(virial)
-    pres         = ustrip_vec.(zero(virial)) * (sys.energy_units == NoUnits ? NoUnits : u"bar")
+    pres         = ustrip_vec.(zero(virial)) * pressure_units(sys)
     box_mins = KernelAbstractions.zeros(backend, C, n_blocks, D)
     box_maxs = KernelAbstractions.zeros(backend, C, n_blocks, D)
-    morton_seq = KernelAbstractions.zeros(backend, Int32, N)
-    morton_seq_buffer_1 = KernelAbstractions.zeros(backend, Int32, N)
-    morton_seq_buffer_2 = KernelAbstractions.zeros(backend, Int32, N)
-    morton_seq_inv = KernelAbstractions.zeros(backend, Int32, N)
-    compressed_masks = KernelAbstractions.zeros(backend, UInt32, 32, 2, n_upper_tiles)
-    tile_is_clean = KernelAbstractions.zeros(backend, Bool, n_upper_tiles)
+    n_tree_nodes = block_tree_n_nodes(n_blocks)
+    tree_mins = KernelAbstractions.zeros(backend, C, n_tree_nodes, D)
+    tree_maxs = KernelAbstractions.zeros(backend, C, n_tree_nodes, D)
+    morton_seq = KernelAbstractions.zeros(backend, Int32, N_tiled)
+    morton_seq_buffer_1 = KernelAbstractions.zeros(backend, Int32, N_tiled)
+    morton_seq_buffer_2 = KernelAbstractions.zeros(backend, Int32, N_tiled)
+    morton_seq_inv = KernelAbstractions.zeros(backend, Int32, N_tiled)
+    # Sized from the sparse exception lists, which only GPUNeighborFinder reads here
+    if tiled
+        n_excluded_entries = length(sys.neighbor_finder.eligible.partners)
+        n_special_entries = length(sys.neighbor_finder.special.partners)
+    else
+        n_excluded_entries, n_special_entries = 0, 0
+    end
+    excluded_pos = KernelAbstractions.zeros(backend, Int32, n_excluded_entries)
+    special_pos = KernelAbstractions.zeros(backend, Int32, n_special_entries)
+    block_exc_min = KernelAbstractions.zeros(backend, Int32, n_blocks)
+    block_exc_max = KernelAbstractions.zeros(backend, Int32, n_blocks)
 
-    max_interacting_blocks = min(n_upper_tiles, 1024 * n_blocks)
+    # Enough for typical systems, the CUDA tile search grows these vectors if needed
+    max_interacting_blocks = min(n_upper_tiles, 192 * n_blocks)
     interacting_tiles_i = KernelAbstractions.zeros(backend, Int32, max_interacting_blocks)
     interacting_tiles_j = KernelAbstractions.zeros(backend, Int32, max_interacting_blocks)
     interacting_tiles_type = KernelAbstractions.zeros(backend, UInt8, max_interacting_blocks)
@@ -666,11 +707,11 @@ function init_buffers!(sys::System{D, <:AbstractGPUArray, T, TH}, n_threads,
     num_interacting_tiles = KernelAbstractions.zeros(backend, Int32, 1)
     interacting_tiles_overflow = KernelAbstractions.zeros(backend, Int32, 1)
 
-    coords_reordered = zero(sys.coords)
-    velocities_reordered = zero(sys.velocities)
-    atoms_reordered = copy(sys.atoms)
+    coords_reordered = (tiled ? zero(sys.coords) : similar(sys.coords, 0))
+    velocities_reordered = (tiled ? zero(sys.velocities) : similar(sys.velocities, 0))
+    atoms_reordered = (tiled ? copy(sys.atoms) : similar(sys.atoms, 0))
 
-    if !for_pe && sys.neighbor_finder isa GPUNeighborFinder
+    if !for_pe && tiled
         sys.neighbor_finder.initialized = false
     end
 
@@ -678,26 +719,36 @@ function init_buffers!(sys::System{D, <:AbstractGPUArray, T, TH}, n_threads,
                       kin, pres, pre_coupling_ref(), pre_coupling_ref(),
                       pre_coupling_ref(), constraint_scratch_ref(), constraint_scratch_ref(),
                       constraint_scratch_ref(), constraint_scratch_ref(),
-                      BufferValidity(), box_mins, box_maxs, morton_seq,
+                      BufferValidity(), box_mins, box_maxs, tree_mins, tree_maxs, morton_seq,
                       morton_seq_buffer_1, morton_seq_buffer_2, morton_seq_inv,
-                      compressed_masks, tile_is_clean, interacting_tiles_i,
+                      excluded_pos, special_pos, block_exc_min, block_exc_max,
+                      interacting_tiles_i,
                       interacting_tiles_j, interacting_tiles_type, interacting_tiles_diag,
                       num_interacting_tiles,
                       interacting_tiles_overflow, coords_reordered, velocities_reordered,
                       atoms_reordered, fs_mat_reordered, Base.RefValue{Any}(nothing),
-                      -1, UInt64(0), 0, false)
+                      -1, UInt64(0), 0)
 end
 
+"""
+    zero_forces(sys)
+
+Return an zero array with the shape and units of the system [`forces`](@ref).
+"""
 zero_forces(sys) = ustrip_vec.(zero.(sys.coords)) .* sys.force_units
 
 """
     forces(system, neighbors=find_neighbors(system), step_n=0;
            n_threads=Threads.nthreads(), pairwise_inters=system.pairwise_inters,
            specific_inter_lists=system.specific_inter_lists,
-           general_inters=system.general_inters, strictness=:warn)
+           general_inters=system.general_inters, strictness=:warn, visit_state=false)
 
 Calculate the forces on all atoms in a system using the pairwise, specific and
 general interactions.
+
+`visit_state=true` marks the current state as visited by a simulation, which lets
+history-dependent general interactions such as [`Metadynamics`](@ref) update, e.g. deposit
+a hill. Molecular dynamics simulators pass it; other force calls don't change the system.
 """
 function forces(sys; n_threads::Integer=Threads.nthreads(), kwargs...)
     return forces(sys, find_neighbors(sys; n_threads=n_threads); n_threads=n_threads, kwargs...)
@@ -743,6 +794,15 @@ function forces_virial(sys, neighbors, step_n::Integer=0; n_threads::Integer=Thr
     end
 end
 
+"""
+    forces!(fs, system, neighbors, step_n, buffers, needs_vir_val;
+            n_threads=Threads.nthreads(), pairwise_inters=system.pairwise_inters,
+            specific_inter_lists=system.specific_inter_lists,
+            general_inters=system.general_inters, strictness=:warn)
+
+Calculate the forces on all atoms in a system using the pairwise, specific and
+general interactions and add them to `fs`.
+"""
 function forces!(fs,
                  sys::System{<:Any, <:Any, T, TH},
                  neighbors,
@@ -753,7 +813,8 @@ function forces!(fs,
                  pairwise_inters=sys.pairwise_inters,
                  specific_inter_lists=sys.specific_inter_lists,
                  general_inters=sys.general_inters,
-                 strictness=default_strictness()) where {T, TH, needs_vir}
+                 strictness=default_strictness(),
+                 visit_state::Bool=false) where {T, TH, needs_vir}
     if needs_vir
         fill!(buffers.virial, zero(TH) * sys.energy_units)
     else
@@ -762,7 +823,7 @@ function forces!(fs,
     end
     invalidate_pressure!(buffers.validity)
     fill!(buffers.kin_tensor,  zero(TH) * sys.energy_units)
-    fill!(buffers.pres_tensor, zero(TH) * (sys.energy_units == NoUnits ? NoUnits : u"bar"))
+    fill!(buffers.pres_tensor, zero(TH) * pressure_units(sys))
 
     FT = eltype(buffers.fs_nounits)
     if n_threads == 1
@@ -772,7 +833,8 @@ function forces!(fs,
         end
     else
         Threads.@threads for chunk_i in 1:n_threads
-            fill!(buffers.fs_chunks[chunk_i], zero(FT))
+            fs_chunk = buffers.fs_chunks[chunk_i]
+            fill!(fs_chunk, zero(eltype(fs_chunk)))
         end
         if needs_vir
             Threads.@threads for chunk_i in 1:n_threads
@@ -814,10 +876,11 @@ function forces!(fs,
         buffers.virial .= buffers.vir_nounits .* sys.energy_units
     end
 
+    # visit_state lets history-dependent interactions (e.g. Metadynamics) update at this state
     for inter in values(general_inters)
         AtomsCalculators.forces!(fs, sys, inter; neighbors=neighbors, step_n=step_n,
                                  n_threads=n_threads, buffers=buffers, needs_vir=needs_vir,
-                                 strictness=strictness)
+                                 strictness=strictness, visit_state=visit_state)
     end
     distribute_forces!(fs, sys, buffers; n_threads=n_threads)
 
@@ -833,11 +896,10 @@ end
 
 function reduce_force_chunks!(fs_nounits, fs_chunks, vir_nounits, vir_chunks,
                               ::Val{n_threads}, ::Val{needs_vir}) where {n_threads, needs_vir}
-    FT = eltype(fs_nounits)
     n_atoms = length(fs_nounits)
     @inbounds Threads.@threads for chunk_i in 1:n_threads
         for i in (((chunk_i - 1) * n_atoms) ÷ n_threads + 1):((chunk_i * n_atoms) ÷ n_threads)
-            f = zero(FT)
+            f = zero(eltype(fs_nounits))
             for ci in 1:n_threads
                 f += fs_chunks[ci][i]
             end
@@ -887,7 +949,9 @@ function pairwise_forces_loop!(fs_nounits, fs_chunks, vir_nounits, vir_chunks, a
 
     @inbounds if length(pairwise_inters_nl) > 0
         if isnothing(neighbors)
-            error("an interaction uses the neighbor list but neighbors is nothing")
+            error("an interaction uses the neighbor list but neighbors is nothing, " *
+                  "pairwise interactions used without a neighbor finder need " *
+                  "use_neighbors=false")
         end
         sqdist_cutoff = max_zero_beyond(pairwise_inters_nl)
         for ni in eachindex(neighbors)
@@ -945,7 +1009,9 @@ function pairwise_forces_loop!(fs_nounits, fs_chunks, vir_nounits, vir_chunks, a
 
     @inbounds if length(pairwise_inters_nl) > 0
         if isnothing(neighbors)
-            error("an interaction uses the neighbor list but neighbors is nothing")
+            error("an interaction uses the neighbor list but neighbors is nothing, " *
+                  "pairwise interactions used without a neighbor finder need " *
+                  "use_neighbors=false")
         end
         n_neighbors = length(neighbors)
         block_size = 512
@@ -1259,7 +1325,8 @@ function forces!(fs,
                  pairwise_inters=sys.pairwise_inters,
                  specific_inter_lists=sys.specific_inter_lists,
                  general_inters=sys.general_inters,
-                 strictness=default_strictness()) where needs_vir
+                 strictness=default_strictness(),
+                 visit_state::Bool=false) where needs_vir
     # Allow an Enzyme reverse rule
     gpu_forces!(fs, sys, neighbors, step_n, buffers, needs_vir_val, pairwise_inters,
                 specific_inter_lists, n_threads)
@@ -1267,7 +1334,7 @@ function forces!(fs,
     for inter in values(general_inters)
         AtomsCalculators.forces!(fs, sys, inter; neighbors=neighbors, step_n=step_n,
                                  n_threads=n_threads, buffers=buffers, needs_vir=needs_vir,
-                                 strictness=strictness)
+                                 strictness=strictness, visit_state=visit_state)
     end
     distribute_forces!(fs, sys, buffers; n_threads=n_threads)
 
@@ -1299,7 +1366,7 @@ function gpu_forces!(fs,
     end
     invalidate_pressure!(buffers.validity)
     fill!(buffers.kin_tensor, zero(TH) * sys.energy_units)
-    fill!(buffers.pres_tensor, zero(TH) * (sys.energy_units == NoUnits ? NoUnits : u"bar"))
+    fill!(buffers.pres_tensor, zero(TH) * pressure_units(sys))
     fill!(buffers.fs_mat, zero(T))
     fill!(buffers.fs_mat_reordered, zero(T))
 

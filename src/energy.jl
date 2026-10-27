@@ -2,16 +2,18 @@
 
 export
     total_energy,
-    kinetic_energy_tensor,
     kinetic_energy,
     virial,
     scalar_virial,
     temperature,
-    potential_energy,
+    potential_energy
+
+@public kinetic_energy_tensor,
+    potential_energy_gpu,
     pairwise_pe
 
 """
-    total_energy(system, neighbors=find_neighbors(sys), step_n=0, buffers=nothing;
+    total_energy(system, neighbors=find_neighbors(system), step_n=0, buffers=nothing;
                  n_threads=Threads.nthreads(), pairwise_inters=system.pairwise_inters,
                  specific_inter_lists=system.specific_inter_lists,
                  general_inters=system.general_inters, strictness=:warn)
@@ -37,9 +39,10 @@ Calculate the kinetic energy of a system in its tensorial form.
 
 The kinetic energy tensor is defined as
 ```math
-bf{K} = \frac{1}{2} \sum_{i} m_i \bf{v_i} \otimes \bf{v_i}
+\bf{K} = \frac{1}{2} \sum_{i} m_i \bf{v_i} \otimes \bf{v_i}
 ```
 where ``m_i`` is the mass and ``\bf{v_i}`` is the velocity vector of atom ``i``.
+See [`kinetic_energy`](@ref) for the scalar kinetic energy.
 """
 function kinetic_energy_tensor(sys::System{D, <:Any, <:Any, TH}; kin_tensor=nothing) where {D, TH}
     if isnothing(kin_tensor)
@@ -101,10 +104,10 @@ The virial, in its most general form, is defined as:
 where ``\bf{r_i}`` and ``\bf{f_i}`` are the position and force vectors,
 respectively, acting on atom ``i``.
 The [virial definition from LAMMPS](https://docs.lammps.org/compute_stress_atom.html)
-is used, taking into account pairwise interactions, specific interactions, and the
+is used, taking into account pairwise interactions, specific interactions, the
 [`Ewald`](@ref) and [`PME`](@ref) methods computed as indicated in
-[Essmann et al. 1995](https://doi.org/10.1063/1.470117).
-Contributions from implicit solvent methods and bias potentials are ignored.
+[Essmann et al. 1995](https://doi.org/10.1063/1.470117), and bias potentials.
+Contributions from implicit solvent methods are ignored.
 For constrained systems, constraint contributions are approximated using a
 deterministic small-step constraint preview.
 Compatible with virtual sites apart from [`OutOfPlaneSite`](@ref) and
@@ -201,26 +204,34 @@ end
     potential_energy(system, neighbors=find_neighbors(system), step_n=0, buffers=nothing;
                      n_threads=Threads.nthreads(), pairwise_inters=system.pairwise_inters,
                      specific_inter_lists=system.specific_inter_lists,
-                     general_inters=system.general_inters, strictness=:warn)
+                     general_inters=system.general_inters, strictness=:warn,
+                     visit_state=false)
 
 Calculate the potential energy of a system using the pairwise, specific and
-general interactions.
+general interactions. `visit_state` is as for [`forces`](@ref).
 
     potential_energy(inter, vec_ij, atom_i, atom_j, energy_units, special, coord_i, coord_j,
                      boundary, velocity_i, velocity_j, step_n)
-    potential_energy(inter, coord_i, boundary, atom_i, energy_units, velocity_i, step_n)
+    potential_energy(inter, coord_i, boundary, atom_i, energy_units, velocity_i, step_n,
+                     data)
     potential_energy(inter, coord_i, coord_j, boundary, atom_i, atom_j, energy_units,
-                     velocity_i, velocity_j, step_n)
+                     velocity_i, velocity_j, step_n, data)
     potential_energy(inter, coord_i, coord_j, coord_k, boundary, atom_i, atom_j, atom_k,
-                     energy_units, velocity_i, velocity_j, velocity_k, step_n)
+                     energy_units, velocity_i, velocity_j, velocity_k, step_n, data)
     potential_energy(inter, coord_i, coord_j, coord_k, coord_l, boundary, atom_i, atom_j,
                      atom_k, atom_l, energy_units, velocity_i, velocity_j, velocity_k,
-                     velocity_l, step_n)
-    potential_energy(bias_pot, cv; kwargs...)
+                     velocity_l, step_n, data)
+    potential_energy(inter, coord_i, coord_j, coord_k, coord_l, coord_m, boundary, atom_i,
+                     atom_j, atom_k, atom_l, atom_m, energy_units, velocity_i, velocity_j,
+                     velocity_k, velocity_l, velocity_m, step_n, data)
+    potential_energy(bias_type, cv_sim; kwargs...)
 
 Calculate the potential energy due to a given interaction type.
 
 Custom interaction types should implement this function.
+Pairwise interactions can use [`Molly.pairwise_pe`](@ref) to apply a cutoff.
+A GPU-specific version can be defined with [`Molly.potential_energy_gpu`](@ref), but this
+is not generally required.
 """
 function potential_energy(sys; n_threads::Integer=Threads.nthreads(), kwargs...)
     return potential_energy(sys, find_neighbors(sys; n_threads=n_threads);
@@ -235,7 +246,8 @@ function potential_energy(sys::System{<:Any, <:Any, <:Any, TH},
                           pairwise_inters=sys.pairwise_inters,
                           specific_inter_lists=sys.specific_inter_lists,
                           general_inters=sys.general_inters,
-                          strictness=default_strictness()) where TH
+                          strictness=default_strictness(),
+                          visit_state::Bool=false) where TH
     if length(pairwise_inters) > 0
         use_vel = any_uses_velocity(pairwise_inters)
         pe = with_pairwise_partition(values(pairwise_inters)) do pis_nonl, pis_nl
@@ -258,11 +270,13 @@ function potential_energy(sys::System{<:Any, <:Any, <:Any, TH},
                           Val(TH), step_n)
     end
 
+    # visit_state lets history-dependent interactions (e.g. Metadynamics) update at this state
     for inter in values(general_inters)
         pe += uconvert(
             sys.energy_units,
             AtomsCalculators.potential_energy(sys, inter; neighbors=neighbors, step_n=step_n,
-                                              n_threads=n_threads, strictness=strictness),
+                                              n_threads=n_threads, strictness=strictness,
+                                              visit_state=visit_state),
         )
     end
 
@@ -294,7 +308,9 @@ function pairwise_pe_loop(atoms, coords, velocities, boundary, neighbors, energy
 
     @inbounds if length(pairwise_inters_nl) > 0
         if isnothing(neighbors)
-            error("an interaction uses the neighbor list but neighbors is nothing")
+            error("an interaction uses the neighbor list but neighbors is nothing, " *
+                  "pairwise interactions used without a neighbor finder need " *
+                  "use_neighbors=false")
         end
         for ni in eachindex(neighbors)
             i, j, special = neighbors[ni]
@@ -331,7 +347,9 @@ function pairwise_pe_loop(atoms, coords, velocities, boundary, neighbors, energy
 
     @inbounds if length(pairwise_inters_nl) > 0
         if isnothing(neighbors)
-            error("an interaction uses the neighbor list but neighbors is nothing")
+            error("an interaction uses the neighbor list but neighbors is nothing, " *
+                  "pairwise interactions used without a neighbor finder need " *
+                  "use_neighbors=false")
         end
         n_neighbors = length(neighbors)
         block_size = 512
@@ -515,7 +533,8 @@ function potential_energy(sys::System{<:Any, <:AbstractGPUArray},
                           pairwise_inters=sys.pairwise_inters,
                           specific_inter_lists=sys.specific_inter_lists,
                           general_inters=sys.general_inters,
-                          strictness=default_strictness())
+                          strictness=default_strictness(),
+                          visit_state::Bool=false)
     # Allow an Enzyme reverse rule
     pe = gpu_potential_energy(sys, neighbors, step_n, buffers, pairwise_inters,
                               specific_inter_lists, n_threads)
@@ -524,7 +543,8 @@ function potential_energy(sys::System{<:Any, <:AbstractGPUArray},
         pe += uconvert(
             sys.energy_units,
             AtomsCalculators.potential_energy(sys, inter; neighbors=neighbors, step_n=step_n,
-                                n_threads=n_threads, strictness=strictness),
+                                n_threads=n_threads, strictness=strictness,
+                                visit_state=visit_state),
         )
     end
 
@@ -556,7 +576,12 @@ function gpu_potential_energy(sys::System{<:Any, <:AbstractGPUArray, <:Any, TH},
     return only(from_device(buffers.pe_vec_nounits)) * sys.energy_units
 end
 
-# Allow GPU-specific potential energy functions to be defined if required
+"""
+Calculate the potential energy between atoms due to a given interaction type on GPU.
+
+See [`potential_energy`](@ref) for more details.
+This function is only required when a different code path is required on CPU and GPU.
+"""
 potential_energy_gpu(inter, dr, ai, aj, eu, sp, ci, cj, bnd, vi, vj, sn) = potential_energy(inter, dr, ai, aj, eu, sp, ci, cj, bnd, vi, vj, sn)
 potential_energy_gpu(inter, ci, bnd, ai, eu, vi, sn, data) = potential_energy(inter, ci, bnd, ai, eu, vi, sn, data)
 potential_energy_gpu(inter, ci, cj, bnd, ai, aj, eu, vi, vj, sn, data) = potential_energy(inter, ci, cj, bnd, ai, aj, eu, vi, vj, sn, data)

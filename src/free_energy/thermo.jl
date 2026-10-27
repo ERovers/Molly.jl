@@ -24,6 +24,7 @@ mutable struct AlchemicalPartition{S, L, LS, A, H, T}
     # State cache for master energy to prevent redundant calculations
     # across multiple single-state queries
     cached_coords::Any
+    cached_boundary::Any
     cached_master_pe::T
 end
 
@@ -124,7 +125,7 @@ function AlchemicalPartition(thermo_states::AbstractArray{<:ThermoState};
     list_1a = [Vector{InteractionList1Atoms}() for _ in 1:n_λ]
     list_2a = [Vector{InteractionList2Atoms}() for _ in 1:n_λ]
     list_3a = [Vector{InteractionList3Atoms}() for _ in 1:n_λ]
-    list_4a = [Vector{InteractionList4Atoms}() for _ in 1:n_λ]
+    list_4a = [Union{InteractionList4Atoms, InteractionList5Atoms}[] for _ in 1:n_λ]
 
     @inbounds for (i, tstate) in enumerate(thermo_states)
         sils = tstate.system.specific_inter_lists
@@ -135,7 +136,7 @@ function AlchemicalPartition(thermo_states::AbstractArray{<:ThermoState};
                 push!(list_2a[i], inter)
             elseif inter isa InteractionList3Atoms
                 push!(list_3a[i], inter)
-            elseif inter isa InteractionList4Atoms
+            elseif inter isa Union{InteractionList4Atoms, InteractionList5Atoms}
                 push!(list_4a[i], inter)
             end
         end
@@ -151,6 +152,16 @@ function AlchemicalPartition(thermo_states::AbstractArray{<:ThermoState};
     master_sils_4a = intersect(list_4a...)
     master_gils    = intersect(all_gils...)
     master_pils    = intersect(all_pils...)
+
+    # The shared pairwise interactions are split between the master system and the λ systems by
+    #   the eligible matrices, which need a neighbor finder; without one every system sees every
+    #   pair, and the shared pairwise energy would be counted twice
+    if isnothing(ref_nfinder) && !isempty(master_pils)
+        throw(ArgumentError("the thermodynamic states share pairwise interactions but have no " *
+                "neighbor finder, which is needed to split the pairs between the energy shared " *
+                "by all states and the energy of each state; without one the shared pairwise " *
+                "energy would be counted twice, so give the systems a neighbor finder"))
+    end
 
     filter!(inter -> keep_master_specific_inter(inter, λ_atoms), master_sils_2a)
     filter!(inter -> keep_master_general_inter(inter, λ_atoms), master_gils)
@@ -176,13 +187,16 @@ function AlchemicalPartition(thermo_states::AbstractArray{<:ThermoState};
     master_nf = build_neighbor_finder(ref_nfinder, master_eligible, special_mask;
                                       reuse_neighbors=reuse_neighbors, boundary=ref_sys.boundary)
 
+    # Deep-copy interactions: the partition systems must own isolated copies of any
+    # mutable per-evaluation state (e.g. PME grids/plans, ML/GBSA buffers). Types with
+    # non-copyable internals must implement Base.deepcopy (cf. PME).
     master_sys = System(deepcopy(ref_sys);
-        pairwise_inters      = (master_pils...,),
-        general_inters       = (master_gils...,),
-        specific_inter_lists = (master_sils_1a...,
-                                master_sils_2a...,
-                                master_sils_3a...,
-                                master_sils_4a...),
+        pairwise_inters      = deepcopy((master_pils...,)),
+        general_inters       = deepcopy((master_gils...,)),
+        specific_inter_lists = deepcopy((master_sils_1a...,
+                                         master_sils_2a...,
+                                         master_sils_3a...,
+                                         master_sils_4a...)),
         neighbor_finder      = master_nf,
         loggers              = (),
     )
@@ -198,9 +212,9 @@ function AlchemicalPartition(thermo_states::AbstractArray{<:ThermoState};
                                      boundary=ref_sys.boundary)
         λ_sys = System(deepcopy(ref_sys);
             atoms                = λ_atoms[length(λ_systems) + 1],
-            pairwise_inters      = (λ_p...,),
-            general_inters       = (λ_g...,),
-            specific_inter_lists = (λ_s...,),
+            pairwise_inters      = deepcopy(λ_p),
+            general_inters       = deepcopy(λ_g),
+            specific_inter_lists = deepcopy(λ_s),
             neighbor_finder      = λ_nf,
             loggers              = (),
         )
@@ -217,17 +231,22 @@ function AlchemicalPartition(thermo_states::AbstractArray{<:ThermoState};
         λ_atoms,
         hamiltonians,
         nothing,
+        nothing,
         initial_pe
     )
 end
 
+# The eligible and special matrices are dense, since the partitions exclude dense patterns of
+#   pairs such as all solvent-solvent pairs, so the warning neighbor finders give for large
+#   dense matrices is turned off as it suggests giving the pairs sparsely
 function build_neighbor_finder(ref_nfinder, eligible, special; reuse_neighbors::Bool = true, boundary = nothing)
     if ref_nfinder isa DistanceNeighborFinder
         return DistanceNeighborFinder(
             eligible = eligible,
             dist_cutoff = ref_nfinder.dist_cutoff,
             special   = special,
-            n_steps = 1
+            n_steps = 1,
+            strictness = :nowarn,
         )
     elseif ref_nfinder isa CellListMapNeighborFinder
         return CellListMapNeighborFinder(
@@ -236,6 +255,7 @@ function build_neighbor_finder(ref_nfinder, eligible, special; reuse_neighbors::
             special = special,
             n_steps = 1,
             boundary = boundary,
+            strictness = :nowarn,
         )
     elseif ref_nfinder isa GPUNeighborFinder
         if !reuse_neighbors
@@ -243,26 +263,40 @@ function build_neighbor_finder(ref_nfinder, eligible, special; reuse_neighbors::
                 eligible = eligible,
                 dist_cutoff = ref_nfinder.dist_cutoff,
                 special = special,
-                n_steps_reorder = 1,
-                initialized = ref_nfinder.initialized
+                n_steps = 1,
+                initialized = ref_nfinder.initialized,
+                strictness = :nowarn,
             )
         else
             return DistanceNeighborFinder(
                 eligible = eligible,
                 dist_cutoff = ref_nfinder.dist_cutoff,
                 special   = special,
-                n_steps = 1
+                n_steps = 1,
+                strictness = :nowarn,
             )
         end
+    elseif ref_nfinder isa GPUCellListNeighborFinder
+        return GPUCellListNeighborFinder(
+            eligible = eligible,
+            dist_cutoff = ref_nfinder.dist_cutoff,
+            special = special,
+            n_steps = 1,
+            max_neighbors = ref_nfinder.max_neighbors,
+            output = :molly_pairs,
+            ragged = ref_nfinder.ragged,
+            strictness = :nowarn,
+        )
     elseif ref_nfinder isa TreeNeighborFinder
         return TreeNeighborFinder(
             eligible = eligible,
             dist_cutoff = ref_nfinder.dist_cutoff,
             special = special,
-            n_steps = 1
+            n_steps = 1,
+            strictness = :nowarn,
         )
-    elseif ref_nfinder isa NoNeighborFinder
-        return NoNeighborFinder()
+    elseif isnothing(ref_nfinder)
+        return nothing
     else
         throw(ArgumentError("Unknown NeighborFinder type $(typeof(ref_nfinder))"))
     end
@@ -271,7 +305,8 @@ end
 function update_master_energy!(partition::AlchemicalPartition, coords, boundary;
                                force_recompute::Bool=false,
                                n_threads::Integer=Threads.nthreads())
-    if force_recompute || isnothing(partition.cached_coords) || partition.cached_coords != coords
+    if force_recompute || isnothing(partition.cached_coords) ||
+            partition.cached_boundary != boundary || partition.cached_coords != coords
         partition.master_sys.coords = coords
         partition.master_sys.boundary = boundary
         partition.cached_master_pe = potential_energy(partition.master_sys;
@@ -279,6 +314,7 @@ function update_master_energy!(partition::AlchemicalPartition, coords, boundary;
         # Forced multi-state calls already know they need a fresh master energy. Only the
         # single-state cached path keeps a coordinate snapshot for repeated same-frame queries.
         partition.cached_coords = force_recompute ? nothing : copy(coords)
+        partition.cached_boundary = boundary
     end
     return partition.cached_master_pe
 end
@@ -295,8 +331,8 @@ end
 #                  force_recompute::Bool=false)
 #
 # Calculates the total potential energy for a specific thermodynamic state.
-# Caches the `master_sys` energy. If `coords` is identical to `cached_coords`,
-# the `master_sys` energy is not recomputed unless `force_recompute` is true.
+# Caches the `master_sys` energy. If `coords` and `boundary` are equal to the cached
+# values, the `master_sys` energy is not recomputed unless `force_recompute` is true.
 function evaluate_energy!(partition::AlchemicalPartition, coords, boundary, state_index::Int;
                           force_recompute::Bool=false,
                           n_threads::Integer=Threads.nthreads())

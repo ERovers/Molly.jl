@@ -11,11 +11,11 @@
             atoms=CuArray(atoms),
             coords=CuArray(coords),
             boundary=boundary,
-            pairwise_inters=(LennardJones(use_neighbors=true),),
+            pairwise_inters=(LennardJones(),),
             neighbor_finder=GPUNeighborFinder(
                 n_atoms=n_atoms,
                 dist_cutoff=T(5.0),
-                device_vector_type=CuArray{Int32, 1},
+                array_type=CuArray,
             ),
             force_units=NoUnits,
             energy_units=NoUnits
@@ -187,11 +187,11 @@
                 atoms=CuArray(atoms_tri),
                 coords=CuArray(coords_tri),
                 boundary=boundary_tri,
-                pairwise_inters=(LennardJones(use_neighbors=true, cutoff=DistanceCutoff(T(4.0))),),
+                pairwise_inters=(LennardJones(cutoff=DistanceCutoff(T(4.0))),),
                 neighbor_finder=GPUNeighborFinder(
                     n_atoms=n_atoms_tri,
                     dist_cutoff=T(4.0),
-                    device_vector_type=CuArray{Int32, 1},
+                    array_type=CuArray,
                 ),
                 force_units=NoUnits,
                 energy_units=NoUnits,

@@ -1,7 +1,8 @@
 export
     AbsoluteFESystem,
-    set_lambda!,
     RelativeFESystem
+
+@public set_lambda!
 
 ### Checks for hybrid system ###
 # same atoms in environment in both A and B
@@ -47,14 +48,12 @@ function check_unique_env_bonds(sys, unique_inds, ligand, to_A, state, host_list
 end
 
 ### Neighborfinder functions ###
-function neighbor_exclusions(nf::GPUNeighborFinder)
-    excluded = collect(zip(from_device(nf.excluded_i), from_device(nf.excluded_j)))
-    special  = collect(zip(from_device(nf.special_i ), from_device(nf.special_j )))
-    return excluded, special
-end
-
-neighbor_exclusions(nf::NoNeighborFinder) = (Tuple{Int32, Int32}[], Tuple{Int32, Int32}[])
+neighbor_exclusions(::Nothing) = (Tuple{Int32, Int32}[], Tuple{Int32, Int32}[])
 neighbor_exclusions(nf) = dense_masks_to_pair_lists(from_device(nf.eligible), from_device(nf.special))
+# The output modes other than :molly_pairs ignore the exclusions and store none
+neighbor_exclusions(nf::GPUCellListNeighborFinder) = (isnothing(nf.eligible) ?
+                neighbor_exclusions(nothing) :
+                dense_masks_to_pair_lists(nf.eligible, nf.special))
 
 ### Constraints ###
 # Core atom can't have different constraint lengths or angles between A and B
@@ -239,6 +238,9 @@ end
 function lambda_pairwise_inters(sys, scheduler, LJsoftcore, Csoftcore, FT, LJsoftcore_params=(;),
                                 Csoftcore_params=(;))
     return map(sys.pairwise_inters) do inter
+        if inter isa DoubleExponential
+            return to_lambda_function(inter; scheduler=scheduler, λ_mixing=MinimumMixing())
+        end
         lj = inter isa LennardJones
         softcore = softcore_dic[lj ? LJsoftcore : Csoftcore]
         to_lambda_function(inter, softcore; scheduler=scheduler, λ_mixing=MinimumMixing(),
@@ -255,17 +257,20 @@ function lambda_general_inters(sys, atoms, boundary, scheduler, global_λ)
         if inter isa PME && two_grid
             push!(inters, PME_λ(inter.dist_cutoff, to_device(atoms, AT), boundary;
                                 grad_safe=inter.grad_safe, error_tol=inter.error_tol,
-                                order=inter.order, ϵr=inter.ϵr, mesh_dims=inter.mesh_dims,
+                                order=inter.order, ϵr=inter.ϵr,
+                                coulomb_const=inter.coulomb_const, mesh_dims=inter.mesh_dims,
                                 fixed_charges=false, scheduler=scheduler, λ=FT(global_λ)))
         elseif inter isa PME
             push!(inters, PME(inter.dist_cutoff, to_device(atoms, AT), boundary;
                               grad_safe=inter.grad_safe, error_tol=inter.error_tol,
-                              order=inter.order, ϵr=inter.ϵr, mesh_dims=inter.mesh_dims,
+                              order=inter.order, ϵr=inter.ϵr,
+                              coulomb_const=inter.coulomb_const, mesh_dims=inter.mesh_dims,
                               fixed_charges=false, scheduler=scheduler))
         elseif inter isa Ewald
-            push!(inters, Ewald(inter.dist_cutoff; error_tol=inter.error_tol, scheduler=scheduler))
+            push!(inters, Ewald(inter.dist_cutoff; error_tol=inter.error_tol, ϵr=inter.ϵr,
+                                coulomb_const=inter.coulomb_const, scheduler=scheduler))
         elseif inter isa LJDispersionCorrection
-            push!(inters, LJDispersionCorrectionλ(to_device(atoms, AT), inter.dist_cutoff,
+            push!(inters, LJDispersionCorrectionλ(to_device(atoms, AT), inter.cutoff,
                                                   MinimumMixing(), inter.σ_mix, inter.ϵ_mix;
                                                   scheduler=scheduler))
         else
@@ -279,22 +284,23 @@ end
 """
     set_lambda!(sys, λ)
 
-Set the global λ of an alchemical system in place, without rebuilding it.
+Set the global λ of an alchemical system, as set up by [`AbsoluteFESystem`](@ref) or
+[`RelativeFESystem`](@ref), in place without rebuilding it.
 
-Only the λ of the alchemical atoms, the mesh weight of [`PME`](@ref)'s two grid form and the
-precomputed factors of the λ dispersion correction depend on λ; the neighbor masks, the interaction
+Only the λ of the alchemical atoms, the mesh weight of [`Molly.PME_λ`](@ref) and the
+precomputed factors of [`Molly.LJDispersionCorrectionλ`](@ref) depend on λ; the neighbor masks, the interaction
 lists, the topology, the constraints and the virtual sites do not, which is what makes this much
 cheaper than building the system again. Environment atoms keep λ = 1.
 
 A ladder of states can share everything λ-independent:
 
 ```julia
-states = [set_lambda!(System(sys), λ) for λ in 0:0.1:1]
+states = [Molly.set_lambda!(System(sys), λ) for λ in 0:0.1:1]
 ```
 
 `System(sys)` shares its arrays, so the masks exist once, but the states then also share the scratch
-buffers of `PME` and of any constraint algorithm. States run at the same time need their own, which
-`ReplicaSystem` arranges through `remd_unshared`; a hand-written threaded loop over states does not.
+buffers of [`PME`](@ref) and of any constraint algorithm. States run at the same time need their
+own, which [`ReplicaSystem`](@ref) arranges; a hand-written threaded loop over states does not.
 """
 function set_lambda!(sys::System, λ)
     FT = float_type(sys)
@@ -306,7 +312,7 @@ function set_lambda!(sys::System, λ)
         if inter isa PME_λ
             pme_lambda_reweight(inter, λ)
         elseif inter isa LJDispersionCorrectionλ
-            LJDispersionCorrectionλ(sys.atoms, inter.dist_cutoff, MinimumMixing(), inter.σ_mix,
+            LJDispersionCorrectionλ(sys.atoms, inter.cutoff, MinimumMixing(), inter.σ_mix,
                                     inter.ϵ_mix; scheduler=inter.scheduler)
         else
             inter
@@ -346,7 +352,7 @@ end
 
 """
     AbsoluteFESystem(sys, global_λ, mapping; temp=298.0u"K",
-                     scheduler=DefaultLambdaScheduler(dual=true), loggers=(),
+                     scheduler=Molly.DefaultLambdaScheduler(dual=true), loggers=(),
                      LJsoftcore=:gapsys, Csoftcore=:gapsys)
 
 Set up an alchemical system for an absolute free energy calculation, in which the atoms in
@@ -361,16 +367,17 @@ random velocities are generated at `temp`.
 - `global_λ`: the global λ of the system, from 0 (coupled) to 1 (decoupled).
 - `mapping`: a vector with the indices of the atoms to decouple.
 - `temp=298.0u"K"`: the temperature used to generate random velocities.
-- `scheduler=DefaultLambdaScheduler(dual=true)`: the lambda scheduler that turns `global_λ`
+- `scheduler=Molly.DefaultLambdaScheduler(dual=true)`: the lambda scheduler that turns `global_λ`
     into the couplings of the steric, electrostatic and bonded interactions, for example
-    [`DefaultLambdaScheduler`](@ref), [`GROMACSLambdaABFEScheduler`](@ref) or
-    [`OpenFEScheduler`](@ref). Absolute systems require dual topology (`dual=true`).
+    [`Molly.DefaultLambdaScheduler`](@ref), [`Molly.GROMACSLambdaABFEScheduler`](@ref) or
+    [`Molly.OpenFEScheduler`](@ref). Absolute systems require dual topology (`dual=true`).
 - `loggers=()`: the loggers that record properties of interest during a simulation.
 - `LJsoftcore=:gapsys`: the Lennard-Jones soft core, `:beutler`
     ([Beutler et al. 1994](https://doi.org/10.1016/0009-2614(94)00397-1)), `:gapsys`
     ([Gapsys et al. 2012](https://doi.org/10.1021/ct300220p)) or `:scaled`, where the potential
     is scaled directly by λ. The 1-4 Lennard-Jones interactions of force fields with separate
-    1-4 parameters (e.g. CHARMM) use the same soft core.
+    1-4 parameters (e.g. CHARMM) use the same soft core. A [`DoubleExponential`](@ref)
+    interaction always becomes a [`DoubleExponentialSoftCore`](@ref), its own soft core.
 - `Csoftcore=:gapsys`: the Coulomb soft core, `:beutler`, `:gapsys` or `:scaled`, where the
     potential is scaled directly by λ.
 """
@@ -431,7 +438,8 @@ function AbsoluteFESystem(sys::System, global_λ, mapping;
             push!(SpecificInteraction, InteractionList2Atoms(
                 inter_list.is, inter_list.js, inter_list.inters, inter_list.types,
                 EwaldExclusionData(d.dist_cutoff; error_tol=d.error_tol, ϵr=d.ϵr,
-                                   scheduler=scheduler, λ_mix=d.λ_mixing),
+                                   coulomb_const=d.coulomb_const, scheduler=scheduler,
+                                   λ_mix=d.λ_mixing),
             ))
         else
             push!(SpecificInteraction, to_lambda_inter_list(inter_list, scheduler, AT, FT, lj_sc, LJsoftcore_params))
@@ -452,7 +460,7 @@ end
 
 """
     RelativeFESystem(sysA, sysB, global_λ, mapping, core_mapAB; temp=298.0u"K",
-                     scheduler=DefaultLambdaScheduler(dual=true), loggers=(),
+                     scheduler=Molly.DefaultLambdaScheduler(dual=true), loggers=(),
                      LJsoftcore=:gapsys, Csoftcore=:gapsys)
 
 Set up a hybrid system for a relative free energy calculation that transforms system A
@@ -464,6 +472,9 @@ unique A, is taken from `sysA`. The atoms of the returned system are ordered as 
 unique B and environment. In dual topology each core atom is added twice, with the parameters
 of A and as a massless copy with the parameters of B. Interactions are replaced by their
 λ-dependent versions and random velocities are generated at `temp`.
+The pairs between the A and B sides are excluded, and the exclusions and special pairs of both
+end states are kept, through a neighbor finder of the type used by `sysA`. An error is
+thrown if `sysA` has no neighbor finder and there are such pairs.
 
 # Arguments
 - `sysA`: the [`System`](@ref) of state A, which also provides the environment.
@@ -472,22 +483,23 @@ of A and as a massless copy with the parameters of B. Interactions are replaced 
 - `global_λ`: the global λ of the system, from 0 (state A) to 1 (state B).
 - `mapping`: a dictionary of atom index vectors, where `"core"` and `"unique_A"` index into
     `sysA` and `"unique_B"` into `sysB`. An `"env"` entry is added to it. An atom unique to one
-    end state can not be bonded to an atom outside the mapping, as it is switched off at the
+    end state cannot be bonded to an atom outside the mapping, as it is switched off at the
     other end state; such an atom belongs in `"core"`, where only its parameters change, which
     is how a covalently bound ligand is set up.
 - `core_mapAB`: a dictionary from each core atom index in `sysA` to its index in `sysB`.
 - `temp=298.0u"K"`: the temperature used to generate random velocities.
-- `scheduler=DefaultLambdaScheduler(dual=true)`: the lambda scheduler that turns `global_λ`
+- `scheduler=Molly.DefaultLambdaScheduler(dual=true)`: the lambda scheduler that turns `global_λ`
     into the couplings of the steric, electrostatic and bonded interactions, for example
-    [`DefaultLambdaScheduler`](@ref), [`GROMACSLambdaRBFEScheduler`](@ref) or
-    [`OpenFEScheduler`](@ref). `dual=true` uses dual topology (energy scaling) and `dual=false`
-    single topology (parameter scaling), which does not support `intraLJ=true`.
+    [`Molly.DefaultLambdaScheduler`](@ref), [`Molly.GROMACSLambdaRBFEScheduler`](@ref) or
+    [`Molly.OpenFEScheduler`](@ref). `dual=true` uses dual topology (energy scaling) and
+    `dual=false` single topology (parameter scaling), which does not support `intraLJ=true`.
 - `loggers=()`: the loggers that record properties of interest during a simulation.
 - `LJsoftcore=:gapsys`: the Lennard-Jones soft core, `:beutler`
     ([Beutler et al. 1994](https://doi.org/10.1016/0009-2614(94)00397-1)), `:gapsys`
     ([Gapsys et al. 2012](https://doi.org/10.1021/ct300220p)) or `:scaled`, where the potential
     is scaled directly by λ. The 1-4 Lennard-Jones interactions of force fields with separate
-    1-4 parameters (e.g. CHARMM) use the same soft core.
+    1-4 parameters (e.g. CHARMM) use the same soft core. A [`DoubleExponential`](@ref)
+    interaction always becomes a [`DoubleExponentialSoftCore`](@ref), its own soft core.
 - `Csoftcore=:gapsys`: the Coulomb soft core, `:beutler`, `:gapsys` or `:scaled`, where the
     potential is scaled directly by λ.
 """
@@ -605,7 +617,7 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         cB = coordsB[core_mapAB[i]]
         if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=aA.atom_type, mass=aA.mass, charge=aA.charge, σ=aA.σ, ϵ=aA.ϵ, 
-                                                λ=FT(global_λ), alch_role=CoreDRole))
+                              λ=FT(global_λ), alch_role=CoreDRole))
             if chain!=dA.chain_id
                 chain = dA.chain_id
                 res_n = 0
@@ -616,7 +628,8 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
                 res_n = dA.res_number
             end
             push!(Data, AtomData(atom_type=dA.atom_type, atom_name=dA.atom_name, res_number=res_number,
-                                        res_name=dA.res_name, chain_id=dA.chain_id, element=dA.element, hetero_atom=dA.hetero_atom))
+                                 res_name=dA.res_name, chain_id=dA.chain_id, element=dA.element, hetero_atom=dA.hetero_atom,
+                                 charge_type=dA.charge_type))
             push!(Coords, cA)
             mapping_A[i] = counter
             push!(unique_groups["sysA"], counter)
@@ -629,14 +642,15 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
                 push!(Virtual, OneParticleSite(counter, counter-1, weight_cross))
             end
             push!(Data, AtomData(atom_type=dB.atom_type, atom_name=dB.atom_name, res_number=dB.res_number,
-                                        res_name=dB.res_name, chain_id=dB.chain_id, element=dB.element, hetero_atom=dB.hetero_atom))
+                                 res_name=dB.res_name, chain_id=dB.chain_id, element=dB.element, hetero_atom=dB.hetero_atom,
+                                 charge_type=dB.charge_type))
             push!(Coords, zero(cB))
             mapping_B[core_mapAB[i]] = counter
             push!(unique_groups["sysB"], counter)
             counter += 1
         else
             push!(Atoms, Atom(index=counter, atom_type=aA.atom_type, mass=aA.mass, charge=(aA.charge, aB.charge), σ=(aA.σ, aB.σ), ϵ=(aA.ϵ, aB.ϵ),
-                                                λ=FT(global_λ), alch_role=CoreRole))
+                              λ=FT(global_λ), alch_role=CoreRole))
             if chain!=dA.chain_id
                 chain = dA.chain_id
                 res_n = 0
@@ -647,7 +661,8 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
                 res_n = dA.res_number
             end
             push!(Data, AtomData(atom_type=dA.atom_type, atom_name=dA.atom_name, res_number=res_number,
-                                        res_name=dA.res_name, chain_id=dA.chain_id, element=dA.element, hetero_atom=dA.hetero_atom))
+                                 res_name=dA.res_name, chain_id=dA.chain_id, element=dA.element, hetero_atom=dA.hetero_atom,
+                                 charge_type=dA.charge_type))
             push!(Coords, cA)
             mapping_A[i] = counter
             mapping_B[core_mapAB[i]] = counter
@@ -661,11 +676,11 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         c = coordsA[i]
         if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                                λ=FT(global_λ), alch_role=DeleteRole))
+                              λ=FT(global_λ), alch_role=DeleteRole))
         else
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(a.charge, zero(a.charge)), 
-                                    σ=(a.σ, a.σ), ϵ=(a.ϵ, zero(a.ϵ)), 
-                                    λ=FT(global_λ), alch_role=DeleteRole))
+                              σ=(a.σ, a.σ), ϵ=(a.ϵ, zero(a.ϵ)), 
+                              λ=FT(global_λ), alch_role=DeleteRole))
         end
         if chain!=d.chain_id
             chain = d.chain_id
@@ -677,7 +692,8 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
             res_n = d.res_number
         end
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=res_number,
-                                    res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
+                             res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom,
+                             charge_type=d.charge_type))
         push!(Coords, c)
         mapping_A[i] = counter
         push!(unique_groups["sysA"], counter)
@@ -689,11 +705,11 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         c = coordsB[i]
         if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                                λ=FT(global_λ), alch_role=InsertRole))
+                              λ=FT(global_λ), alch_role=InsertRole))
         else
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(zero(a.charge), a.charge), 
-                                    σ=(a.σ, a.σ), ϵ=(zero(a.ϵ),   a.ϵ),
-                                    λ=FT(global_λ), alch_role=InsertRole))
+                              σ=(a.σ, a.σ), ϵ=(zero(a.ϵ),   a.ϵ),
+                              λ=FT(global_λ), alch_role=InsertRole))
         end
         if chain!=d.chain_id
             chain = d.chain_id
@@ -705,7 +721,8 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
             res_n = d.res_number
         end
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=res_number,
-                                    res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
+                             res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom,
+                             charge_type=d.charge_type))
         push!(Coords, c)
         mapping_B[i] = counter
         push!(unique_groups["sysB"], counter)
@@ -717,10 +734,10 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         c = coordsA[i]
         if scheduler.dual
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=a.charge, σ=a.σ, ϵ=a.ϵ, 
-                                                λ=FT(1.0), alch_role=EnvRole))
+                              λ=FT(1.0), alch_role=EnvRole))
         else
             push!(Atoms, Atom(index=counter, atom_type=a.atom_type, mass=a.mass, charge=(a.charge, a.charge), σ=(a.σ, a.σ), ϵ=(a.ϵ, a.ϵ),
-                                    λ=FT(1.0), alch_role=EnvRole))
+                              λ=FT(1.0), alch_role=EnvRole))
         end
         if chain!=d.chain_id
             chain = d.chain_id
@@ -732,7 +749,8 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
             res_n = d.res_number
         end
         push!(Data, AtomData(atom_type=d.atom_type, atom_name=d.atom_name, res_number=res_number,
-                                    res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom))
+                             res_name=d.res_name, chain_id=d.chain_id, element=d.element, hetero_atom=d.hetero_atom,
+                             charge_type=d.charge_type))
         push!(Coords, c)
         mapping_A[i] = counter
         counter += 1
@@ -886,48 +904,55 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
     map_A(i) = mapping_A[i]
     map_B(i) = (haskey(mapping_B, i) ? mapping_B[i] : mapping_A[env_BA[i]])
     n_atoms = length(Coords)
-    eligible = trues(n_atoms, n_atoms)
-    for i in 1:n_atoms
-        eligible[i, i] = false
-    end
-    special = falses(n_atoms, n_atoms)
+    excluded_hybrid = Tuple{Int32, Int32}[]
+    special_hybrid  = Tuple{Int32, Int32}[]
     for (sys_x, map_x) in ((sysA, map_A), (sysB, map_B))
         excluded_x, special_x = neighbor_exclusions(sys_x.neighbor_finder)
         for (i, j) in excluded_x
-            eligible[map_x(i), map_x(j)] = false
-            eligible[map_x(j), map_x(i)] = false
+            push!(excluded_hybrid, (map_x(i), map_x(j)))
         end
         for (i, j) in special_x
-            special[map_x(i), map_x(j)] = true
-            special[map_x(j), map_x(i)] = true
+            push!(special_hybrid, (map_x(i), map_x(j)))
         end
     end
 
     # The unique alchemical groups are excluded from interating
-    pairs = collect(Iterators.product(unique_groups["sysA"], unique_groups["sysB"]))
-    for (i, j) in pairs
-        eligible[i, j] = false
-        eligible[j, i] = false
+    for i in unique_groups["sysA"], j in unique_groups["sysB"]
+        push!(excluded_hybrid, (i, j))
     end
 
+    # The pairs are stored sparsely, as in the neighbor finders of the end states
+    eligible = SparsePairMatrix(n_atoms, excluded_hybrid; listed=false)
+    special  = SparsePairMatrix(n_atoms, special_hybrid; listed=true)
+
     # The neighbour finder of the end states, as `System` setup picks it: the type is compared with
-    #   `isa`, since the finders are parametric and `NoNeighborFinder` has no fields
+    #   `isa`, since the finders are parametric
     nf_A = sysA.neighbor_finder
-    if nf_A isa NoNeighborFinder
-        nf = NoNeighborFinder()
+    if isnothing(nf_A)
+        # Without a neighbor finder every pair interacts, including the A and B sides
+        if !isempty(excluded_hybrid) || !isempty(special_hybrid)
+            throw(ArgumentError("sysA has no neighbor finder, but the hybrid system has pairs " *
+                    "to exclude or scale, such as those between the A and B sides of the " *
+                    "transformation, and only a neighbor finder can do this; give the end " *
+                    "states a neighbor finder"))
+        end
+        nf = nothing
     elseif nf_A isa GPUNeighborFinder && uses_gpu_neighbor_finder(AT) && !grad_safe
-        excluded_pairs, special_pairs = dense_masks_to_pair_lists(eligible, special)
-        nf = GPUNeighborFinder(n_atoms=n_atoms, dist_cutoff=nf_A.dist_cutoff,
-                               excluded_pairs=excluded_pairs, special_pairs=special_pairs,
-                               n_steps_reorder=nf_A.n_steps_reorder,
-                               device_vector_type=AT{Int32, 1})
+        nf = GPUNeighborFinder(eligible=eligible, special=special, dist_cutoff=nf_A.dist_cutoff,
+                               n_steps=nf_A.n_steps, array_type=AT)
     elseif nf_A isa DistanceNeighborFinder &&
                 (AT <: AbstractGPUArray || has_infinite_boundary(Boundary))
-        nf = DistanceNeighborFinder(eligible=to_device(eligible, AT), special=to_device(special, AT),
-                                    n_steps=nf_A.n_steps, dist_cutoff=nf_A.dist_cutoff)
+        nf = DistanceNeighborFinder(eligible=eligible, special=special, n_steps=nf_A.n_steps,
+                                    dist_cutoff=nf_A.dist_cutoff, array_type=AT)
     elseif nf_A isa CellListMapNeighborFinder && !(AT <: AbstractGPUArray)
         nf = CellListMapNeighborFinder(eligible=eligible, special=special, n_steps=nf_A.n_steps,
                                        boundary=Boundary, x0=Coords, dist_cutoff=nf_A.dist_cutoff)
+    elseif nf_A isa GPUCellListNeighborFinder && AT <: AbstractGPUArray
+        # The default output, since the hybrid needs the exclusions applied even if an end
+        #   state did not
+        nf = GPUCellListNeighborFinder(eligible=eligible, special=special, n_steps=nf_A.n_steps,
+                                       dist_cutoff=nf_A.dist_cutoff, array_type=AT,
+                                       max_neighbors=nf_A.max_neighbors, ragged=nf_A.ragged)
     else
         # Another finder, or one that does not suit the device, keeps the masks and the settings
         nf = typeof(nf_A).name.wrapper(
@@ -947,7 +972,8 @@ function RelativeFESystem(sysA::System, sysB::System, global_λ, mapping, core_m
         if inter isa AbstractEwald
             excluded_pairs = find_excluded_pairs(eligible, special)
             exclusion_data = EwaldExclusionData(FT(inter.dist_cutoff); error_tol=FT(inter.error_tol),
-                                    ϵr=(inter isa PME ? FT(inter.ϵr) : one(FT)), scheduler=scheduler)
+                                    ϵr=FT(inter.ϵr), coulomb_const=inter.coulomb_const,
+                                    scheduler=scheduler)
             ewald_exclusions = InteractionList2Atoms(
                 to_device([ep[1] for ep in excluded_pairs], AT),
                 to_device([ep[2] for ep in excluded_pairs], AT),

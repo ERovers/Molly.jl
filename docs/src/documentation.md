@@ -51,8 +51,10 @@ vector(coords[1], coords[2], boundary)
 
 Now we can define our pairwise interactions, i.e. those between most or all atom pairs, as a tuple.
 Because we have defined the relevant parameters for the atoms, we can use the built-in [`LennardJones`](@ref) type.
+Pairwise interactions use a neighbor list by default, which needs a neighbor finder as shown in later examples.
+This small system does not need one, so we give `use_neighbors=false` to consider all pairs of atoms.
 ```julia
-pairwise_inters = (LennardJones(),) # Don't forget the trailing comma!
+pairwise_inters = (LennardJones(use_neighbors=false),) # Don't forget the trailing comma!
 ```
 Finally, we can define the system and run the simulation.
 We use an [`AndersenThermostat`](@ref) to keep a constant temperature, and we log the temperature and coordinates every 10 steps.
@@ -79,7 +81,7 @@ simulate!(sys, simulator, 1_000)
 ```
 `atoms`, `coords` and `boundary` are the minimum required properties to define a [`System`](@ref), though you would generally want to add interactions to a [`System`](@ref) to do something useful with it.
 The `data` keyword argument can give arbitrary data to the [`System`](@ref) that can be accessed with `sys.data`, for example metadata or properties to be used with a custom simulator.
-[`System`](@ref) implements the `AbstractSystem` [interface from AtomsBase.jl](https://juliamolsim.github.io/AtomsBase.jl/stable).
+[`System`](@ref) implements the `AbstractSystem` [interface from AtomsBase.jl](https://juliamolsim.github.io/AtomsBase.jl/stable) in cases where units are provided.
 Various functions can be used on a [`System`](@ref):
 ```julia
 potential_energy(sys) # -40.91077282719628 kJ mol^-1
@@ -114,9 +116,10 @@ sys.neighbor_finder
 sys.loggers
 sys.total_mass
 
-# Write out the system to a file
-write_structure("file.pdb", sys)
-write_structure("file.mol2", sys)
+# Write out the system to a file, which requires atoms_data such as the element
+sys_data = System(sys; atoms_data=[AtomData(element="Ar") for _ in 1:length(sys)])
+write_structure("file.pdb", sys_data)
+write_structure("file.mol2", sys_data)
 
 # AtomsBase.jl interface
 import AtomsBase
@@ -132,7 +135,7 @@ For example, `n_threads=1` uses no parallelization.
 `n_threads=4` will limit the simulation to 4 threads.
 Sometimes setting `n_threads` higher than the number of available threads can improve performance.
 
-The values stored by the loggers can be accessed using `values`, e.g. `values(sys.loggers.coords)`.
+The values stored by the loggers can be accessed using [`values`](@ref), e.g. `values(sys.loggers.coords)`.
 An animation of the stored coordinates can be saved by using [`visualize`](@ref), which is available when [GLMakie.jl](https://github.com/JuliaPlots/Makie.jl) is imported.
 ```julia
 using GLMakie
@@ -160,6 +163,7 @@ To run simulations on the GPU you will need to have a GPU available and then loa
 Modern GPUs can run simulations of over 100,000 atoms, [as seen in the examples](@ref "Testing GPU memory limits").
 Metal/Apple Silicon devices can only run with 32 bit precision, so be sure to use `Float32` in this case.
 Non-CUDA backends are less well-tested with Molly than CUDA.
+The tiled neighbor finder [`GPUNeighborFinder`](@ref) is CUDA-specific, so on other GPU backends the `O(N)` cell list [`GPUCellListNeighborFinder`](@ref) should be used instead.
 
 Simulation setup is similar to above, but with the coordinates, velocities and atoms moved to the GPU.
 This example also shows setting up a simulation to run with `Float32`, which gives much better performance on GPUs.
@@ -183,7 +187,7 @@ sys = System(
     coords=coords,
     boundary=boundary,
     velocities=velocities,
-    pairwise_inters=(LennardJones(),),
+    pairwise_inters=(LennardJones(use_neighbors=false),),
     loggers=(
         temp=TemperatureLogger(typeof(1.0f0u"K"), 10),
         coords=CoordinatesLogger(typeof(1.0f0u"nm"), 10),
@@ -197,10 +201,10 @@ To use another GPU package, just swap out `CUDA` for your desired package and `C
 The device to run on can be changed with `device!`, e.g. `device!(1)`.
 There are two GPU code paths currently: a fast path specific to CUDA and a slower path using [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl) that is suitable for all backends.
 
-The number of GPU threads used for the GPU kernels can be tuned with the environmental variables `MOLLY_GPUNTHREADS_PAIRWISE`, `MOLLY_GPUNTHREADS_SPECIFIC`, `MOLLY_GPUNTHREADS_DISTANCENF`, `MOLLY_GPUNTHREADS_IMPLICIT` and `MOLLY_GPUMINTHREADS_IMPLICIT`.
+The number of GPU threads used for the GPU kernels can be tuned with the environmental variables `MOLLY_GPUNTHREADS_PAIRWISE`, `MOLLY_GPUNTHREADS_SPECIFIC`, `MOLLY_GPUNTHREADS_DISTANCENF`, `MOLLY_GPUNTHREADS_CELLLIST`, `MOLLY_GPUNTHREADS_COPY`, `MOLLY_GPUNTHREADS_IMPLICIT` and `MOLLY_GPUMINTHREADS_IMPLICIT`.
 In general these should only be changed if GPU memory errors occur on smaller GPUs.
 
-For the CUDA fast path, users can explicitly call `Molly.optimize_cuda_launch_config!(sys)` prior to a simulation. This will benchmark various launch configurations and cache the optimal parameters, which are then used to accelerate subsequent pairwise force and energy kernels globally. Users can also manually override the kernel parameters by setting the environment variables `MOLLY_CUDA_FORCE_BLOCK_Y`, `MOLLY_CUDA_ENERGY_BLOCK_Y`, `MOLLY_CUDA_TILE_THREADS_X`, `MOLLY_CUDA_TILE_THREADS_Y`, and `MOLLY_CUDA_FORCE_MAXREGS`, or directly via the `set_cuda_launch_config!` function.
+For the CUDA fast path, used with [`GPUNeighborFinder`](@ref), users can explicitly call [`optimize_cuda_launch_config!`](@ref) on a system prior to a simulation. This will benchmark various launch configurations for the pairwise force and energy kernels and store the optimal parameters in the system, caching them for systems of the same type, size and box on the same device. Users can also manually override the kernel parameters by setting the environment variables `MOLLY_CUDA_FORCE_BLOCK_Y`, `MOLLY_CUDA_ENERGY_BLOCK_Y`, `MOLLY_CUDA_TILE_THREADS_X`, `MOLLY_CUDA_TILE_THREADS_Y`, and `MOLLY_CUDA_FORCE_MAXREGS`.
 
 ## Simulating diatomic molecules
 
@@ -229,25 +233,21 @@ specific_inter_lists = (bonds,) # Don't forget the trailing comma!
 ```
 This time we are also going to use a neighbor list to speed up the Lennard-Jones calculation since we don't care about interactions beyond a certain distance.
 We can use the built-in [`DistanceNeighborFinder`](@ref).
-The arguments are a 2D array of eligible interacting pairs, the number of steps between each update and the distance cutoff to be classed as a neighbor.
+The arguments are the number of atoms, the pairs of atoms excluded from the non-bonded interactions, the number of steps between each update and the distance cutoff to be classed as a neighbor.
 Since the neighbor finder is run every 10 steps we should also use a distance cutoff for the neighbor list that is larger than the cutoff for the interaction.
 ```julia
 # All pairs apart from bonded pairs are eligible for non-bonded interactions
-eligible = trues(n_atoms, n_atoms)
-for i in 1:(n_atoms ÷ 2)
-    eligible[i, i + (n_atoms ÷ 2)] = false
-    eligible[i + (n_atoms ÷ 2), i] = false
-end
-
 neighbor_finder = DistanceNeighborFinder(
-    eligible=eligible,
+    n_atoms=n_atoms,
+    excluded_pairs=[(i, i + (n_atoms ÷ 2)) for i in 1:(n_atoms ÷ 2)],
     n_steps=10,
-    dist_cutoff=1.5u"nm",
+    dist_cutoff=1.0u"nm",
 )
 
-cutoff = DistanceCutoff(1.2u"nm")
-pairwise_inters = (LennardJones(use_neighbors=true, cutoff=cutoff),)
+cutoff = DistanceCutoff(0.8u"nm") # Less than half the box side
+pairwise_inters = (LennardJones(cutoff=cutoff),)
 ```
+Since there is a neighbor finder this time, we leave out `use_neighbors=false` so that the interaction uses the neighbor list.
 Now we can simulate as before.
 ```julia
 sys = System(
@@ -280,7 +280,7 @@ visualize(
 )
 ```
 ![Diatomic simulation](images/sim_diatomic.gif)
-The neighbors can be found using `find_neighbors(sys)`, which returns a [`NeighborList`](@ref) for the classical neighbor finders and `nothing` for [`GPUNeighborFinder`](@ref), whose CUDA kernels manage their tile list internally.
+The neighbors can be found using [`find_neighbors`](@ref), e.g. `find_neighbors(sys)`, which returns a [`NeighborList`](@ref) for the classical neighbor finders, a [`GPUCellListNeighborList`](@ref) for [`GPUCellListNeighborFinder`](@ref) and `nothing` for [`GPUNeighborFinder`](@ref), whose CUDA kernels manage their tile list internally.
 
 ## Simulating gravity
 
@@ -391,11 +391,14 @@ A template with the same name as the residue is used if it matches, otherwise th
 
 To run on the GPU, set `array_type=GPUArrayType`, where `GPUArrayType` is the array type for your GPU backend (for example `CuArray` for NVIDIA or `ROCArray` for AMD).
 The floating point type can be set with `float_type`.
+A `boundary` given as a keyword argument is not converted to this type, so on GPU, where `Float32` is the default, give it in `Float32`, e.g. `boundary=CubicBoundary(10.0f0u"nm")`.
 Certain quantities such as the [`potential_energy`](@ref) and the [`virial`](@ref) are accumulated using a higher precision type, as are the large constant terms of [`Ewald`](@ref) and [`PME`](@ref) summation.
 This can be set with `float_type_high` but should generally be left as the default `Float64`.
 The nonbonded method can be selected using the `nonbonded_method` keyword argument to [`System`](@ref).
-This can can be an instance of [`SetupCoulombReactionField`](@ref) (reaction field method), [`SetupPME`](@ref) (particle mesh Ewald summation), [`SetupEwald`](@ref) (Ewald summation, slow), or a cutoff like [`DistanceCutoff`](@ref) (short range only).
+This can can be an instance of [`SetupCoulombReactionField`](@ref) (reaction field method), [`SetupPME`](@ref) (particle mesh Ewald summation), [`SetupEwald`](@ref) (Ewald summation, slow), [`SetupCoulomb`](@ref) or a cutoff like [`DistanceCutoff`](@ref) (short range only).
 To run with constraints, use the `constraints` (`:none`, `:hbonds`, `:allbonds` or `:hangles`) and `rigid_water` keyword arguments.
+[`SHAKE_RATTLE`](@ref) (`constraint_algorithm=SetupSHAKE_RATTLE()`) only supports clusters of constraints around a central atom, such as `:hbonds` and rigid water, so use the default [`SetupLINCS`](@ref) with `:allbonds`.
+Neither algorithm supports angle constraints that share atoms with other constraints, so `:hangles` currently fails for proteins and most small molecules.
 Note that `rigid_water` defaults to `false`, whereas OpenMM makes water rigid by default, so set `rigid_water=true` to reproduce OpenMM behavior.
 Hydrogen mass repartitioning can be used by setting for example `hydrogen_mass=2`, and is applied before constraints are generated.
 Unlike OpenMM, it is also applied to the hydrogens of rigid water.
@@ -406,12 +409,12 @@ Other options detailed in the docstring for [`System`](@ref) include overriding 
 The `strictness` keyword argument determines behavior when encountering possible problems and can be set to `:error` or `:nowarn` rather than the default `:warn`.
 It can be set globally with the `MOLLY_STRICTNESS` environmental variable.
 
-Harmonic position restraints can be added to a [`System`](@ref) for equilibration using [`add_position_restraints`](@ref):
+Harmonic position restraints can be added to a [`System`](@ref) for equilibration using [`Molly.add_position_restraints`](@ref):
 ```julia
-sys_res = add_position_restraints(
+sys_res = Molly.add_position_restraints(
     sys,
     100_000.0u"kJ * mol^-1 * nm^-2";
-    atom_selector=is_heavy_atom,
+    atom_selector=Molly.is_heavy_atom,
 )
 ```
 
@@ -421,7 +424,7 @@ See the [OpenMM documentation](https://docs.openmm.org/latest/userguide/applicat
 The following tags are supported:
 - `<AtomTypes>`: both atom types and atom classes are supported
 - `<Residues>`: `<VirtualSite>` tags are supported except for `type="localCoords"`, and the `override` attribute on `<Residue>` tags is supported
-- `<Patches>`: patches that apply to multiple residue templates and multiple patches acting on one residue template are not supported
+- `<Patches>`: patches that apply to multiple residue templates and multiple patches acting on one residue template are not supported, so disulfide bonds can not currently be set up with CHARMM36, which uses the `DISU` patch
 - `<HarmonicBondForce>`
 - `<HarmonicAngleForce>`
 - `<PeriodicTorsionForce>`: both `<Proper>` and `<Improper>` tags are supported
@@ -471,6 +474,8 @@ water_sdf  = System(joinpath(data_dir, "water_formats", "water.sdf" ), ff) # Res
 
 Molly has the [`ReplicaSystem`](@ref) struct and simulators such as [`ReplicaExchangeMD`](@ref) to carry out replica exchange molecular dynamics (REMD).
 On CPU these are run in parallel by dividing up the number of available threads.
+On GPU each device is driven by its own worker process from Distributed.jl, so add one worker per GPU with `addprocs` and load Molly and the GPU package on the workers with `@everywhere` before calling [`simulate!`](@ref).
+All visible devices are used by default, and the `gpu_devices` keyword argument selects others, e.g. `gpu_devices=collect(CUDA.devices())[1:1]` with one worker.
 For example, to run temperature REMD on a protein with 4 replicas and attempt exchanges every 2.5 ps:
 ```julia
 using Molly
@@ -523,7 +528,7 @@ end
 # 362.86427110336984 K
 ```
 
-`ReplicaSystem` records the absolute MD step, and subsequent `simulate!` calls resume from
+[`ReplicaSystem`](@ref) records the absolute MD step, and subsequent [`simulate!`](@ref) calls resume from
 `rep_sys.current_step`. Set `initial_step` in the constructor when restoring replica
 coordinates and velocities from a checkpoint.
 
@@ -554,15 +559,18 @@ The available CV types are:
 
 Currently, CV calculation is always done on the CPU.
 Other CV functions can be added by the user.
-Every CV type needs to have its own struct, an associated method of the [`calculate_cv`](@ref) function and potentially a method for the `cv_gradient` function.
+Every CV type needs to have its own struct, an associated method of the [`calculate_cv`](@ref) function and potentially a method for the [`Molly.cv_gradient`](@ref) function.
 
 To define your own CV function, first define the `struct`:
 ```julia
 struct MyCV
     # Properties of the CV, e.g. indices of atoms over which the CV should be calculated
     correction::Symbol # Set to :pbc to make molecules whole, or :wrap to not
+    has_virial::Bool   # Read when the virial is needed, e.g. with a barostat
 end
 ```
+If `has_virial` is `true`, a method of `Molly.calculate_virial!(virial, cv::MyCV, coords, forces, atoms, boundary)` that adds the contribution of the bias forces to the virial matrix also has to be defined.
+If it is `false`, the bias does not contribute to the virial.
 
 Next, you need to define a method for the [`calculate_cv`](@ref) function.
 The method should look as follows, taking properties of the system rather than the system itself as input:
@@ -573,7 +581,7 @@ end
 ```
 
 The gradient of [`calculate_cv`](@ref) is by default calculated with automatic differentiation if Enzyme is imported.
-However, it is also possible to manually add a method to the `cv_gradient` function to calculate the gradient without using automatic differentiation:
+However, it is also possible to manually add a method to the [`Molly.cv_gradient`](@ref) function to calculate the gradient without using automatic differentiation:
 ```julia
 function Molly.cv_gradient(cv_type::MyCV, coords, atoms, boundary, velocities; kwargs...)
     # Function to calculate the gradient of the CV function with respect to the coordinates of the system
@@ -598,16 +606,16 @@ end
 The functional form of the bias potential is then defined by adding a method to the [`potential_energy`](@ref) function.
 The method should take `cv_sim` (the output of [`calculate_cv`](@ref)) as input:
 ```julia
-function potential_energy(bias_fn::bias_type, cv_sim; kwargs...)
+function Molly.potential_energy(bias_fn::MyBias, cv_sim; kwargs...)
     pe = ... # Determined by the target value of the CV and cv_sim, the system's current CV value
     return pe
 end
 ```
 
-Finally, you need to add a method for `MyBias` to the `bias_gradient` function.
+Finally, you need to add a method for `MyBias` to the [`Molly.bias_gradient`](@ref) function.
 The method must return the derivative of the [`potential_energy`](@ref) method for `MyBias` with respect to `cv_sim`:
 ```julia
-function Molly.bias_gradient(bias_fn::bias_type, cv_sim;  kwargs...)
+function Molly.bias_gradient(bias_fn::MyBias, cv_sim; kwargs...)
     bias_grad = ... # Derivative of bias with respect to cv_sim, potentially calculated with autodiff
     return bias_grad
 end
@@ -630,7 +638,7 @@ atoms = [Atom(mass=atom_mass, σ=0.3u"nm", ϵ=0.2u"kJ * mol^-1") for i in 1:n_at
 coords = place_atoms(n_atoms, boundary; min_dist=0.3u"nm")
 velocities = [random_velocity(atom_mass, temp) for i in 1:n_atoms]
 
-pairwise_inters = (LennardJones(),)
+pairwise_inters = (LennardJones(use_neighbors=false),)
 
 # Bias distance between atoms 1 and 2
 define_cv = CalcDist([1], [2])
@@ -668,7 +676,7 @@ atoms = [Atom(mass=10.0u"g/mol", charge=1.0) for i in 1:n_atoms]
 boundary = RectangularBoundary(4.0u"nm")
 
 coords = place_atoms(n_atoms, boundary; min_dist=0.2u"nm")
-pairwise_inters = (Coulomb(),)
+pairwise_inters = (Coulomb(use_neighbors=false),)
 
 temperatures = [1198.0, 798.0, 398.0, 198.0, 98.0, 8.0]u"K"
 sys = System(
@@ -686,7 +694,7 @@ trial_args = Dict(:shift_size => 0.1u"nm")
 for t in temperatures
     sim = MetropolisMonteCarlo(;
         temperature=t,
-        trial_moves=random_uniform_translation!,
+        trial_moves=Molly.random_uniform_translation!,
         trial_args=trial_args,
     )
 
@@ -702,7 +710,7 @@ visualize(sys.loggers.coords, boundary, "sim_montecarlo.gif")
 
 `trial_moves` should be a function that takes a [`System`](@ref) as its argument and optional keyword arguments `trial_args`.
 It should modify the coordinates as appropriate, accounting for any boundary conditions.
-[`random_uniform_translation!`](@ref) and [`random_normal_translation!`](@ref) are provided as common trial move functions.
+[`Molly.random_uniform_translation!`](@ref) and [`Molly.random_normal_translation!`](@ref) are provided as common trial move functions.
 [`MonteCarloLogger`](@ref) records various properties throughout the simulation.
 
 ## Units
@@ -726,6 +734,19 @@ In this case, try using the same units throughout.
 
 The float type of a [`System`](@ref) is read from the boundary by default and can be set with the `float_type` argument.
 The coordinates, velocities and boundary should all use this float type; mixing `Float32` and `Float64` data silently loses the precision you asked for on CPU and can fail to compile on GPU, so it is reported according to `strictness`.
+The parameters of atoms and interactions should also use this float type but are not checked.
+Note that some defaults are `Float64`, such as `coulomb_const` in [`Coulomb`](@ref) and [`CoulombReactionField`](@ref), so give these explicitly when using `Float32`.
+
+A [`System`](@ref) can be converted to another float type, to unitless values or to another device by giving `float_type`, `units` or `array_type` to the copy constructor.
+For example, a system simulated with units in `Float32` on the GPU can be evaluated in `Float64` without units on the CPU, which is suitable for Enzyme:
+```julia
+sys_cpu = System(sys; float_type=Float64, units=false, array_type=Array, grad_safe=true)
+```
+The atoms, coordinates, velocities, boundary, interactions, constraints, virtual sites, neighbor finder and Boltzmann constant are converted, and loggers are dropped with a warning unless given with the `loggers` keyword argument.
+Units are stripped without conversion, so the numbers are in the units each value is stored with.
+Converting to a higher precision does not recover the precision lost when the original values were stored.
+Interaction types are rebuilt from their converted fields by calling the constructor of the same name with the fields in order.
+Custom types where this does not work, for example because they contain buffers, should define a method of `Molly.convert_component(conversion, x)`; see the existing methods in the Molly source for examples.
 
 ## Atom types
 
@@ -789,7 +810,9 @@ The available pairwise interactions are:
 - [`CoulombSoftCoreBeutlerEwald`](@ref)
 - [`CoulombSoftCoreGapsysEwald`](@ref)
 - [`Yukawa`](@ref)
+- [`DoubleExponential`](@ref)
 - [`Gravity`](@ref)
+- [`DPDInteraction`](@ref)
 
 The available specific interactions (1-5 atoms) are:
 - [`HarmonicPositionRestraint`](@ref) - 1 atom
@@ -797,12 +820,16 @@ The available specific interactions (1-5 atoms) are:
 - [`MorseBond`](@ref) - 2 atoms
 - [`FENEBond`](@ref) - 2 atoms
 - [`LennardJones14`](@ref) - 2 atoms
+- [`LennardJones14SoftCoreBeutler`](@ref) - 2 atoms
+- [`LennardJones14SoftCoreGapsys`](@ref) - 2 atoms
 - [`EwaldExclusion`](@ref) - 2 atoms
 - [`HarmonicAngle`](@ref) - 3 atoms
 - [`CosineAngle`](@ref) - 3 atoms
 - [`UreyBradley`](@ref) - 3 atoms
 - [`PeriodicTorsion`](@ref) - 4 atoms
 - [`RBTorsion`](@ref) - 4 atoms
+- [`HarmonicTorsion`](@ref) - 4 atoms
+- [`CMAPTorsion`](@ref) - 5 atoms
 
 The available general interactions are:
 - [`Ewald`](@ref)
@@ -810,9 +837,11 @@ The available general interactions are:
 - [`LJDispersionCorrection`](@ref)
 - [`ImplicitSolventOBC`](@ref)
 - [`ImplicitSolventGBN2`](@ref)
+- [`ANIPotential`](@ref)
 - [`MullerBrown`](@ref)
 - [`ASECalculator`](@ref)
 
+In addition there are lambda-scaled variants for many of the above interactions (`λ` or `Scaled` suffixes).
 Some interactions combine instances of the above.
 For example, particle mesh Ewald summation uses the [`CoulombEwald`](@ref) pairwise interaction, the [`EwaldExclusion`](@ref) specific interaction and the [`PME`](@ref) general interaction, allowing the short range terms to use the neighbors.
 
@@ -835,19 +864,21 @@ potential_energy(
 ### Pairwise interactions
 
 Some pairwise interactions define mixing functions which determine how the parameters from each atom are combined.
-For example, the default `σ_mixing` for [`LennardJones`](@ref) is `Molly.LorentzMixing()`, which calculates `(atom_i.σ + atom_j.σ) / 2`.
-Other mixing functions are available, such as `Molly.GeometricMixing()` and `Molly.WaldmanHaglerMixing()`.
+For example, the default `σ_mixing` for [`LennardJones`](@ref) is [`Molly.LorentzMixing`](@ref), which calculates `(atom_i.σ + atom_j.σ) / 2`.
+Other mixing functions are available, such as [`Molly.GeometricMixing`](@ref) and [`Molly.WaldmanHaglerMixing`](@ref).
 Custom mixing functions can be used instead by defining the struct and appropriate functions such as `Molly.σ_mixing` and `Molly.ϵ_mixing`.
 For example:
 ```julia
 struct MyMixing end
 
-Molly.σ_mixing(m::MyMixing, atom_i, atom_j, special) = (atom_i.σ + atom_j.σ) / 2
-Molly.ϵ_mixing(m::MyMixing, atom_i, atom_j, special) = (atom_i.ϵ + atom_j.ϵ) / 2
+Molly.σ_mixing(m::MyMixing, atom_i, atom_j, args...) = (atom_i.σ + atom_j.σ) / 2
+Molly.ϵ_mixing(m::MyMixing, atom_i, atom_j, args...) = (atom_i.ϵ + atom_j.ϵ) / 2
 ```
+Use `args...` as above since some interactions pass further arguments.
 The `atom_type` field of the atoms is available, allowing features like changing the weight of solute-solvent interactions.
+With [`GPUNeighborFinder`](@ref) only the atom fields used by an interaction are passed between GPU threads, so a custom mixing function that reads other fields, such as `atom_type`, has to list them, e.g. `Molly.mixing_atom_fields(::MyMixing) = (:atom_type,)`.
 Shortcut functions are also available to skip the interaction entirely, with similar logic.
-Specific exceptions can be given for pairs of atom types by using `Molly.MixingException`:
+Specific exceptions can be given for pairs of atom types by using [`Molly.MixingException`](@ref) and [`Molly.ExceptionList`](@ref):
 ```julia
 d = Dict((1, 2) => 0.3u"nm") # Pairs of atom type 1 and 2 have a σ value of 0.3 nm
 exceptions = Molly.ExceptionList(d)
@@ -864,14 +895,13 @@ end
 ```
 You can also define a [`use_neighbors`](@ref) method, which determines whether the neighbor list is used to omit distant atoms (`true`) or whether all atom pairs are always considered (`false`):
 ```julia
-Molly.use_neighbors(inter::MyPairwiseInter) = true
+Molly.use_neighbors(inter::MyPairwiseInter) = false
 ```
-This is `false` by default.
-If it is `true`, you must specify a neighbor finder when setting up the [`System`](@ref).
-For built-in interactions this function accesses the `use_neighbors` field of the struct.
+This is `true` by default, in which case you must specify a neighbor finder when setting up the [`System`](@ref).
+For built-in interactions this function accesses the `use_neighbors` field of the struct, which is set with the `use_neighbors` keyword argument and is `true` by default.
 To work on the GPU the `struct` should be a bits type, i.e. `isbitstype(MyPairwiseInter)` should be `true`.
 
-Next, you need to define a method for the [`force`](@ref) and [`pairwise_force`](@ref) functions acting between a pair of atoms.
+Next, you need to define a method for the [`force`](@ref) and [`Molly.pairwise_force`](@ref) functions acting between a pair of atoms.
 
 This has a set series of arguments:
 ```julia
@@ -887,7 +917,7 @@ function Molly.force(inter::MyPairwiseInter,
                      velocity_i,
                      velocity_j,
                      step_n)
-    r = norm(dr)
+    r = norm(vec_ij)
     params = (inter.param,)
     f = Molly.force_cutoff(inter.cutoff, inter, r, params)
     # Multiply the force magnitude by the normalised vector between the atoms
@@ -902,8 +932,8 @@ function Molly.pairwise_force(::MyPairwiseInter, r, params)
     return f
 end
 ```
-The logic here is that any parameter mixing, shortcutting or setup is done in [`force`](@ref) then `force_cutoff` is used to apply the cutoff by calling [`pairwise_force`](@ref), which calculates the force magnitude solely from interatomic distance `r`.
-`params` should not include any distance-based information, since [`pairwise_force`](@ref) may be called for other distances to apply the cutoff.
+The logic here is that any parameter mixing, shortcutting or setup is done in [`force`](@ref) then `force_cutoff` is used to apply the cutoff by calling [`Molly.pairwise_force`](@ref), which calculates the force magnitude solely from interatomic distance `r`.
+`params` should not include any distance-based information, since [`Molly.pairwise_force`](@ref) may be called for other distances to apply the cutoff.
 
 Most of the arguments to [`force`](@ref) will generally not be used but are passed to allow maximum flexibility.
 You can use `args...` to indicate unused further arguments, e.g. `Molly.force(inter::MyPairwiseInter, vec_ij, args...)`.
@@ -917,7 +947,8 @@ It also doesn't work with [`simulate_remd!`](@ref).
 
 Typically the force function is where most computation time is spent during the simulation, so consider optimising this function if you want high performance.
 One nice feature of Molly is that this function will work on both the CPU and the GPU.
-If you need a different version of the function on GPU, you can define `Molly.force_gpu` (and `Molly.potential_energy_gpu`).
+If you need a different version of the function on GPU, you can define [`Molly.force_gpu`](@ref) and [`Molly.potential_energy_gpu`](@ref).
+The returned values should have the float type of the system.
 Virial computation is done automatically when required using the force function.
 The force function should not have side effects like updating atom properties to avoid race conditions; use a general interaction if you need this.
 
@@ -937,7 +968,7 @@ Note that you can also use a named tuple instead of a tuple if you want to acces
 pairwise_inters = (MyPairwiseInter=MyPairwiseInter(NoCutoff(), 1.0),)
 ```
 
-If you wish to calculate potential energies or log the energy throughout a simulation, you will need to define methods for the [`potential_energy`](@ref) and [`pairwise_pe`](@ref) functions.
+If you wish to calculate potential energies or log the energy throughout a simulation, you will need to define methods for the [`potential_energy`](@ref) and [`Molly.pairwise_pe`](@ref) functions.
 These have the same arguments and logic as [`force`](@ref), except the fifth argument to [`potential_energy`](@ref) is the energy units not the force units, and should return a single value corresponding to the potential energy:
 ```julia
 function Molly.potential_energy(inter::MyPairwiseInter,
@@ -952,7 +983,7 @@ function Molly.potential_energy(inter::MyPairwiseInter,
                                 velocity_i,
                                 velocity_j,
                                 step_n)
-    r = norm(dr)
+    r = norm(vec_ij)
     params = (inter.param,)
     return Molly.pe_cutoff(inter.cutoff, inter, r, params)
 end
@@ -987,7 +1018,7 @@ function Molly.force(inter::MySpecificInter,
                      velocity_j,
                      step_n,
                      data)
-    dr = vector(coords_i, coords_j, boundary)
+    dr = vector(coord_i, coord_j, boundary)
 
     # Replace this with your force calculation
     # A positive force causes the atoms to move apart
@@ -1072,7 +1103,7 @@ You could carry out your own neighbor finding in this function if required.
 Since the forces are available for mutation in the function, general interactions can be used to modify the forces in arbitrary ways, though it is up to you to write an appropriate potential energy function if energies are required.
 In cases where the forces are not simply added to, the order of general interactions can matter.
 General interactions are applied after pairwise and specific interactions.
-Note that this function calculates forces not accelerations; if you have a neural network that calculates accelerations you should multiply these by `masses(sys)` to get the forces according to F=ma.
+Note that this function calculates forces not accelerations; if you have a neural network that calculates accelerations you should multiply these by the [`masses`](@ref) of the system, `masses(sys)`, to get the forces according to F=ma.
 
 If you want to use the [`virial`](@ref) in your simulation, for example for to control pressure, you will also need to calculate the contribution to the virial in the `AtomsCalculators.forces!` function.
 To do this, the function should take the additional keyword arguments `needs_vir` and `buffers` that will be passed by the simulator.
@@ -1086,6 +1117,9 @@ For example, the following could go in the function above:
 ```
 
 A method for the `AtomsCalculators.potential_energy` function that takes the same arguments and returns a single value can also be defined.
+
+A general interaction that changes with the simulation history, such as [`Metadynamics`](@ref), can use the `visit_state` keyword argument. It is `true` when a molecular dynamics simulator visits the current state in its force calculation, and `false` for minimizers, loggers and other force or energy calls, so that only visited states update the interaction. It can be `true` several times in one step, e.g. in the substeps of a multiple time step integrator, so the interaction should update once per `step_n`. [`MetropolisMonteCarlo`](@ref) and [`ReplicaExchangeMD`](@ref) never pass `visit_state=true`.
+
 To use your custom interaction in a simulation, add it to the list of general interactions:
 ```julia
 general_inters = (MyGeneralInter(),) # Don't forget the trailing comma!
@@ -1108,7 +1142,7 @@ The available cutoffs are:
 - [`CubicSplineCutoff`](@ref)
 - [`PolynomialCutoff`](@ref)
 
-The following built-in interactions can use a cutoff:
+The following built-in interactions (and their lambda-scaled variants) can use a cutoff:
 - [`LennardJones`](@ref)
 - [`LennardJonesSoftCoreBeutler`](@ref)
 - [`LennardJonesSoftCoreGapsys`](@ref)
@@ -1121,12 +1155,13 @@ The following built-in interactions can use a cutoff:
 - [`CoulombSoftCoreBeutler`](@ref)
 - [`CoulombSoftCoreGapsys`](@ref)
 - [`Yukawa`](@ref)
+- [`DoubleExponential`](@ref)
 - [`Gravity`](@ref)
 In addition, [`CoulombReactionField`](@ref), [`CoulombEwald`](@ref) and the implicit solvent and Ewald general interactions have a `dist_cutoff` argument for a cutoff distance.
 Cutoffs combine well with neighbor finders, provided that the cutoff distance is less than the neighbor distance (see [Neighbor finders](@ref) for more).
 
 To define a custom cutoff, you should first decide whether it has one cutoff point (the force/potential energy is modified up to the cutoff distance) or two (the force/potential energy is modified between an activation distance and the cutoff distance).
-Then, create a struct and cutoff functions:
+Then, create a struct that subtypes [`Molly.AbstractCutoff`](@ref) and cutoff functions:
 ```julia
 struct MyCutoff{P, D} <: Molly.AbstractCutoff{1} # One cutoff point
     dist_cutoff::D # This field is required
@@ -1136,13 +1171,13 @@ MyCutoff(dist_cutoff::D) where D = MyCutoff{1, D}(dist_cutoff)
 
 function Molly.pe_apply_cutoff(::MyCutoff, inter, r, params)
     # Modify the potential energy, pairwise_pe with other values of r can be used
-    pe_r = pairwise_pe(inter, r, params)
+    pe_r = Molly.pairwise_pe(inter, r, params)
     return pe_r
 end
 
 function Molly.force_apply_cutoff(::MyCutoff, inter, r, params)
     # Modify the force magnitude, pairwise_force with other values of r can be used
-    f_r = pairwise_force(inter, r, params)
+    f_r = Molly.pairwise_force(inter, r, params)
     return f_r
 end
 ```
@@ -1194,7 +1229,7 @@ random_coord(b) # SVector(2.651062310435411, 2.1702306804433973, 0.9518105403051
 wrap_coords(SVector(1.0, 1.0, 1.0)u"nm", b) # SVector(3.2, 1.0, 1.0)u"nm"
 ```
 
-The [`box_center`](@ref), `AtomsBase.n_dimensions`, [`float_type`](@ref), [`place_atoms`](@ref) and [`place_diatomics`](@ref) functions are also available for boundaries.
+The [`Molly.box_center`](@ref), `AtomsBase.n_dimensions`, [`float_type`](@ref), [`place_atoms`](@ref) and [`place_diatomics`](@ref) functions are also available for boundaries.
 
 The appropriate boundary to use will depend on your simulation.
 For example, having different lengths in each dimension would usually only make sense in a situation where forces or restraints depended on the dimension.
@@ -1205,6 +1240,8 @@ Simulators define what type of simulation is run.
 This could be anything from a simple energy minimization to complicated replica exchange MD.
 The available simulators are:
 - [`SteepestDescentMinimizer`](@ref)
+- [`FIREMinimizer`](@ref)
+- [`LBFGSMinimizer`](@ref)
 - [`VelocityVerlet`](@ref)
 - [`DPDVelocityVerlet`](@ref)
 - [`Verlet`](@ref)
@@ -1235,7 +1272,7 @@ Not every coupler samples the corresponding ensemble correctly, for example the 
 
 Common options when calling [`simulate!`](@ref) with these simulators include:
 - `show_progress` to decide whether to show a progress bar for the simulation. This is `true` by default in the REPL/IJulia/Pluto, otherwise `false`, and can be set globally with the environmental variable `MOLLY_SHOW_PROGRESS`.
-- `shortcut` to provide a struct that has a `Molly.shortcut_sim` method defined, checking at the end of each step when to stop the simulation early.
+- `shortcut` to provide a struct that has a [`Molly.shortcut_sim`](@ref) method defined, checking at the end of each step when to stop the simulation early.
 - `init_step` to specify the step number before the first step is taken, useful for time-dependent potentials. Default `0`.
 
 The [`LangevinSplitting`](@ref) simulator can be used to define a variety of integrators such as velocity Verlet (splitting `"BAB"`), the Langevin implementation in [`Langevin`](@ref) (`"BAOA"`), and symplectic Euler integrators (`"AB"` and `"BA"`).
@@ -1257,32 +1294,44 @@ function Molly.simulate!(sys,
     # Find neighbors like this
     neighbors = find_neighbors(sys, sys.neighbor_finder; n_threads=n_threads)
 
+    # Storage used by the force calculation, couplers and loggers
+    buffers = Molly.init_buffers!(sys, n_threads)
+
+    # Calculate accelerations like this
+    # Includes appropriate unit conversion for when the force units are per mol
+    # See src/simulators.jl for more efficient code that reuses memory
+    accels_t = accelerations(sys, neighbors, 0; n_threads=n_threads)
+
     for step_n in 1:n_steps
-        # Calculate accelerations like this
-        # See src/simulators.jl for more efficient code that reuses memory
-        accels_t = accelerations(sys, neighbors, step_n; n_threads=n_threads)
+        # Example velocity Verlet update
+        sys.coords .+= sys.velocities .* sim.dt .+ accels_t .* sim.dt^2 ./ 2
 
         # Ensure coordinates stay within the simulation box like this
         sys.coords .= wrap_coords.(sys.coords, (sys.boundary,))
 
-        # Example velocity update
-        # Includes appropriate unit conversion for when the force units are per mol
-        sys.velocities .+= (accels_t .+ accels_t_dt) .* sim.dt / 2
+        accels_t_dt = accelerations(sys, neighbors, step_n; n_threads=n_threads)
+        sys.velocities .+= (accels_t .+ accels_t_dt) .* sim.dt ./ 2
+        accels_t = accels_t_dt
 
         # Apply coupling like this
-        recompute_forces = apply_coupling!(sys, buffers, sim.coupling, sim, neighbors, step_n;
-                                           n_threads=n_threads)
+        recompute_forces = Molly.apply_coupling!(sys, buffers, sim.coupling, sim, neighbors,
+                                                 step_n; n_threads=n_threads)
 
         # Remove center of mass motion like this
         remove_CM_motion!(sys)
 
         # Apply the loggers like this
         # Computed quantities can also be given as keyword arguments to apply_loggers!
-        apply_loggers!(sys, neighbors, step_n, buffers, run_loggers; n_threads=n_threads)
+        Molly.apply_loggers!(sys, neighbors, step_n, buffers, run_loggers; n_threads=n_threads)
 
         # Find new neighbors like this
         neighbors = find_neighbors(sys, sys.neighbor_finder, neighbors, step_n, recompute_forces;
                                    n_threads=n_threads)
+
+        # A coupler such as a barostat can change the coordinates
+        if recompute_forces
+            accels_t = accelerations(sys, neighbors, step_n; n_threads=n_threads)
+        end
     end
 
     return sys
@@ -1300,7 +1349,7 @@ struct MyREMDSimulator
     # Other properties of the simulation
 end
 ```
-Then define the function that carries out the exchange, [`remd_exchange!`](@ref):
+Then define the function that carries out the exchange, [`Molly.remd_exchange!`](@ref):
 ```julia
 function Molly.remd_exchange!(sys::ReplicaSystem,
                               sim::MyREMDSimulator,
@@ -1403,8 +1452,8 @@ Molly.needs_virial(c::MyCoupler) = c.n_steps
 Molly.needs_virial(c::MyCoupler) = Inf
 ```
 The use of the [`virial`](@ref) tensor allows for non-isotropic pressure control.
-Molly follows the [definition in LAMMPS](https://docs.lammps.org/compute_stress_atom.html), taking into account pairwise and specific interactions as well as the contribution of the [`Ewald`](@ref) and [`PME`](@ref) methods.
-Direct calls to [`virial`](@ref), [`scalar_virial`](@ref), [`pressure`](@ref) and [`scalar_pressure`](@ref) approximate constraint contributions with a deterministic small-step constraint preview; contributions from implicit solvent methods and bias potentials are ignored.
+Molly follows the [definition in LAMMPS](https://docs.lammps.org/compute_stress_atom.html), taking into account pairwise and specific interactions, the contribution of the [`Ewald`](@ref) and [`PME`](@ref) methods, and bias potentials.
+Direct calls to [`virial`](@ref), [`scalar_virial`](@ref), [`pressure`](@ref) and [`scalar_pressure`](@ref) approximate constraint contributions with a deterministic small-step constraint preview; contributions from implicit solvent methods are ignored.
 During supported constrained simulations, Molly can add constraint contributions to the total virial for steps where a barostat or virial/pressure logger requests it.
 For the initial simulation step, the same preview convention is used so that interactions and constraints both contribute to the logged virial/pressure.
 If a coordinate-scaling coupling method changes the box on a constrained step, virial and pressure loggers record the pre-coupling virial/pressure for that step, matching the state used by the coupling method.
@@ -1443,7 +1492,7 @@ An optional first argument is the type of the recorded value; the above is equiv
 If the simulation is in 2D, giving `dims=2` as a keyword argument is required for some loggers.
 A logger's history can be accessed with `values(my_logger)`.
 
-To define your own logger, first define the `struct` and a method for `values` to access the stored values:
+To define your own logger, first define the `struct` and a method for [`values`](@ref) to access the stored values:
 ```julia
 struct MyLogger
     n_steps::Int
@@ -1469,12 +1518,12 @@ end
 ```
 The use of `n_steps` is optional and is an example of how to record a property periodically throughout the simulation.
 If a custom logger needs the total virial for constrained simulations, define
-[`logger_virial_interval`](@ref) so the simulator can compute the virial on the
+[`Molly.logger_virial_interval`](@ref) so the simulator can compute the virial on the
 same interval:
 ```julia
 Molly.logger_virial_interval(logger::MyLogger) = logger.n_steps
 ```
-If it specifically logs pressure, also define [`logger_pressure_interval`](@ref):
+If it specifically logs pressure, also define [`Molly.logger_pressure_interval`](@ref):
 ```julia
 Molly.logger_pressure_interval(logger::MyLogger) = logger.n_steps
 ```
@@ -1493,7 +1542,7 @@ simulate!(sys, simulator, 100) # Default run_loggers=true
 simulate!(sys, simulator, 100; run_loggers=:skipstart)
 simulate!(sys, simulator, 100; run_loggers=:skipstart)
 ```
-Running loggers can be disabled entirely with `run_loggers=false`, which is the default for [`SteepestDescentMinimizer`](@ref).
+Running loggers can be disabled entirely with `run_loggers=false`, which is the default for the energy minimizers such as [`SteepestDescentMinimizer`](@ref).
 
 Many times, a logger will just record an observation to an `Array` containing a record of past observations.
 For this purpose, you can use the [`GeneralObservableLogger`](@ref) without defining a custom logging function.
@@ -1517,9 +1566,9 @@ function my_pe_observable(sys::System, neighbors, step_n, buffers; n_threads::In
     end
 end
 ```
-These keyword arguments are also available in [`log_property!`](@ref).
+These keyword arguments are also available in [`Molly.log_property!`](@ref).
 Which values are passed depends on the simulator being used, for example [`SteepestDescentMinimizer`](@ref) passes `current_potential_energy` because it uses it for minimization.
-Note that loggers are called after [`apply_coupling!`](@ref), so the coordinates may have changed since the potential energy or forces were computed.
+Note that loggers are called after [`Molly.apply_coupling!`](@ref), so the coordinates may have changed since the potential energy or forces were computed.
 
 A logger which records the property every `n_steps` can be constructed through
 ```julia
@@ -1550,7 +1599,7 @@ temp = 50.0u"K"
 velocities = [random_velocity(atom_mass, temp) .* 0.01 for i in 1:n_atoms]
 
 # Interaction potentials
-pairwise_inters = (SoftSphere(use_neighbors=true, cutoff=DistanceCutoff(0.6u"nm")),)
+pairwise_inters = (SoftSphere(cutoff=DistanceCutoff(0.6u"nm")),)
 
 bonds = [HarmonicBond(k=10000u"kJ * mol^-1 * nm^-2", r0=0.2u"nm") for i in 1:(n_atoms ÷ 2)]
 specific_inter_lists = (InteractionList2Atoms(
@@ -1560,7 +1609,7 @@ specific_inter_lists = (InteractionList2Atoms(
 ),)
 
 # Define system
-nf = DistanceNeighborFinder(eligible=trues(n_atoms, n_atoms), dist_cutoff=0.6u"nm")
+nf = DistanceNeighborFinder(n_atoms=n_atoms, dist_cutoff=0.6u"nm")
 
 sys = System(
     atoms=atoms,
@@ -1674,6 +1723,8 @@ Due to the nature of the velocity treatment in each integrator, the velocities s
 
 The following simulators automatically use harmonic bonds in place of constraints, where the force constant can be adjusted by changing `constraint_bond_constant`:
 - [`SteepestDescentMinimizer`](@ref)
+- [`FIREMinimizer`](@ref)
+- [`LBFGSMinimizer`](@ref)
 
 Simulators incompatible with constraints will print a warning and continue without applying constraints when used with systems containing constraints.
 
@@ -1748,7 +1799,7 @@ Molly allows virtual sites to be defined in the following ways:
 Virtual sites should have an entry in the atom, coordinate and velocity arrays.
 They can be involved in any interaction type, with the forces being distributed back to the parent atoms automatically after all forces have been calculated.
 [`forces`](@ref), [`accelerations`](@ref) and `sys.velocities` are zero for virtual site atoms since they are not integrated.
-They share all the non-bonded exclusions of, and are excluded from, their parent atoms.
+They share all the non-bonded exclusions of, and are excluded from, the first of their parent atoms.
 The parent atoms must not be virtual sites themselves.
 They cannot participate in constraints.
 Virtual sites apart from [`OutOfPlaneSite`](@ref) and [`LocalCoordinatesSite`](@ref) are compatible with virial calculation, since the coordinates of the other sites are linear in the coordinates of their parent atoms.
@@ -1796,32 +1847,70 @@ The virtual site atoms need to be present in the structure file to assign the co
 
 Neighbor finders find close atoms periodically throughout the simulation, saving on computation time by allowing the force calculation between distant atoms to be omitted.
 The available neighbor finders are:
-- [`NoNeighborFinder`](@ref)
 - [`CellListMapNeighborFinder`](@ref)
 - [`GPUNeighborFinder`](@ref)
+- [`GPUCellListNeighborFinder`](@ref)
 - [`DistanceNeighborFinder`](@ref)
 - [`TreeNeighborFinder`](@ref)
 
-The recommended neighbor finder is [`CellListMapNeighborFinder`](@ref) on CPU, [`GPUNeighborFinder`](@ref) on NVIDIA GPUs and [`DistanceNeighborFinder`](@ref) on other GPUs.
+The recommended neighbor finder is [`CellListMapNeighborFinder`](@ref) on CPU, [`GPUNeighborFinder`](@ref) on NVIDIA GPUs and [`GPUCellListNeighborFinder`](@ref) on other GPUs, falling back to [`DistanceNeighborFinder`](@ref) there when the box is too small for a cell list.
 
-The `dist_cutoff` of a neighbor finder is the distance used to search for neighbors, and is not the same as the interaction cutoff distance (see [Cutoffs](@ref)).
-Since the neighbor list is only rebuilt every `n_steps` steps, `dist_cutoff` should be the interaction cutoff distance plus a buffer distance:
+Pairwise interactions use the neighbor list by default, i.e. [`use_neighbors`](@ref) returns `true`, so a [`System`](@ref) with pairwise interactions needs a neighbor finder unless the interactions are given `use_neighbors=false`.
+A pairwise interaction with `use_neighbors=false` considers all pairs of atoms, without the excluded and special pairs of the neighbor finder.
+
+The pairs of atoms that interact are given to a neighbor finder as the number of atoms along with lists of the excluded pairs, which do not interact through the pairwise interactions, for example bonded atoms, and the special pairs, which have scaled interactions, for example 1-4 atoms:
 ```julia
 dist_cutoff = 1.0u"nm" # Interaction cutoff distance
 dist_buffer = 0.2u"nm" # Buffer distance
 neighbor_finder = DistanceNeighborFinder(
-    eligible=eligible,
+    n_atoms=n_atoms,
+    excluded_pairs=[(1, 2), (2, 3), (1, 3)],
+    special_pairs=[(1, 4)],
     n_steps=10,
     dist_cutoff=(dist_cutoff + dist_buffer),
 )
 ```
+Every neighbor finder takes these arguments.
+The pairs can be given as any iterable of `(i, j)` pairs, or as a sparse matrix whose `true` entries are the pairs.
+They are stored as [`SparsePairMatrix`](@ref)s, so the memory used is proportional to the number of pairs and grows linearly with the number of atoms.
+For a system on the GPU using [`DistanceNeighborFinder`](@ref), [`GPUNeighborFinder`](@ref) or [`GPUCellListNeighborFinder`](@ref), give the array type of the system as `array_type`, for example `array_type=CuArray`, so that the pairs are stored on the GPU.
+Systems set up from a file store the pairs in this way.
+
+The `dist_cutoff` of a neighbor finder is the distance used to search for neighbors, and is not the same as the interaction cutoff distance (see [Cutoffs](@ref)).
+Since the neighbor list is only rebuilt every `n_steps` steps, `dist_cutoff` should be the interaction cutoff distance plus a buffer distance, as above.
 The buffer distance should be larger than the distance an atom can move in `n_steps` steps, otherwise interacting pairs can be missed.
 When setting up a [`System`](@ref) from a file the buffer is added automatically and the two distances are given separately as the `dist_cutoff` and `dist_buffer` keyword arguments.
 
+Alternatively, the pairs can be described by an `eligible` matrix, which is `false` for pairs excluded from the pairwise interactions, and a `special` matrix, which is `true` for special pairs:
+```julia
+# All pairs are eligible apart from each atom with itself
+eligible = trues(n_atoms, n_atoms)
+for i in 1:n_atoms
+    eligible[i, i] = false
+end
+neighbor_finder = DistanceNeighborFinder(
+    eligible=eligible,
+    special=falses(n_atoms, n_atoms),
+    n_steps=10,
+    dist_cutoff=(dist_cutoff + dist_buffer),
+)
+```
+Dense matrices take memory proportional to the square of the number of atoms, which limits the size of system that can be simulated, especially on the GPU.
+They can be useful for small systems or patterns of pairs that are not sparse.
+A [`SparsePairMatrix`](@ref) can also be given as the `eligible` and `special` matrices.
+
 [`GPUNeighborFinder`](@ref) follows a different CUDA-specific path based on the tiled GPU strategy of [Eastman and Pande 2010](https://doi.org/10.1002/jcc.21413).
-Instead of materializing a conventional neighbor list, it stores sparse excluded and special pairs and lets the CUDA pairwise kernels reorder atoms, build per-tile masks and cache a compact list of interacting `32x32` tiles internally.
+Instead of materializing a conventional neighbor list, it stores sparse excluded and special pairs and lets the CUDA pairwise kernels reorder atoms and cache a compact list of interacting `32x32` tiles internally, building the exclusion masks of the few tiles that need them from the sparse pairs.
+The memory it uses grows linearly with the number of atoms, and for large systems the interacting tiles are found by searching a tree of bounding boxes, so the time taken also grows close to linearly.
 Accordingly, [`find_neighbors`](@ref) returns `nothing` for [`GPUNeighborFinder`](@ref).
-When using it, set `dist_cutoff` to the interaction cutoff distance plus a buffer distance as above, and `n_steps_reorder` to the number of steps between reorder and tile-list refresh passes.
+When using it, set `dist_cutoff` to the interaction cutoff distance plus a buffer distance as above, and `n_steps` to the number of steps between reordering the atoms and refreshing the tile list.
+
+[`GPUCellListNeighborFinder`](@ref) is an `O(N)` cell list that does materialize a neighbor list, returning a [`GPUCellListNeighborList`](@ref), which also gives the neighbors of each atom as a padded matrix via [`ragged_neighbors`](@ref).
+It runs on any GPU backend and is the best option on GPUs other than NVIDIA ones, where the tiled kernels of [`GPUNeighborFinder`](@ref) are not available.
+Three-dimensional [`CubicBoundary`](@ref) and [`TriclinicBoundary`](@ref) systems are supported, as long as opposite box faces are at least three times `dist_cutoff` apart so that the grid has at least three cells along every box axis.
+Like [`GPUNeighborFinder`](@ref) it stores the exclusions and special pairs as [`SparsePairMatrix`](@ref)s on the device, converting dense `eligible` and `special` matrices at construction rather than keeping them, since a dense mask is `n_atoms^2` bytes on the device.
+Most of the memory it uses for a large system is the per-atom neighbor matrix and the pair list.
+The matrix can be left out with `ragged=false` when only the pairs are needed, as for the pairwise interactions of a [`System`](@ref), which roughly doubles the number of atoms that fit on a GPU; systems set up from a file do this.
 
 ## Analysis
 
@@ -1881,8 +1970,8 @@ Some functions require `Random.default_rng()` for thread safety, and will error 
 Here is a checklist to ensure that you are getting the optimal performance from your simulations:
 - On CPU, you should tune the `n_threads` argument to [`simulate!`](@ref). If running on a single thread, it should be `1`. Otherwise you should try various values, including larger than the number of threads available to Julia (which balances the load appropriately). Make sure to start Julia with as many threads as possible using `-t`. Generally, `Float32` is not much faster than `Float64` on CPU so `Float64` is the default float type.
 - On GPU, using `Float32` will give vastly better performance and is the default float type. You can try changing the number of threads for each kernel as described in the [GPU acceleration](@ref) section, but the defaults are generally suitable for modern hardware. Multiple simulations can be run on different GPUs using `device!`. It is not currently possible to split one simulation onto multiple devices.
-- If you run a simulation using CUDA GPUs, the `Molly.optimize_cuda_launch_config!(sys)` function can be used to automatically test several launch parameters for the CUDA kernels and select the most performant ones. This is done automatically when setting a system up from a file.
-- Run a short `simulate!` call once to ensure JIT compilation. You can run it on `deepcopy(sys)` if you don't want to affect `sys`, though beware of side effects like writing out trajectory files and consider using `run_loggers=false`.
+- If you run a simulation using CUDA GPUs with [`GPUNeighborFinder`](@ref), the [`optimize_cuda_launch_config!`](@ref) function can be used to automatically test several launch parameters for the CUDA kernels and select the most performant ones. This is done automatically when setting a system up from a file.
+- Run a short [`simulate!`](@ref) call once to ensure JIT compilation. You can run it on `deepcopy(sys)` if you don't want to affect `sys`, though beware of side effects like writing out trajectory files and consider using `run_loggers=false`.
 - Make sure all arrays, such as coordinates and velocities, are concretely typed.
 - In general, using units doesn't slow things down as described in the [Units](@ref) section, but you could try running without units.
 

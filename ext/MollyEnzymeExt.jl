@@ -22,6 +22,7 @@ function __init__()
     return nothing
 end
 
+EnzymeRules.inactive_type(::Type{<:GPUCellListNeighborList}) = true
 EnzymeRules.inactive(::typeof(is_on_gpu), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.default_strictness), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.check_strictness), args...) = nothing
@@ -36,7 +37,6 @@ EnzymeRules.inactive(::typeof(Molly.check_units), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.check_force_units), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.check_energy_units), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.has_infinite_boundary), args...) = nothing
-EnzymeRules.inactive(::typeof(Molly.n_infinite_dims), args...) = nothing
 EnzymeRules.inactive(::typeof(random_coord), args...) = nothing
 EnzymeRules.inactive(::typeof(random_velocity), args...) = nothing
 EnzymeRules.inactive(::typeof(random_velocities), args...) = nothing
@@ -44,6 +44,7 @@ EnzymeRules.inactive(::typeof(random_velocities!), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.setup_virtual_sites), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.check_gbsa_n_threads), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.atoms_bonded_to_N), args...) = nothing
+EnzymeRules.inactive(::typeof(Molly.atoms_carboxylate_O), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.lookup_table), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.radius_classes), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.gb_log_scaling), args...) = nothing
@@ -63,8 +64,9 @@ EnzymeRules.inactive(::typeof(use_neighbors), args...) = nothing
 EnzymeRules.inactive(::typeof(find_neighbors), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.uses_gpu_neighbor_finder), args...) = nothing
 EnzymeRules.inactive(::typeof(Molly.claim_block!), args...) = nothing
-EnzymeRules.inactive_type(::Type{<:NoNeighborFinder}) = true
 EnzymeRules.inactive_type(::Type{<:GPUNeighborFinder}) = true
+EnzymeRules.inactive_type(::Type{<:GPUCellListNeighborFinder}) = true
+EnzymeRules.inactive_type(::Type{<:Molly.GPUCellListState}) = true
 EnzymeRules.inactive_type(::Type{<:DistanceNeighborFinder}) = true
 EnzymeRules.inactive_type(::Type{<:TreeNeighborFinder}) = true
 EnzymeRules.inactive_type(::Type{<:CellListMapNeighborFinder}) = true
@@ -130,7 +132,8 @@ end
 
 # Calculate the gradient of a CV with respect to the input coordinates
 # Works for systems with and without units
-function Molly.cv_gradient(cv_type, coords, atoms=nothing, boundary=nothing, velocities=nothing)
+function Molly.cv_gradient_enzyme(cv_type, coords, atoms=nothing, boundary=nothing,
+                                  velocities=nothing)
     d_coords = zero(coords)
     unit_arr = Any[u"nm"]
 
@@ -151,6 +154,11 @@ function Molly.cv_gradient(cv_type, coords, atoms=nothing, boundary=nothing, vel
     d_coords = d_coords .* u ./ unit(d_coords[1][1])^2
 
     return d_coords, cv_val_ustrip * u
+end
+
+# Fallback, analytic methods are defined for built-in collective variables
+function Molly.cv_gradient(cv_type, coords, atoms=nothing, boundary=nothing, velocities=nothing)
+    return Molly.cv_gradient_enzyme(cv_type, coords, atoms, boundary, velocities)
 end
 
 # Optimisations for dict_get gradients
@@ -249,6 +257,17 @@ function EnzymeRules.reverse(config::RevConfig, ofn::Const{typeof(GPUArrays._map
                              ::Type{RT}, tape, f::Const, op::Const,
                              A::Annotation{<:AbstractGPUArray};
                              dims, init) where {RT <: Const}
+    return (nothing, nothing, nothing)
+end
+
+# From Enzyme.jl 0.13.212 the Enzyme reverse rule for `sum` takes any return activity,
+# though it still has no augmented primal for a constant one, so the method above is
+# ambiguous with it for `sum` and this more specific method is required
+function EnzymeRules.reverse(config::RevConfig, ofn::Const{typeof(GPUArrays._mapreduce)},
+                             ::Type{RT}, tape, f::Const{typeof(identity)},
+                             op::Const{typeof(Base.add_sum)},
+                             A::Annotation{<:AbstractGPUArray{T}};
+                             dims, init) where {RT <: Const, T}
     return (nothing, nothing, nothing)
 end
 
@@ -921,7 +940,8 @@ end
                         kx, ky, kz, TV)
             o1, o2 = reim(recip_grid[li])
             g1, g2 = reim(drecip_grid[li])
-            de = desum_arr[li]
+            # The energy buffer can be in a higher precision than the grid
+            de = T(desum_arr[li])
             drecip_grid[li] = Complex(eterm_nou*g1 + 2*weight*de*o1,
                                       eterm_nou*g2 + 2*weight*de*o2)
         end
@@ -1169,7 +1189,7 @@ function pairwise_adjoint!(rev_kernel, sys, prim, neighbors, step_n, pairwise_in
     elseif !any(use_nl)
         nbs_in = Molly.NoNeighborList(length(sys))
     else
-        error("a mix of pairwise interactions with and without neighbour lists is not " *
+        error("a mix of pairwise interactions with and without neighbor lists is not " *
               "supported by the GPU reverse rules yet")
     end
     length(nbs_in) == 0 && return false

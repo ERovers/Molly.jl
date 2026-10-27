@@ -3,6 +3,8 @@
 export
     SteepestDescentMinimizer,
     simulate!,
+    FIREMinimizer,
+    LBFGSMinimizer,
     VelocityVerlet,
     DPDVelocityVerlet,
     Verlet,
@@ -15,11 +17,22 @@ export
     MTSLangevinIntegrator,
     ReplicaExchangeMD,
     simulate_remd!,
+    MetropolisMonteCarlo
+
+@public shortcut_sim,
+    NaNSimulationError,
     remd_exchange!,
-    MetropolisMonteCarlo,
     random_uniform_translation!,
     random_normal_translation!
 
+"""
+    shortcut_sim(shortcut, sys, buffers, neighbors, step_n; kwargs...)
+
+Determine whether to stop the simulation at a given simulation step.
+
+To provide a custom shortcut criteria, define a struct and a method for this function
+that dispatches on the struct as the first argument.
+"""
 shortcut_sim(::Nothing, args...; kwargs...) = false
 
 calc_n_steps(n_steps::Integer, dt) = n_steps
@@ -86,6 +99,11 @@ next_nograd!(::Nothing) = nothing
 update_nograd!(progress, val) = ProgressMeter.update!(progress, val)
 update_nograd!(::Nothing, val) = nothing
 
+"""
+    NaNSimulationError(msg)
+
+An error when a `NaN` is encountered during a simulation or setup.
+"""
 struct NaNSimulationError <: Exception
     msg::String
 end
@@ -119,192 +137,6 @@ function check_array_nans(svec_arrays, labels, step_n)
     end
 end
 
-"""
-    SteepestDescentMinimizer(; <keyword arguments>)
-
-Steepest descent energy minimization.
-
-Not compatible with gradient calculation using Enzyme.
-
-# Arguments
-- `step_size::D=0.01u"nm"`: the initial maximum displacement.
-- `max_steps::Int=1_000`: the maximum number of steps.
-- `tol::F=1_000.0u"kJ * mol^-1 * nm^-1"`: the maximum force below which to
-    finish minimization.
-- `constraint_bond_constant::K=500_000.0u"kJ * mol^-1 * nm^-2"`: the force constant
-    for the harmonic bonds that are used instead of constraints during
-    minimisation. Set to `nothing` to not use harmonic bonds and ignore
-    constraints. Unused if the system does not have constraints.
-- `log_stream::L=devnull`: stream to print minimization progress to.
-"""
-@kwdef struct SteepestDescentMinimizer{D, F, K, L}
-    step_size::D = 0.01u"nm"
-    max_steps::Int = 1_000
-    tol::F = 1_000.0u"kJ * mol^-1 * nm^-1"
-    constraint_bond_constant::K = 500_000.0u"kJ * mol^-1 * nm^-2"
-    log_stream::L = devnull
-end
-
-"""
-    simulate!(system, simulator, n_steps::Integer; <keyword arguments>)
-    simulate!(system, simulator, sim_time; <keyword arguments>)
-    simulate!(system, simulator; <keyword arguments>)
-    simulate!(awh_sim::AWHSimulation, n_steps)
-
-Run a simulation on a system according to the rules of the given simulator.
-
-For simulators that run for a given period of time, the third argument can either be an
-`Integer` number of steps or a simulation time (e.g. `10.0u"ns"` or `10.0` if not using units).
-Custom simulators should implement this function.
-Constraints are applied during minimization, which can lead to issues.
-
-# Arguments
-- `n_threads=Threads.nthreads()`: the number of threads to run the simulation on, only
-    relevant when running on CPU.
-- `run_loggers`: whether to run the loggers during the simulation. Can be `true`, `false`
-    or `:skipstart`, in which case the loggers are not run before the first step. `run_loggers`
-    is `true` by default except for [`SteepestDescentMinimizer`](@ref), where it is `false`.
-- `shortcut=nothing`: when to stop the simulation early. A struct with the `shortcut_sim`
-    method defined can be provided. `shortcut_sim` is checked at the end of each step.
-    Unused for REMD simulations.
-- `init_step=0`: the step number before the first step is taken, useful for time-dependent
-    potentials.
-- `show_progress`: whether to show a progress bar for the simulation. `true` by default in
-    the REPL/IJulia/Pluto, otherwise `false` by default. Can be set globally with the
-    environmental variable `MOLLY_SHOW_PROGRESS`.
-- `check_nans`: whether to check each step for NaNs and print a useful error message.
-    `true` by default on CPU, `false` by default on GPU as it slows down simulation.
-- `rng=Random.default_rng()`: the random number generator used for the simulation. Setting
-    this allows reproducible stochastic simulations.
-- `strictness=:warn`: determines behavior when encountering possible problems,
-    options are `:warn` to emit warnings, `:nowarn` to suppress warnings or
-    `:error` to error.
-
-Alternatively:
-
-Run an AWH simulation for a given number of molecular dynamics steps.
-
-The total number of AWH iterations is automatically determined by dividing `n_steps` 
-by the `num_md_steps` defined in the `AWHSimulation` struct.
-
-# Arguments
-- `awh_sim::AWHSimulation`: The [`AWHSimulation`](@ref) struct defining the AWH parameters and state.
-- `n_steps::Int`: The total number of molecular dynamics steps to perform.
-"""
-@inline function simulate!(sys::System{<:Any, <:Any, T},
-                           sim::SteepestDescentMinimizer;
-                           n_threads::Integer=Threads.nthreads(),
-                           run_loggers=false,
-                           shortcut=nothing,
-                           init_step::Integer=0,
-                           show_progress=default_show_progress(),
-                           check_nans=default_check_nans(sys, sim),
-                           rng=Random.default_rng(),
-                           strictness=default_strictness()) where T
-    # @inline needed to avoid Enzyme error
-    check_simulate_inputs(init_step, run_loggers, strictness)
-    if length(sys.constraints) > 0
-        if isnothing(sim.constraint_bond_constant)
-            err_str = "System has constraints but constraint_bond_constant is nothing, " *
-                      "constraints will be ignored"
-            report_issue(err_str, strictness)
-            sis = sys.specific_inter_lists
-        else
-            constraint_bonds = constraints_to_bonds(sys, sim.constraint_bond_constant)
-            if length(constraint_bonds) > 0
-                sis = (sys.specific_inter_lists..., constraint_bonds)
-            else
-                sis = sys.specific_inter_lists
-            end
-        end
-    else
-        sis = sys.specific_inter_lists
-    end
-
-    needs_vir = false
-    sys.coords .= wrap_coords.(sys.coords, (sys.boundary,))
-    place_virtual_sites!(sys; n_threads=n_threads)
-    neighbors = find_neighbors(sys, sys.neighbor_finder, nothing, init_step, true;
-                               n_threads=n_threads)
-    buffers = init_buffers!(sys, n_threads)
-    E = potential_energy(sys, neighbors, init_step, buffers; n_threads=n_threads,
-                         specific_inter_lists=sis, strictness=strictness)
-    apply_loggers!(sys, neighbors, init_step, buffers, run_loggers == true; n_threads=n_threads,
-                   strictness=strictness, current_potential_energy=E)
-    println(sim.log_stream, "Step ", init_step, " - potential energy ", E,
-            " - max force N/A - N/A")
-    hn = T(sim.step_size)
-    coords_copy = zero(sys.coords)
-    F = zero_forces(sys)
-    check_nan_labels = ("coordinates", "forces")
-    check_nans && check_array_nans((sys.coords, F), check_nan_labels, init_step)
-
-    progress = setup_progress_minimizer(ustrip(sim.tol), show_progress)
-    for step_n in (init_step + 1):(init_step + sim.max_steps)
-        forces!(F, sys, neighbors, step_n, buffers, Val(needs_vir); n_threads=n_threads,
-                                        specific_inter_lists=sis, strictness=strictness)
-        max_force = maximum(norm.(F))
-
-        coords_copy .= sys.coords
-        sys.coords .+= hn .* F ./ max_force
-        sys.coords .= wrap_coords.(sys.coords, (sys.boundary,))
-        place_virtual_sites!(sys; n_threads=n_threads)
-
-        neighbors_copy = neighbors
-        neighbors = find_neighbors(sys, sys.neighbor_finder, neighbors, step_n;
-                                    n_threads=n_threads)
-        E_trial = potential_energy(sys, neighbors, step_n, buffers; n_threads=n_threads,
-                                            specific_inter_lists=sis, strictness=strictness)
-        if E_trial < E
-            hn = 6 * hn / 5
-            E = E_trial
-            println(sim.log_stream, "Step ", step_n, " - potential energy ",
-                    E_trial, " - max force ", max_force, " - accepted")
-        else
-            sys.coords .= coords_copy
-            neighbors = neighbors_copy
-            hn = hn / 5
-            println(sim.log_stream, "Step ", step_n, " - potential energy ",
-                    E_trial, " - max force ", max_force, " - rejected")
-        end
-
-        apply_loggers!(sys, neighbors, step_n, buffers, run_loggers; n_threads=n_threads,
-                       strictness=strictness, current_potential_energy=E, specific_inter_lists=sis)
-
-        if max_force < sim.tol
-            break
-        end
-        check_nans && check_array_nans((sys.coords, F), check_nan_labels, step_n)
-        if shortcut_sim(shortcut, sys, buffers, neighbors, step_n; n_threads=n_threads,
-                        current_potential_energy=E)
-            break
-        end
-        update_nograd!(progress, ustrip(max_force))
-    end
-    return sys
-end
-
-"""
-    VelocityVerlet(; <keyword arguments>)
-
-The velocity Verlet integrator.
-
-# Arguments
-- `dt::T`: the time step of the simulation.
-- `coupling::C=nothing`: the coupling which applies during the simulation.
-- `remove_CM_motion=1`: remove the center of mass motion every this number of steps,
-    set to `false` or `0` to not remove center of mass motion.
-"""
-struct VelocityVerlet{T, C}
-    dt::T
-    coupling::C
-    remove_CM_motion::Int
-end
-
-function VelocityVerlet(; dt, coupling=nothing, remove_CM_motion=1)
-    return VelocityVerlet(dt, coupling, Int(remove_CM_motion))
-end
-
 function virial_schedule_from_steps(steps)
     isempty(steps) && return false, Inf
     smin = minimum(steps)
@@ -315,22 +147,6 @@ function virial_schedule_from_steps(steps)
         end
     end
     return true, smin
-end
-
-function logger_due_on_step(logger_interval, step_n::Integer, run_loggers)
-    run_loggers == false && return false
-    run_loggers == :skipstart && step_n == 0 && return false
-    return !isinf(logger_interval) && (step_n % logger_interval == 0)
-end
-
-function virial_logger_due_on_step(loggers, step_n::Integer, run_loggers)
-    return any(logger -> logger_due_on_step(logger_virial_interval(logger), step_n,
-                                            run_loggers), loggers)
-end
-
-function pressure_logger_due_on_step(loggers, step_n::Integer, run_loggers)
-    return any(logger -> logger_due_on_step(logger_pressure_interval(logger), step_n,
-                                            run_loggers), loggers)
 end
 
 function needs_virial_schedule(coupling, loggers, run_loggers)
@@ -385,162 +201,6 @@ function save_pre_coupling_virial_for_loggers!(buffers, sys, coupling, step_n::I
     return buffers
 end
 
-constraint_virial_integrator_factor(sim) = 1
-constraint_virial_integrator_factor(sim::VelocityVerlet) = 2
-
-function position_constraint_virial_scale(sys, buffers, dt)
-    e_unit = unit(eltype(buffers.constraint_virial))
-    if e_unit == NoUnits
-        return inv(dt^2)
-    else
-        m_unit = unit(eltype(masses(sys)))
-        x_unit = unit(eltype(eltype(sys.coords)))
-        raw_unit = m_unit * x_unit^2
-        return uconvert(e_unit, raw_unit * inv(dt^2))
-    end
-end
-
-position_constraint_virial_scale(sys::System{D, AT, T}, buffers, dt, sim) where {D, AT, T} =
-    T(constraint_virial_integrator_factor(sim)) * position_constraint_virial_scale(sys, buffers, dt)
-
-function velocity_constraint_virial_scale(sys, buffers, dt)
-    e_unit = unit(eltype(buffers.constraint_virial))
-    if e_unit == NoUnits
-        return inv(dt)
-    else
-        m_unit = unit(eltype(masses(sys)))
-        x_unit = unit(eltype(eltype(sys.coords)))
-        v_unit = unit(eltype(eltype(sys.velocities)))
-        raw_unit = m_unit * x_unit * v_unit
-        return uconvert(e_unit, raw_unit * inv(dt))
-    end
-end
-
-velocity_constraint_virial_scale(sys::System{D, AT, T}, buffers, dt, sim) where {D, AT, T} =
-    T(constraint_virial_integrator_factor(sim)) * velocity_constraint_virial_scale(sys, buffers, dt)
-
-function position_constraint_context(buffers, sys, step_n::Integer, dt, needs_virial::Bool,
-                                     sim=nothing)
-    return ConstraintApplicationContext(
-        kind=PositionConstraintApplication(),
-        needs_virial=needs_virial,
-        step_n=Int(step_n),
-        atoms=sys.atoms,
-        dt=dt,
-        virial_scale=position_constraint_virial_scale(sys, buffers, dt, sim),
-        buffers=buffers,
-        coords_buffer=buffers.constraint_coords_buffer,
-    )
-end
-
-function velocity_constraint_context(buffers, sys, step_n::Integer, dt, needs_virial::Bool,
-                                     sim=nothing)
-    return ConstraintApplicationContext(
-        kind=VelocityConstraintApplication(),
-        needs_virial=needs_virial,
-        step_n=Int(step_n),
-        atoms=sys.atoms,
-        dt=dt,
-        virial_scale=velocity_constraint_virial_scale(sys, buffers, dt, sim),
-        buffers=buffers,
-        velocities_buffer=buffers.constraint_velocities_buffer,
-    )
-end
-
-function prepare_constraint_virial!(buffers, sys, step_n::Integer, needs_virial::Bool)
-    if needs_virial && length(sys.constraints) > 0
-        clear_constraint_virial!(buffers, sys, step_n)
-    end
-    return buffers
-end
-
-function merge_constraint_virial_if_needed!(buffers, sys, step_n::Integer,
-                                            needs_virial::Bool)
-    if needs_virial && length(sys.constraints) > 0
-        merge_constraint_virial!(buffers, sys, step_n)
-    end
-    return buffers
-end
-
-function default_constraint_preview_dt(sys::System{<:Any, <:Any, T}) where T
-    return (sys.energy_units == NoUnits ? T(0.0005) : T(0.0005)u"ps")
-end
-
-# Evaluate the constraint contribution to the virial when there is no running dynamics
-# step to accumulate it from (the initial state of a simulation and the public virial and
-# pressure functions). Both the position (SHAKE) and velocity (RATTLE) contributions are
-# captured using the same constraint solves a full dynamics step applies, so the result is
-# consistent with the per-step virial the integrators accumulate and independent of the
-# (arbitrary) preview time step. The velocities are first projected onto the constraint
-# manifold so the velocity contribution is well-defined even if the input velocities do not
-# satisfy the constraints. The system is advanced through a trial step and restored, leaving
-# only the accumulated constraint virial merged into buffers.virial. The generic constraint
-# interface means this works for any constraint algorithm.
-function merge_initial_constraint_virial!(buffers, sys, step_n::Integer, needs_virial::Bool,
-                                          accels; n_threads::Integer=Threads.nthreads(),
-                                          dt=default_constraint_preview_dt(sys),
-                                          strictness=default_strictness())
-    if needs_virial && length(sys.constraints) > 0
-        coords = copyto_constraint_scratch!(buffers.constraint_preview_coords_buffer, sys.coords)
-        velocities = copyto_constraint_scratch!(buffers.constraint_preview_velocities_buffer,
-                                                sys.velocities)
-
-        # Project onto the constraint manifold so the RATTLE contribution reflects only the
-        # force-induced velocity component rather than any pre-existing constraint violation
-        apply_velocity_constraints!(sys; n_threads=n_threads, strictness=strictness)
-
-        clear_constraint_virial!(buffers, sys, step_n)
-        sys.velocities .+= accels .* dt
-        vel_context = velocity_constraint_context(buffers, sys, step_n, dt, true)
-        apply_velocity_constraints!(sys; context=vel_context, n_threads=n_threads,
-                                    strictness=strictness)
-
-        sys.coords .+= sys.velocities .* dt
-        pos_context = position_constraint_context(buffers, sys, step_n, dt, true)
-        apply_position_constraints!(sys, coords; context=pos_context, n_threads=n_threads,
-                                    strictness=strictness)
-        merge_constraint_virial!(buffers, sys, step_n)
-
-        sys.coords .= coords
-        sys.velocities .= velocities
-    end
-    return buffers
-end
-
-# Evaluate the constraint contribution to the virial at the current configuration using
-# the same position (SHAKE) and velocity (RATTLE) constraint solves that a full dynamics
-# step applies, so the barostat sees a constraint virial consistent with the integrator.
-# The system is advanced through a trial step and restored, leaving only the accumulated
-# constraint virial merged into buffers.virial. Unlike merge_initial_constraint_virial!,
-# this captures both the position and velocity constraint contributions.
-function merge_step_constraint_virial!(buffers, sys, step_n::Integer, needs_virial::Bool,
-                                       accels, sim, dt, coord_save, vel_save,
-                                       cons_coord_storage, cons_vel_storage;
-                                       n_threads::Integer=Threads.nthreads(),
-                                       strictness=default_strictness())
-    if needs_virial && length(sys.constraints) > 0
-        coord_save .= sys.coords
-        vel_save .= sys.velocities
-
-        sys.velocities .+= accels .* dt
-        prepare_constraint_virial!(buffers, sys, step_n, true)
-        vel_context = velocity_constraint_context(buffers, sys, step_n, dt, true, sim)
-        apply_velocity_constraints!(sys; context=vel_context, n_threads=n_threads,
-                                    strictness=strictness)
-
-        cons_coord_storage .= sys.coords
-        sys.coords .+= sys.velocities .* dt
-        pos_context = position_constraint_context(buffers, sys, step_n, dt, true, sim)
-        apply_position_constraints!(sys, cons_coord_storage, cons_vel_storage, dt;
-                                    context=pos_context, n_threads=n_threads, strictness=strictness)
-        merge_constraint_virial!(buffers, sys, step_n)
-
-        sys.coords .= coord_save
-        sys.velocities .= vel_save
-    end
-    return buffers
-end
-
 function compute_initial_total_virial!(buffers, sys, neighbors, step_n::Integer;
                                        n_threads::Integer=Threads.nthreads(),
                                        strictness=default_strictness(), kwargs...)
@@ -560,6 +220,642 @@ function recompute_forces_after_coupling!(forces_out, sys, neighbors, buffers, s
             n_threads=n_threads, strictness=strictness)
     return forces_out
 end
+
+# The specific interaction lists to use during minimization, with constraints replaced
+#   by harmonic bonds since constraints are not applied during minimization
+@inline function minimizer_specific_inter_lists(sys, constraint_bond_constant, strictness)
+    if length(sys.constraints) > 0
+        if isnothing(constraint_bond_constant)
+            err_str = "System has constraints but constraint_bond_constant is nothing, " *
+                      "constraints will be ignored"
+            report_issue(err_str, strictness)
+            return sys.specific_inter_lists
+        else
+            constraint_bonds = constraints_to_bonds(sys, constraint_bond_constant)
+            if length(constraint_bonds) > 0
+                return (sys.specific_inter_lists..., constraint_bonds)
+            else
+                return sys.specific_inter_lists
+            end
+        end
+    else
+        return sys.specific_inter_lists
+    end
+end
+
+# Whether a minimizer needs the potential energy of each step for something other
+#   than the algorithm itself
+minimizer_logs_energy(log_stream, loggers) = !(log_stream isa Base.DevNull) ||
+                                             !logger_collection_empty(loggers)
+
+sum_dot(a, b) = sum(i -> dot(a[i], b[i]), eachindex(a, b))
+sum_dot(a::AbstractGPUArray, b) = mapreduce(dot, +, a, b)
+
+# The minimizers never need the virial, so Val(needs_virial) is a compile time constant
+# and forces!/potential_energy are specialised and inlined into simulate!. Enzyme's type
+# analysis then fails, so we add a function barrier.
+@noinline function minimizer_forces!(F, sys, neighbors, step_n::Integer, buffers, sis,
+                                     n_threads::Integer, strictness)
+    forces!(F, sys, neighbors, step_n, buffers, Val(false); n_threads=n_threads,
+            specific_inter_lists=sis, strictness=strictness)
+    return F
+end
+
+@noinline function minimizer_potential_energy(sys, neighbors, step_n::Integer, buffers, sis,
+                                              n_threads::Integer, strictness)
+    return potential_energy(sys, neighbors, step_n, buffers; n_threads=n_threads,
+                            specific_inter_lists=sis, strictness=strictness)
+end
+
+"""
+    SteepestDescentMinimizer(; <keyword arguments>)
+
+Steepest descent energy minimization.
+
+# Arguments
+- `step_size::D=0.01u"nm"`: the initial maximum displacement.
+- `max_steps::Int=1_000`: the maximum number of steps.
+- `tol::F=1_000.0u"kJ * mol^-1 * nm^-1"`: the maximum force below which to
+    finish minimization.
+- `constraint_bond_constant::K=500_000.0u"kJ * mol^-1 * nm^-2"`: the force constant
+    for the harmonic bonds that are used instead of constraints during
+    minimisation. Set to `nothing` to not use harmonic bonds and ignore
+    constraints. Unused if the system does not have constraints.
+- `log_stream::L=devnull`: stream to print minimization progress to.
+"""
+@kwdef struct SteepestDescentMinimizer{D, F, K, L}
+    step_size::D = 0.01u"nm"
+    max_steps::Int = 1_000
+    tol::F = 1_000.0u"kJ * mol^-1 * nm^-1"
+    constraint_bond_constant::K = 500_000.0u"kJ * mol^-1 * nm^-2"
+    log_stream::L = devnull
+end
+
+"""
+    simulate!(system, simulator, n_steps::Integer; <keyword arguments>)
+    simulate!(system, simulator, sim_time; <keyword arguments>)
+    simulate!(system, simulator; <keyword arguments>)
+    simulate!(awh_sim::AWHSimulation, n_steps; <keyword arguments>)
+    simulate!(tss_sim::TSSSimulation; <keyword arguments>)
+
+Run a simulation on a system according to the rules of the given simulator.
+
+For simulators that run for a given period of time, the third argument can either be an
+`Integer` number of steps or a simulation time (e.g. `10.0u"ns"` or `10.0` if not using units).
+Energy minimizers such as [`SteepestDescentMinimizer`](@ref) do not take a third argument.
+Custom simulators should implement this function.
+For a [`ReplicaSystem`](@ref) and [`ReplicaExchangeMD`](@ref) this calls
+[`simulate_remd!`](@ref).
+
+# Arguments
+- `n_threads=Threads.nthreads()`: the number of threads to run the simulation on, only
+    relevant when running on CPU.
+- `run_loggers`: whether to run the loggers during the simulation. Can be `true`, `false`
+    or `:skipstart`, in which case the loggers are not run before the first step. `run_loggers`
+    is `true` by default except for the energy minimizers, where it is `false`.
+- `shortcut=nothing`: when to stop the simulation early. A struct with a
+    [`Molly.shortcut_sim`](@ref) method defined can be provided.
+    `Molly.shortcut_sim(shortcut, sys, buffers, neighbors, step_n; kwargs...)` is checked at the
+    end of each step and stops the simulation if it returns `true`. Unused for REMD simulations.
+- `init_step=0`: the step number before the first step is taken, useful for time-dependent
+    potentials.
+- `show_progress`: whether to show a progress bar for the simulation. `true` by default in
+    the REPL/IJulia/Pluto, otherwise `false` by default. Can be set globally with the
+    environmental variable `MOLLY_SHOW_PROGRESS`.
+- `check_nans`: whether to check each step for NaNs and print a useful error message.
+    `true` by default on CPU, `false` by default on GPU as it slows down simulation.
+- `rng=Random.default_rng()`: the random number generator used for the simulation. Setting
+    this allows reproducible stochastic simulations.
+- `strictness=:warn`: determines behavior when encountering possible problems,
+    options are `:warn` to emit warnings, `:nowarn` to suppress warnings or
+    `:error` to error.
+
+Alternatively, run an AWH simulation for a given number of molecular dynamics steps.
+The total number of AWH iterations is determined by dividing `n_steps` by the
+`num_md_steps` given to the [`AWHSimulation`](@ref).
+
+Alternatively, run the cycles of a [`TSSSimulation`](@ref).
+`replica_rngs` supplies one RNG stream per replica, otherwise each replica RNG is reseeded
+from `rng`. `replica_parallel` can be `:serial`, `:threads` to run the replicas on separate
+threads (CPU only), or `:auto` to use threads on CPU when there are multiple replicas and
+threads.
+"""
+@inline function simulate!(sys::System{<:Any, <:Any, T},
+                           sim::SteepestDescentMinimizer;
+                           n_threads::Integer=Threads.nthreads(),
+                           run_loggers=false,
+                           shortcut=nothing,
+                           init_step::Integer=0,
+                           show_progress=default_show_progress(),
+                           check_nans=default_check_nans(sys, sim),
+                           rng=Random.default_rng(),
+                           strictness=default_strictness()) where T
+    # @inline needed to avoid Enzyme error
+    check_simulate_inputs(init_step, run_loggers, strictness)
+    sis = minimizer_specific_inter_lists(sys, sim.constraint_bond_constant, strictness)
+
+    sys.coords .= wrap_coords.(sys.coords, (sys.boundary,))
+    place_virtual_sites!(sys; n_threads=n_threads)
+    neighbors = find_neighbors(sys, sys.neighbor_finder, nothing, init_step, true;
+                               n_threads=n_threads)
+    buffers = init_buffers!(sys, n_threads)
+    E = minimizer_potential_energy(sys, neighbors, init_step, buffers, sis, n_threads,
+                                   strictness)
+    apply_loggers!(sys, neighbors, init_step, buffers, run_loggers == true; n_threads=n_threads,
+                   strictness=strictness, current_potential_energy=E)
+    println(sim.log_stream, "Step ", init_step, " - potential energy ", E,
+            " - max force N/A - N/A")
+    hn = T(sim.step_size)
+    coords_copy = zero(sys.coords)
+    F = zero_forces(sys)
+    check_nan_labels = ("coordinates", "forces")
+    check_nans && check_array_nans((sys.coords, F), check_nan_labels, init_step)
+
+    progress = setup_progress_minimizer(ustrip(sim.tol), show_progress)
+    for step_n in (init_step + 1):(init_step + sim.max_steps)
+        minimizer_forces!(F, sys, neighbors, step_n, buffers, sis, n_threads, strictness)
+        # The forces correspond to the current coordinates, so checking convergence before
+        #   the step means that the returned coordinates satisfy the tolerance
+        max_force = maximum(norm, F)
+        if max_force < sim.tol
+            println(sim.log_stream, "Step ", step_n, " - potential energy ", E,
+                    " - max force ", max_force, " - converged")
+            break
+        end
+
+        coords_copy .= sys.coords
+        sys.coords .+= hn .* F ./ max_force
+        sys.coords .= wrap_coords.(sys.coords, (sys.boundary,))
+        place_virtual_sites!(sys; n_threads=n_threads)
+
+        neighbors_copy = neighbors
+        neighbors = find_neighbors(sys, sys.neighbor_finder, neighbors, step_n;
+                                    n_threads=n_threads)
+        neighbors_rebuilt = (neighbors !== neighbors_copy)
+        E_trial = minimizer_potential_energy(sys, neighbors, step_n, buffers, sis,
+                                             n_threads, strictness)
+        if E_trial < E
+            hn = 6 * hn / 5
+            E = E_trial
+            println(sim.log_stream, "Step ", step_n, " - potential energy ",
+                    E_trial, " - max force ", max_force, " - accepted")
+        else
+            sys.coords .= coords_copy
+            if neighbors_rebuilt
+                # The previous list can not be reused since a neighbor finder may have
+                #   reused the buffers behind it for the list just found
+                neighbors = find_neighbors(sys, sys.neighbor_finder, neighbors, step_n, true;
+                                           n_threads=n_threads)
+            end
+            hn = hn / 5
+            println(sim.log_stream, "Step ", step_n, " - potential energy ",
+                    E_trial, " - max force ", max_force, " - rejected")
+        end
+
+        apply_loggers!(sys, neighbors, step_n, buffers, run_loggers; n_threads=n_threads,
+                       strictness=strictness, current_potential_energy=E, specific_inter_lists=sis)
+
+        check_nans && check_array_nans((sys.coords, F), check_nan_labels, step_n)
+        if shortcut_sim(shortcut, sys, buffers, neighbors, step_n; n_threads=n_threads,
+                        current_potential_energy=E)
+            break
+        end
+        update_nograd!(progress, ustrip(max_force))
+    end
+    return sys
+end
+
+"""
+    FIREMinimizer(; <keyword arguments>)
+
+Energy minimization using the fast inertial relaxation engine (FIRE).
+
+Molecular dynamics is run with an adaptive time step, with the velocity mixed
+towards the force direction when the system moves downhill and reset to zero when
+it moves uphill, as described in
+[Bitzek et al. 2006](https://doi.org/10.1103/PhysRevLett.97.170201).
+Internal velocities starting from zero are used, so the velocities of the system
+are not modified.
+
+The potential energy is not required by the algorithm, so it is only calculated
+when `log_stream` is set or the system has loggers, in which case loggers
+requiring the potential energy calculate it themselves.
+
+# Arguments
+- `dt::D=0.001u"ps"`: the initial time step.
+- `dt_max::DM=0.01u"ps"`: the maximum time step.
+- `max_steps::Integer=1_000`: the maximum number of steps.
+- `tol::F=1_000.0u"kJ * mol^-1 * nm^-1"`: the maximum force below which to
+    finish minimization.
+- `alpha_start::Float64=0.1`: the initial velocity mixing parameter, must be
+    between 0 and 1.
+- `f_alpha::Float64=0.99`: the factor to multiply the velocity mixing parameter
+    by when moving downhill.
+- `f_inc::Float64=1.1`: the factor to multiply the time step by when moving
+    downhill.
+- `f_dec::Float64=0.5`: the factor to multiply the time step by when moving
+    uphill.
+- `n_min::Integer=5`: the number of consecutive downhill steps required before the
+    time step is increased.
+- `constraint_bond_constant::K=500_000.0u"kJ * mol^-1 * nm^-2"`: the force constant
+    for the harmonic bonds that are used instead of constraints during
+    minimisation. Set to `nothing` to not use harmonic bonds and ignore
+    constraints. Unused if the system does not have constraints.
+- `log_stream::L=devnull`: stream to print minimization progress to.
+"""
+@kwdef struct FIREMinimizer{D, DM, F, K, L}
+    dt::D = 0.001u"ps"
+    dt_max::DM = 0.01u"ps"
+    max_steps::Int = 1_000
+    tol::F = 1_000.0u"kJ * mol^-1 * nm^-1"
+    alpha_start::Float64 = 0.1
+    f_alpha::Float64 = 0.99
+    f_inc::Float64 = 1.1
+    f_dec::Float64 = 0.5
+    n_min::Int = 5
+    constraint_bond_constant::K = 500_000.0u"kJ * mol^-1 * nm^-2"
+    log_stream::L = devnull
+end
+
+@inline function simulate!(sys::System{<:Any, <:Any, T},
+                           sim::FIREMinimizer;
+                           n_threads::Integer=Threads.nthreads(),
+                           run_loggers=false,
+                           shortcut=nothing,
+                           init_step::Integer=0,
+                           show_progress=default_show_progress(),
+                           check_nans=default_check_nans(sys, sim),
+                           rng=Random.default_rng(),
+                           strictness=default_strictness()) where T
+    check_simulate_inputs(init_step, run_loggers, strictness)
+    if !(0 < sim.alpha_start < 1)
+        throw(ArgumentError("alpha_start must be between 0 and 1, found " *
+                            "$(sim.alpha_start)"))
+    end
+    sis = minimizer_specific_inter_lists(sys, sim.constraint_bond_constant, strictness)
+
+    sys.coords .= wrap_coords.(sys.coords, (sys.boundary,))
+    place_virtual_sites!(sys; n_threads=n_threads)
+    neighbors = find_neighbors(sys, sys.neighbor_finder, nothing, init_step, true;
+                               n_threads=n_threads)
+    buffers = init_buffers!(sys, n_threads)
+    calc_E = minimizer_logs_energy(sim.log_stream, sys.loggers)
+    E = (calc_E ?
+         minimizer_potential_energy(sys, neighbors, init_step, buffers, sis, n_threads,
+                                    strictness) :
+         nothing)
+    apply_loggers!(sys, neighbors, init_step, buffers, run_loggers == true; n_threads=n_threads,
+                   strictness=strictness, current_potential_energy=E,
+                   specific_inter_lists=sis)
+    println(sim.log_stream, "Step ", init_step, " - potential energy ", E,
+            " - max force N/A - N/A")
+
+    vels = zero(sys.velocities) # The velocities of the system are left alone, FIRE has its own
+    F = zero_forces(sys)
+    minimizer_forces!(F, sys, neighbors, init_step, buffers, sis, n_threads, strictness)
+    dt = T(sim.dt)
+    dt_max = oftype(dt, sim.dt_max)
+    dt_min = dt * T(1e-5) # A time step this small means the system is stuck rather than converging
+    alpha_start, f_alpha = T(sim.alpha_start), T(sim.f_alpha)
+    f_inc, f_dec = T(sim.f_inc), T(sim.f_dec)
+    alpha = alpha_start
+    n_downhill = 0
+    check_nan_labels = ("coordinates", "velocities", "forces")
+    check_nans && check_array_nans((sys.coords, vels, F), check_nan_labels, init_step)
+
+    progress = setup_progress_minimizer(ustrip(sim.tol), show_progress)
+    for step_n in (init_step + 1):(init_step + sim.max_steps)
+        # Semi-implicit Euler step, virtual sites have zero mass so are not accelerated
+        vels .+= calc_accels.(F, masses(sys)) .* dt
+        sys.coords .= wrap_coords.(sys.coords .+ vels .* dt, (sys.boundary,))
+        place_virtual_sites!(sys; n_threads=n_threads)
+        neighbors = find_neighbors(sys, sys.neighbor_finder, neighbors, step_n;
+                                   n_threads=n_threads)
+        minimizer_forces!(F, sys, neighbors, step_n, buffers, sis, n_threads, strictness)
+        max_force = maximum(norm, F)
+
+        # The power gives whether the system is moving downhill
+        P = sum_dot(F, vels)
+        if P > zero(P)
+            n_downhill += 1
+            # Mix the velocity towards the force direction
+            F_norm = sqrt(sum(sum_abs2, F))
+            if F_norm > zero(F_norm)
+                v_norm = sqrt(sum(sum_abs2, vels))
+                mix = alpha * v_norm / F_norm
+                vel_scale = 1 - alpha
+                # `map!` rather than broadcasting to get round Enzyme error
+                map!((v, f) -> vel_scale * v + mix * f, vels, vels, F)
+            end
+            # Accelerate once the system has been moving downhill for long enough
+            if n_downhill > sim.n_min
+                dt = min(dt * f_inc, dt_max)
+                alpha *= f_alpha
+            end
+        else
+            # Freeze the system and restart with a smaller time step
+            n_downhill = 0
+            fill!(vels, zero(eltype(vels)))
+            dt *= f_dec
+            alpha = alpha_start
+        end
+
+        if calc_E
+            E = minimizer_potential_energy(sys, neighbors, step_n, buffers, sis,
+                                           n_threads, strictness)
+        end
+        # The forces correspond to the coordinates reached by this step, so the
+        #   returned coordinates satisfy the tolerance
+        converged = max_force < sim.tol
+        println(sim.log_stream, "Step ", step_n, " - potential energy ", E,
+                " - max force ", max_force, " - time step ", dt,
+                converged ? " - converged" : "")
+        apply_loggers!(sys, neighbors, step_n, buffers, run_loggers; n_threads=n_threads,
+                       strictness=strictness, current_potential_energy=E,
+                       specific_inter_lists=sis)
+
+        if converged
+            break
+        end
+        if dt < dt_min
+            err_str = "Time step reduced below $dt_min, minimization stopped at step " *
+                      "$step_n with max force $max_force"
+            report_issue(err_str, strictness)
+            break
+        end
+        check_nans && check_array_nans((sys.coords, vels, F), check_nan_labels, step_n)
+        if shortcut_sim(shortcut, sys, buffers, neighbors, step_n; n_threads=n_threads,
+                        current_potential_energy=E)
+            break
+        end
+        update_nograd!(progress, ustrip(max_force))
+    end
+    return sys
+end
+
+"""
+    LBFGSMinimizer(; <keyword arguments>)
+
+Energy minimization using the limited-memory BFGS (L-BFGS) algorithm.
+
+A low rank approximation to the inverse Hessian is built from the coordinate and
+gradient differences of the last `n_history` steps and applied with the two-loop
+recursion of [Nocedal 1980](https://doi.org/10.1090/S0025-5718-1980-0572855-7),
+giving a quasi-Newton search direction along which a backtracking line search
+enforcing the Armijo sufficient decrease condition is run.
+The history is reset when the search direction is not a descent direction or when
+the line search fails, and minimization stops early if the line search also fails
+along the steepest descent direction.
+
+# Arguments
+- `step_size::D=0.01u"nm"`: the maximum displacement of any atom in a trial step.
+- `max_steps::Integer=1_000`: the maximum number of steps.
+- `tol::F=1_000.0u"kJ * mol^-1 * nm^-1"`: the maximum force below which to
+    finish minimization.
+- `n_history::Integer=10`: the number of coordinate and gradient difference pairs to
+    store.
+- `max_line_search_steps::Integer=10`: the maximum number of potential energy
+    evaluations in the backtracking line search of each step.
+- `c1::Float64=1e-4`: the Armijo sufficient decrease parameter.
+- `backtrack_factor::Float64=0.5`: the factor to multiply the step length by on
+    each line search backtrack.
+- `constraint_bond_constant::K=500_000.0u"kJ * mol^-1 * nm^-2"`: the force constant
+    for the harmonic bonds that are used instead of constraints during
+    minimisation. Set to `nothing` to not use harmonic bonds and ignore
+    constraints. Unused if the system does not have constraints.
+- `log_stream::L=devnull`: stream to print minimization progress to.
+"""
+@kwdef struct LBFGSMinimizer{D, F, K, L}
+    step_size::D = 0.01u"nm"
+    max_steps::Int = 1_000
+    tol::F = 1_000.0u"kJ * mol^-1 * nm^-1"
+    n_history::Int = 10
+    max_line_search_steps::Int = 10
+    c1::Float64 = 1e-4
+    backtrack_factor::Float64 = 0.5
+    constraint_bond_constant::K = 500_000.0u"kJ * mol^-1 * nm^-2"
+    log_stream::L = devnull
+end
+
+# The L-BFGS two-loop recursion, giving the quasi-Newton search direction p = -H*g
+#   where the gradient g is minus the force and H implicitly approximates the
+#   inverse Hessian
+# S (coordinate differences), Y (gradient differences) and rho (1/(s·y)) are circular
+#   buffers of length n_history with the newest of the n_hist stored pairs at head
+# q and r are working arrays with force and coordinate units respectively
+@inline function lbfgs_direction!(p, q, r, F, S, Y, rho, alphas, n_hist::Integer,
+                                  head::Integer)
+    m, T = length(S), eltype(alphas)
+    q .= .-F
+    for t in n_hist:-1:1
+        j = mod1(head - n_hist + t, m)
+        a = T(ustrip(NoUnits, rho[j] * sum_dot(S[j], q)))
+        alphas[j] = a
+        q .-= a .* Y[j]
+    end
+    # Scale by the initial inverse Hessian approximation using the newest pair
+    gamma = sum_dot(S[head], Y[head]) / sum(sum_abs2, Y[head])
+    r .= gamma .* q
+    for t in 1:n_hist
+        j = mod1(head - n_hist + t, m)
+        b = T(ustrip(NoUnits, rho[j] * sum_dot(Y[j], r)))
+        r .+= (alphas[j] - b) .* S[j]
+    end
+    p .= .-r
+    return p
+end
+
+# The steepest descent direction scaled so that no atom moves more than step_size
+function steepest_descent_direction!(p, F, step_size)
+    F_max = maximum(norm, F)
+    if iszero(F_max)
+        fill!(p, zero(eltype(p)))
+    else
+        p .= (step_size / F_max) .* F
+    end
+    return p
+end
+
+@inline function simulate!(sys::System{<:Any, <:Any, T},
+                           sim::LBFGSMinimizer;
+                           n_threads::Integer=Threads.nthreads(),
+                           run_loggers=false,
+                           shortcut=nothing,
+                           init_step::Integer=0,
+                           show_progress=default_show_progress(),
+                           check_nans=default_check_nans(sys, sim),
+                           rng=Random.default_rng(),
+                           strictness=default_strictness()) where T
+    check_simulate_inputs(init_step, run_loggers, strictness)
+    if sim.n_history < 1
+        throw(ArgumentError("n_history must be positive, found $(sim.n_history)"))
+    end
+    if sim.max_line_search_steps < 1
+        throw(ArgumentError("max_line_search_steps must be positive, found " *
+                            "$(sim.max_line_search_steps)"))
+    end
+    sis = minimizer_specific_inter_lists(sys, sim.constraint_bond_constant, strictness)
+
+    sys.coords .= wrap_coords.(sys.coords, (sys.boundary,))
+    place_virtual_sites!(sys; n_threads=n_threads)
+    neighbors = find_neighbors(sys, sys.neighbor_finder, nothing, init_step, true;
+                               n_threads=n_threads)
+    buffers = init_buffers!(sys, n_threads)
+    E = minimizer_potential_energy(sys, neighbors, init_step, buffers, sis, n_threads,
+                                   strictness)
+    apply_loggers!(sys, neighbors, init_step, buffers, run_loggers == true; n_threads=n_threads,
+                   strictness=strictness, current_potential_energy=E,
+                   specific_inter_lists=sis)
+    println(sim.log_stream, "Step ", init_step, " - potential energy ", E,
+            " - max force N/A - N/A")
+
+    m = sim.n_history
+    F = zero_forces(sys)
+    minimizer_forces!(F, sys, neighbors, init_step, buffers, sis, n_threads, strictness)
+    F_prev = zero(F)
+    q = zero(F)
+    p, r = zero(sys.coords), zero(sys.coords)
+    coords_prev = zero(sys.coords)
+    S = [zero(sys.coords) for _ in 1:m] # Coordinate differences
+    Y = [zero(F) for _ in 1:m]          # Gradient differences
+    rho = zeros(typeof(inv(oneunit(T) * sys.energy_units)), m)
+    alphas = zeros(T, m)
+    step_size = T(sim.step_size)
+    c1, backtrack_factor = T(sim.c1), T(sim.backtrack_factor)
+    n_hist, head = 0, m
+    check_nan_labels = ("coordinates", "forces")
+    check_nans && check_array_nans((sys.coords, F), check_nan_labels, init_step)
+
+    progress = setup_progress_minimizer(ustrip(sim.tol), show_progress)
+    for step_n in (init_step + 1):(init_step + sim.max_steps)
+        # The forces always correspond to the current coordinates, so convergence can
+        #   be checked before the cost of a line search is paid
+        max_force = maximum(norm, F)
+        if max_force < sim.tol
+            println(sim.log_stream, "Step ", step_n, " - potential energy ", E,
+                    " - max force ", max_force, " - converged")
+            break
+        end
+
+        if n_hist > 0
+            lbfgs_direction!(p, q, r, F, S, Y, rho, alphas, n_hist, head)
+            # Limit the trial step to keep the line search near the quadratic region
+            p_max = maximum(norm, p)
+            if p_max > step_size
+                p .*= step_size / p_max
+            end
+        else
+            steepest_descent_direction!(p, F, step_size)
+        end
+        g_dot_p = -sum_dot(F, p)
+
+        # Fall back to steepest descent when the quasi-Newton direction is not a
+        #   descent direction
+        use_hist = (n_hist > 0) && g_dot_p < zero(g_dot_p)
+        if !use_hist && n_hist > 0
+            n_hist = 0
+            steepest_descent_direction!(p, F, step_size)
+            g_dot_p = -sum_dot(F, p)
+        end
+
+        coords_prev .= sys.coords
+        neighbors_prev = neighbors
+        E_prev = E
+        alpha = one(T)
+        accepted = false
+        n_ls = 0
+        for ls_i in 1:sim.max_line_search_steps
+            n_ls = ls_i
+            ls_i > 1 && (alpha *= backtrack_factor)
+            sys.coords .= wrap_coords.(coords_prev .+ alpha .* p, (sys.boundary,))
+            place_virtual_sites!(sys; n_threads=n_threads)
+            neighbors = find_neighbors(sys, sys.neighbor_finder, neighbors_prev, step_n;
+                                       n_threads=n_threads)
+            E_trial = minimizer_potential_energy(sys, neighbors, step_n, buffers, sis,
+                                                 n_threads, strictness)
+            # Armijo sufficient decrease condition
+            if E_trial <= E_prev + c1 * alpha * g_dot_p
+                accepted = true
+                E = E_trial
+                break
+            end
+        end
+
+        if accepted
+            F_prev .= F
+            minimizer_forces!(F, sys, neighbors, step_n, buffers, sis, n_threads,
+                              strictness)
+            slot = mod1(head + 1, m)
+            S[slot] .= alpha .* p
+            Y[slot] .= F_prev .- F
+            sty = sum_dot(S[slot], Y[slot])
+            if sty > zero(sty)
+                head = slot
+                rho[slot] = inv(sty)
+                n_hist = min(n_hist + 1, m)
+            else
+                # The pair fails the curvature condition and is discarded, along with the
+                #   oldest pair if it was the one overwritten above
+                n_hist = min(n_hist, m - 1)
+            end
+        else
+            # The forces still correspond to the restored coordinates
+            sys.coords .= coords_prev
+            if neighbors !== neighbors_prev
+                # The previous list can not be reused since a neighbor finder may have
+                #   reused the buffers behind it for a trial list
+                neighbors = find_neighbors(sys, sys.neighbor_finder, neighbors, step_n, true;
+                                           n_threads=n_threads)
+            end
+            n_hist = 0
+        end
+
+        println(sim.log_stream, "Step ", step_n, " - potential energy ", E,
+                " - max force ", max_force, " - step length ", alpha,
+                " - energy evaluations ", n_ls, accepted ? " - accepted" : " - rejected")
+        apply_loggers!(sys, neighbors, step_n, buffers, run_loggers; n_threads=n_threads,
+                       strictness=strictness, current_potential_energy=E,
+                       specific_inter_lists=sis)
+
+        if !accepted && !use_hist
+            err_str = "Line search failed along the steepest descent direction, " *
+                      "minimization stopped at step $step_n with max force $max_force, " *
+                      "reducing step_size or increasing max_line_search_steps may help"
+            report_issue(err_str, strictness)
+            break
+        end
+        check_nans && check_array_nans((sys.coords, F), check_nan_labels, step_n)
+        if shortcut_sim(shortcut, sys, buffers, neighbors, step_n; n_threads=n_threads,
+                        current_potential_energy=E)
+            break
+        end
+        update_nograd!(progress, ustrip(max_force))
+    end
+    return sys
+end
+
+"""
+    VelocityVerlet(; <keyword arguments>)
+
+The velocity Verlet integrator.
+
+# Arguments
+- `dt::T`: the time step of the simulation.
+- `coupling::C=nothing`: the coupling which applies during the simulation.
+- `remove_CM_motion=1`: remove the center of mass motion every this number of steps,
+    set to `false` or `0` to not remove center of mass motion.
+"""
+struct VelocityVerlet{T, C}
+    dt::T
+    coupling::C
+    remove_CM_motion::Int
+end
+
+function VelocityVerlet(; dt, coupling=nothing, remove_CM_motion=1)
+    return VelocityVerlet(dt, coupling, Int(remove_CM_motion))
+end
+
+constraint_virial_integrator_factor(sim::VelocityVerlet) = 2
 
 @inline function simulate!(sys,
                            sim::VelocityVerlet,
@@ -584,7 +880,7 @@ end
     buffers = init_buffers!(sys, n_threads)
     needs_vir_init = needs_virial_on_step(needs_vir, needs_vir_steps, init_step)
     forces!(forces_t, sys, neighbors, init_step, buffers, Val(needs_vir_init);
-            n_threads=n_threads, strictness=strictness)
+            n_threads=n_threads, strictness=strictness, visit_state=true)
     accels_t = calc_accels.(forces_t, masses(sys))
     accels_t_dt = zero(accels_t)
     merge_initial_constraint_virial!(buffers, sys, init_step, needs_vir_init, accels_t;
@@ -629,7 +925,7 @@ end
         place_virtual_sites!(sys; n_threads=n_threads)
 
         forces!(forces_t_dt, sys, neighbors, step_n, buffers, Val(needs_vir_step);
-                n_threads=n_threads, strictness=strictness)
+                n_threads=n_threads, strictness=strictness, visit_state=true)
         accels_t_dt .= calc_accels.(forces_t_dt, masses(sys))
 
         sys.velocities .+= accels_t_dt .* dt_div2
@@ -754,7 +1050,7 @@ constraint_virial_integrator_factor(sim::DPDVelocityVerlet) = 2
     end
     needs_vir_init = needs_virial_on_step(needs_vir, needs_vir_steps, init_step)
     forces!(forces_t, sys, neighbors, init_step, buffers, Val(needs_vir_init);
-            n_threads=n_threads, strictness=strictness)
+            n_threads=n_threads, strictness=strictness, visit_state=true)
     accels_t = calc_accels.(forces_t, masses(sys))
     accels_t_dt = zero(accels_t)
     merge_initial_constraint_virial!(buffers, sys, init_step, needs_vir_init, accels_t;
@@ -808,7 +1104,7 @@ constraint_virial_integrator_factor(sim::DPDVelocityVerlet) = 2
                                         strictness=strictness)
         end
         forces!(forces_t_dt, sys, neighbors, step_n, buffers, Val(needs_vir_step);
-                n_threads=n_threads, strictness=strictness)
+                n_threads=n_threads, strictness=strictness, visit_state=true)
         accels_t_dt .= calc_accels.(forces_t_dt, masses(sys))
 
         sys.velocities .= velocities_half .+ accels_t_dt .* dt_div2
@@ -915,7 +1211,7 @@ end
     needs_vir_init = needs_virial_on_step(needs_vir, needs_vir_steps, init_step)
     if needs_vir_init
         forces!(forces_t, sys, neighbors, init_step, buffers, Val(true); n_threads=n_threads,
-                strictness=strictness)
+                strictness=strictness, visit_state=true)
         accels_t .= calc_accels.(forces_t, masses(sys))
         merge_initial_constraint_virial!(buffers, sys, init_step, true, accels_t;
                                          n_threads=n_threads, strictness=strictness)
@@ -937,7 +1233,7 @@ end
     for step_n in (init_step + 1):(init_step + n_steps)
         needs_vir_step = needs_virial_on_step(needs_vir, needs_vir_steps, step_n)
         forces!(forces_t, sys, neighbors, step_n, buffers, Val(needs_vir_step);
-                n_threads=n_threads, strictness=strictness)
+                n_threads=n_threads, strictness=strictness, visit_state=true)
         accels_t .= calc_accels.(forces_t, masses(sys))
 
         sys.velocities .+= accels_t .* sim.dt
@@ -1025,7 +1321,7 @@ end
     needs_vir_init = needs_virial_on_step(needs_vir, needs_vir_steps, init_step)
     if needs_vir_init
         forces!(forces_t, sys, neighbors, init_step, buffers, Val(true); n_threads=n_threads,
-                strictness=strictness)
+                strictness=strictness, visit_state=true)
         accels_t .= calc_accels.(forces_t, masses(sys))
         merge_initial_constraint_virial!(buffers, sys, init_step, true, accels_t;
                                          n_threads=n_threads, strictness=strictness)
@@ -1046,7 +1342,7 @@ end
     for step_n in (init_step + 1):(init_step + n_steps)
         needs_vir_step = needs_virial_on_step(needs_vir, needs_vir_steps, step_n)
         forces!(forces_t, sys, neighbors, step_n, buffers, Val(needs_vir_step);
-                n_threads=n_threads, strictness=strictness)
+                n_threads=n_threads, strictness=strictness, visit_state=true)
         accels_t .= calc_accels.(forces_t, masses(sys))
 
         coords_copy .= sys.coords
@@ -1099,8 +1395,9 @@ end
 The Langevin integrator, based on the Langevin Middle Integrator in OpenMM.
 
 See [Zhang et al. 2019](https://doi.org/10.1021/acs.jpca.9b02771).
-This is a leapfrog-like integrator, so the velocities are offset by half a time step
-behind the positions.
+In the notation of [`LangevinSplitting`](@ref) this is the BAOA splitting rather than the
+leapfrog Verlet integrator, but the velocities are stored as in leapfrog, offset by half a
+time step behind the positions.
 
 # Arguments
 - `dt::S`: the time step of the simulation.
@@ -1152,7 +1449,7 @@ end
     needs_vir_init = needs_virial_on_step(needs_vir, needs_vir_steps, init_step)
     if needs_vir_init
         forces!(forces_t, sys, neighbors, init_step, buffers, Val(true); n_threads=n_threads,
-                strictness=strictness)
+                strictness=strictness, visit_state=true)
         accels_t .= calc_accels.(forces_t, masses(sys))
         merge_initial_constraint_virial!(buffers, sys, init_step, true, accels_t;
                                          n_threads=n_threads, strictness=strictness)
@@ -1187,7 +1484,7 @@ end
     for step_n in (init_step + 1):(init_step + n_steps)
         needs_vir_step = needs_virial_on_step(needs_vir, needs_vir_steps, step_n)
         forces!(forces_t, sys, neighbors, step_n, buffers, Val(needs_vir_step);
-                n_threads=n_threads, strictness=strictness)
+                n_threads=n_threads, strictness=strictness, visit_state=true)
         accels_t .= calc_accels.(forces_t, masses(sys))
 
         sys.velocities .+= accels_t .* sim.dt
@@ -1258,12 +1555,14 @@ For more information on the sampling properties of splitting schemes, see
 
 Not compatible with constraints, will print a warning and continue
 without applying constraints.
+Not compatible with virial calculation.
 
 # Arguments
 - `dt::S`: the time step of the simulation.
 - `temperature::K`: the equilibrium temperature of the simulation.
 - `friction::F`: the friction coefficient. If units are used, it should have a
-    dimensionality of mass per time. Note this is a different friction from `Langevin` which has dimensionality of inverse time.
+    dimensionality of mass per time. Note this is a different friction from [`Langevin`](@ref),
+    which has dimensionality of inverse time.
 - `splitting::W`: the splitting specifier. Should be a string consisting of the
     characters `A`, `B` and `O`. Strings with no `O`s reduce to deterministic
     symplectic schemes.
@@ -1359,7 +1658,7 @@ end
     apply_loggers!(sys, neighbors, init_step, buffers, run_loggers == true;
                    n_threads=n_threads, strictness=strictness)
     forces!(forces_t, sys, neighbors, init_step, buffers, Val(false); n_threads=n_threads,
-            strictness=strictness)
+            strictness=strictness, visit_state=true)
     accels_t = calc_accels.(forces_t, masses(sys))
 
     effective_dts = [sim.dt / c for c in splitting_counts]
@@ -1433,7 +1732,7 @@ function B_step!(sys, forces_t, buffers, accels_t, dt_eff, compute_forces::Bool,
                  n_threads::Integer, neighbors, step_n::Integer, strictness)
     if compute_forces
         forces!(forces_t, sys, neighbors, step_n, buffers, Val(false); n_threads=n_threads,
-                strictness=strictness)
+                strictness=strictness, visit_state=true)
         accels_t .= calc_accels.(forces_t, masses(sys))
     end
     sys.velocities .+= dt_eff .* accels_t
@@ -1447,6 +1746,7 @@ Simulates the overdamped Langevin equation using the Euler-Maruyama method.
 
 Not compatible with constraints, will print a warning and continue
 without applying constraints.
+Not compatible with virial calculation.
 Not compatible with gradient calculation using Enzyme.
 
 # Arguments
@@ -1504,7 +1804,7 @@ end
     progress = setup_progress(n_steps, show_progress)
     for step_n in (init_step + 1):(init_step + n_steps)
         forces!(forces_t, sys, neighbors, step_n, buffers, Val(false); n_threads=n_threads,
-                strictness=strictness)
+                strictness=strictness, visit_state=true)
         accels_t .= calc_accels.(forces_t, masses(sys))
 
         random_velocities!(noise, sys, sim.temperature; rng=rng)
@@ -1600,7 +1900,7 @@ end
     forces_t, forces_t_dt = zero_forces(sys), zero_forces(sys)
     buffers = init_buffers!(sys, n_threads)
     forces!(forces_t, sys, neighbors, init_step, buffers, Val(true); n_threads=n_threads,
-            strictness=strictness)
+            strictness=strictness, visit_state=true)
     accels_t = calc_accels.(forces_t, masses(sys))
     accels_t_dt = zero(accels_t)
     apply_loggers!(sys, neighbors, init_step, buffers, run_loggers == true; n_threads=n_threads,
@@ -1628,7 +1928,7 @@ end
         zeta = zeta_half + (sim.dt / (2 * (sim.damping^2))) * ((T_half / sim.temperature) - 1)
 
         forces!(forces_t_dt, sys, neighbors, step_n, buffers, Val(needs_vir_step);
-                n_threads=n_threads, strictness=strictness)
+                n_threads=n_threads, strictness=strictness, visit_state=true)
         accels_t_dt .= calc_accels.(forces_t_dt, masses(sys))
 
         sys.velocities .= (v_half .+ accels_t_dt .* dt_div2) ./
@@ -1644,7 +1944,7 @@ end
 
         neighbors = find_neighbors(sys, sys.neighbor_finder, neighbors, step_n, recompute_forces;
                                     n_threads=n_threads)
-        if recompute_forces
+        if recompute_forces # Recomputed after coupling, so not a new visit
             forces!(forces_t_dt, sys, neighbors, step_n, buffers, Val(needs_vir_step);
                     n_threads=n_threads, strictness=strictness)
             forces_t, forces_t_dt = forces_t_dt, forces_t
@@ -1703,7 +2003,7 @@ Coupling, removing the center of mass motion and running loggers applies per out
     set to `false` or `0` to not remove center of mass motion.
 - `inner_step_neighbors=false`: whether to force recomputation of the neighbors at every
     inner step, useful when force calculation is slow compared to neighbor finding. If used,
-    the `n_steps`/`n_steps_reorder` arguments to the neighbor finder are ignored.
+    the `n_steps` argument of the neighbor finder is ignored.
 """
 struct MTSIntegrator{NF, NP, NS, NG, S, C} <: AbstractMTSIntegrator{NF, NP, NS, NG}
     ordered_fractions::NTuple{NF, Int}
@@ -1753,7 +2053,7 @@ Coupling, removing the center of mass motion and running loggers applies per out
     set to `false` or `0` to not remove center of mass motion.
 - `inner_step_neighbors=false`: whether to force recomputation of the neighbors at every
     inner step, useful when force calculation is slow compared to neighbor finding. If used,
-    the `n_steps`/`n_steps_reorder` arguments to the neighbor finder are ignored.
+    the `n_steps` argument of the neighbor finder is ignored.
 """
 struct MTSLangevinIntegrator{NF, NP, NS, NG, S, K, F, C, T} <: AbstractMTSIntegrator{NF, NP, NS, NG}
     ordered_fractions::NTuple{NF, Int}
@@ -1883,7 +2183,7 @@ function mts_substeps!(sys, forces_t, accels_t, buffers, noise, cons_coord_stora
         if recompute_forces
             forces!(forces_t, sys, neighbors, step_n, buffers, Val(false); n_threads=n_threads,
                     pairwise_inters=pis, specific_inter_lists=sis, general_inters=gis,
-                    strictness=strictness)
+                    strictness=strictness, visit_state=true)
             accels_t .= calc_accels.(forces_t, masses(sys))
         end
         sys.velocities .+= accels_t .* dt_frac_v
@@ -1915,7 +2215,7 @@ function mts_substeps!(sys, forces_t, accels_t, buffers, noise, cons_coord_stora
 
         forces!(forces_t, sys, neighbors, step_n, buffers, Val(false); n_threads=n_threads,
                 pairwise_inters=pis, specific_inter_lists=sis, general_inters=gis,
-                strictness=strictness)
+                strictness=strictness, visit_state=true)
         accels_t .= calc_accels.(forces_t, masses(sys))
         sys.velocities .+= accels_t .* dt_frac_v
         recompute_forces = false
@@ -1952,7 +2252,7 @@ mts_initialize_noise(sys, ::MTSLangevinIntegrator) = zero(sys.velocities)
     needs_vir_init = needs_virial_on_step(needs_vir, needs_vir_steps, init_step)
     if needs_vir_init
         forces!(forces_t, sys, neighbors, init_step, buffers, Val(true); n_threads=n_threads,
-                strictness=strictness)
+                strictness=strictness, visit_state=true)
         accels_t .= calc_accels.(forces_t, masses(sys))
         merge_initial_constraint_virial!(buffers, sys, init_step, true, accels_t;
                                          n_threads=n_threads, strictness=strictness)
@@ -1995,7 +2295,7 @@ mts_initialize_noise(sys, ::MTSLangevinIntegrator) = zero(sys.velocities)
             # Virial calculated with all interactions
             # The constraint contribution is evaluated at the current configuration
             forces!(forces_t, sys, neighbors, step_n, buffers, Val(true); n_threads=n_threads,
-                    strictness=strictness)
+                    strictness=strictness, visit_state=true)
             accels_t .= calc_accels.(forces_t, masses(sys))
             merge_step_constraint_virial!(buffers, sys, step_n, true, accels_t, sim, sim.dt,
                                           vir_coord_storage, vir_vel_storage,
@@ -2034,9 +2334,13 @@ end
 @doc raw"""
     ReplicaExchangeMD(; dt, exchange_time)
 
-A generalized simulator for Replica Exchange Molecular Dynamics (REMD). 
+A generalized simulator for Replica Exchange Molecular Dynamics (REMD).
+
+See [Sugita and Okamoto 1999](https://doi.org/10.1016/S0009-2614(99)01123-9).
 Handles Temperature REMD, Hamiltonian REMD, or multi-dimensional combinations 
-automatically based on the definitions in the `ThermoState`s of the `ReplicaSystem`.
+automatically based on the definitions in the [`ThermoState`](@ref)s of the [`ReplicaSystem`](@ref).
+Run with [`simulate!`](@ref) or [`simulate_remd!`](@ref), with exchanges attempted by
+[`Molly.remd_exchange!`](@ref).
 
 # Arguments
 - `dt::DT`: the time step of the simulation.
@@ -2095,16 +2399,25 @@ function simulate!(sys::ReplicaSystem,
 end
 
 @doc raw"""
-    remd_exchange!(sys::ReplicaSystem, sim::ReplicaExchangeMD, i::Integer, j::Integer; <keyword arguments>)
+    remd_exchange!(sys::ReplicaSystem, sim::ReplicaExchangeMD, i::Integer, j::Integer;
+                   rng=Random.default_rng())
 
 Attempt a generalized replica exchange between the replicas in thermodynamic states `i` and `j`.
+
+The exchange is accepted with probability ``\min(1, \exp(-\Delta))``, where
+```math
+\Delta = \beta_i \left( U_i(x_j) - U_i(x_i) \right) + \beta_j \left( U_j(x_i) - U_j(x_j) \right)
+```
+and ``x_i`` and ``x_j`` are the coordinates of the replicas currently in states `i` and `j`.
+Velocities are rescaled when the temperatures of the states differ.
+Returns ``\Delta`` and whether the exchange was accepted.
+Custom replica exchange simulators should implement this function.
 """
 function remd_exchange!(sys::ReplicaSystem,
                         sim::ReplicaExchangeMD,
                         i::Integer,
                         j::Integer;
                         rng=Random.default_rng())
-    
     # Identify the replica m and n assigned to the thermodynamic states i and j, respectively
     m = sys.state_indices[i]
     n = sys.state_indices[j]
@@ -2177,6 +2490,23 @@ function remd_unshared(items)
     end
 end
 
+# History-dependent general interactions (e.g. Metadynamics) change during a run
+is_history_dependent(inter) = false
+
+# Throws for history-dependent general interactions, which the simulator doesn't support yet
+function check_no_history_inters(inters, sim_name)
+    if any(is_history_dependent, inters)
+        throw(ArgumentError("history-dependent general interactions (e.g. Metadynamics) are " *
+                            "not supported with $sim_name yet"))
+    end
+end
+
+# The partition holds frozen copies of the interactions, so exchanges would ignore a changing bias
+function check_remd_history_inters(sys::ReplicaSystem)
+    foreach(inters -> check_no_history_inters(values(inters), "replica exchange"),
+            sys.state_general_inters)
+end
+
 # Attempt exchanges between neighbouring states, alternating which pairs are tried every cycle
 function remd_exchange_sweep!(sys::ReplicaSystem, remd_sim::ReplicaExchangeMD, cycle::Integer,
                               step_n::Integer, run_loggers, n_threads::Integer, rng)
@@ -2217,7 +2547,7 @@ end
 
 Run a Replica Exchange Molecular Dynamics (REMD) simulation on a multiple-replica system.
 
-The simulation divides the total `n_steps` into cycles based on the time step and exchange time specified in the `ReplicaExchangeMD` simulator. Within each cycle, standard molecular dynamics propagation is independently executed for each replica. At the end of every cycle, replica exchange attempts are made between neighboring states. Any remaining steps that do not fit evenly into the exchange cycles are executed at the end of the run.
+The simulation divides the total `n_steps` into cycles based on the time step and exchange time specified in the [`ReplicaExchangeMD`](@ref) simulator. Within each cycle, standard molecular dynamics propagation is independently executed for each replica. At the end of every cycle, replica exchange attempts are made between neighboring states. Any remaining steps that do not fit evenly into the exchange cycles are executed at the end of the run.
 
 # Arguments
 - `sys::ReplicaSystem`: the partitioned system containing the replicas and thermodynamic states.
@@ -2259,6 +2589,7 @@ function simulate_remd!(sys::ReplicaSystem,
                         rng=Random.default_rng(),
                         strictness=default_strictness())
     check_simulate_inputs(init_step, run_loggers, strictness)
+    check_remd_history_inters(sys)
     if rng != Random.default_rng()
         throw(ArgumentError("rng for simulate_remd! must be Random.default_rng() " *
                             "to avoid race conditions"))
@@ -2343,6 +2674,7 @@ function simulate_remd!(sys::ReplicaSystem{<:Any, <:AbstractGPUArray},
                         strictness=default_strictness(),
                         gpu_devices=get_gpu_devices(Val(true)))
     check_simulate_inputs(init_step, run_loggers, strictness)
+    check_remd_history_inters(sys)
     if rng != Random.default_rng()
         throw(ArgumentError("rng for simulate_remd! must be Random.default_rng() " *
                             "to avoid race conditions"))
@@ -2449,7 +2781,10 @@ const remd_workers_key = Ref{Any}(nothing)
 
 @inline function divide_gpus(n_proc, gpu_devices, k, sys)
     if n_proc != length(gpu_devices)
-        throw(ArgumentError("Number of processes ($n_proc) must be equal to n_gpu ($(length(gpu_devices))) when simulating on GPU"))
+        throw(ArgumentError("simulating a ReplicaSystem on GPU uses one Distributed.jl worker " *
+                "process per GPU, but there are $n_proc workers and $(length(gpu_devices)) GPUs " *
+                "in gpu_devices; add workers with addprocs, load Molly and the GPU package on " *
+                "them with @everywhere, and choose the GPUs with the gpu_devices keyword argument"))
     end
     # Deal the states out in turn, so every state belongs to exactly one worker
     n_blocks = min(n_proc, k)
@@ -2505,18 +2840,25 @@ const remd_workers_key = Ref{Any}(nothing)
     return rep_id_proc, n_blocks
 end
 
-"""
+@doc raw"""
     MetropolisMonteCarlo(; <keyword arguments>)
 
 A Monte Carlo simulator that uses the Metropolis algorithm to sample the configuration space.
 
+A trial move with potential energy change ``\Delta E`` is accepted with probability
+``\min(1, \exp(-\Delta E / k_B T))``.
+[`MonteCarloLogger`](@ref) can be used to record the acceptances.
 Not compatible with constraints, will print a warning and continue
 without applying constraints.
+Throws for history-dependent general interactions such as [`Metadynamics`](@ref).
 
 # Arguments
 - `temperature::T`: the temperature of the system.
-- `trial_moves::M`: a function that performs the trial moves.
-- `trial_args::Dict`: a dictionary of arguments to be passed to the trial move function.
+- `trial_moves::M`: a function that performs the trial moves, called as
+    `trial_moves(sys; trial_args...)`, for example
+    [`Molly.random_uniform_translation!`](@ref) or [`Molly.random_normal_translation!`](@ref).
+- `trial_args::Dict=Dict()`: a dictionary of keyword arguments to be passed to the trial
+    move function.
 """
 struct MetropolisMonteCarlo{T, M}
     temperature::T
@@ -2540,6 +2882,7 @@ end
                            rng=Random.default_rng(),
                            strictness=default_strictness())
     check_simulate_inputs(init_step, run_loggers, strictness)
+    check_no_history_inters(values(sys.general_inters), "MetropolisMonteCarlo")
     if length(sys.constraints) > 0
         err_str = "MetropolisMonteCarlo is not compatible with constraints, " *
                   "constraints will be ignored"
@@ -2593,7 +2936,7 @@ end
     random_uniform_translation!(sys::System; shift_size=oneunit(eltype(eltype(sys.coords))),
                                 rng=Random.default_rng())
 
-Performs a random translation of the coordinates of a randomly selected atom in a [`System`](@ref).
+Perform a random translation of the coordinates of a randomly selected atom in a [`System`](@ref).
 
 The translation is generated using a uniformly selected direction and uniformly selected length
 in range [0, 1) scaled by `shift_size` which should have appropriate length units.
@@ -2612,7 +2955,7 @@ end
     random_normal_translation!(sys::System; shift_size=oneunit(eltype(eltype(sys.coords))),
                                rng=Random.default_rng())
 
-Performs a random translation of the coordinates of a randomly selected atom in a [`System`](@ref).
+Perform a random translation of the coordinates of a randomly selected atom in a [`System`](@ref).
 
 The translation is generated using a uniformly chosen direction and length selected from
 the standard normal distribution i.e. with mean 0 and standard deviation 1, scaled by `shift_size`
