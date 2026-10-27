@@ -187,6 +187,38 @@ struct CMAPResolver{E}
     cache::Dict{Tuple{String,String,String,String,String}, CMAPTorsionType{E}}
 end
 
+# The CHARMM improper tables are a field of `MolecularForceField`, so they are defined here
+#   rather than in charmm_impropers.jl, which is loaded after this file
+# An improper is four (residue offset, atom name) pairs in CHARMM's atom order
+const CHARMMImproper = NTuple{4, Tuple{Int, String}}
+const NO_CHARMM_IMPROPERS = CHARMMImproper[]
+
+struct CHARMMImproperTables{T, E}
+    residue_impropers::Dict{String, Vector{CHARMMImproper}}
+    patch_impropers::Dict{String, Vector{CHARMMImproper}}
+    delete_impropers::Dict{String, Vector{CHARMMImproper}}
+    residue_order::Dict{String, Int}
+    patch_order::Dict{String, Int}
+    harmonic_types::Dict{NTuple{4, String}, HarmonicTorsionType{T, E}} # "" is a wildcard class
+    periodic_types::Dict{NTuple{4, String}, PeriodicTorsionType{T, E}}
+end
+
+function CHARMMImproperTables{T, E}() where {T, E}
+    return CHARMMImproperTables{T, E}(
+        Dict{String, Vector{CHARMMImproper}}(),
+        Dict{String, Vector{CHARMMImproper}}(),
+        Dict{String, Vector{CHARMMImproper}}(),
+        Dict{String, Int}(),
+        Dict{String, Int}(),
+        Dict{NTuple{4, String}, HarmonicTorsionType{T, E}}(),
+        Dict{NTuple{4, String}, PeriodicTorsionType{T, E}}(),
+    )
+end
+
+function Base.isempty(tables::CHARMMImproperTables)
+    return isempty(tables.residue_impropers) && isempty(tables.patch_impropers)
+end
+
 # Proper torsions: lookup with cache
 function find_proper_match(t1::AbstractString, t2::AbstractString, t3::AbstractString,
                            t4::AbstractString; resolver::TorsionResolver{T,E},
@@ -497,8 +529,8 @@ end
 function read_ff_xml!(ff_file, ff_param_array, atom_types, atom_type_order, attributes_from_residue,
                       residues, residue_overrides, patches, bond_rule_specs, angle_rule_specs,
                       torsion_rule_specs, cmap_rules, custor_rule_specs, nb_atom_classes,
-                      ljforce_atom_classes, nbfix_pairs, urey_rule_specs, units, strictness,
-                      T, IC)
+                      ljforce_atom_classes, nbfix_pairs, urey_rule_specs, charmm_impropers,
+                      units, strictness, T, IC)
     P = typeof(inv(oneunit(IC))) # Length type of a virtual site local position
     if !isfile(ff_file)
         throw(ArgumentError("force field XML file $ff_file does not exist"))
@@ -525,7 +557,7 @@ function read_ff_xml!(ff_file, ff_param_array, atom_types, atom_type_order, attr
                          attributes_from_residue, residues, residue_overrides, patches,
                          bond_rule_specs, angle_rule_specs, torsion_rule_specs, cmap_rules,
                          custor_rule_specs, nb_atom_classes, ljforce_atom_classes, nbfix_pairs,
-                         urey_rule_specs, units, strictness, T, IC)
+                         urey_rule_specs, charmm_impropers, units, strictness, T, IC)
 
         elseif entry_name == "AtomTypes"
             for atom_type in eachelement(entry)
@@ -1104,6 +1136,21 @@ function read_ff_xml!(ff_file, ff_param_array, atom_types, atom_type_order, attr
                 push!(urey_rule_specs, (:urey_rule, p1, p2, p3, HarmonicBond(k, r0)))
             end
 
+        elseif entry_name == "CHARMMImpropers"
+            read_charmm_impropers!(charmm_impropers, entry, ff_file, units, T)
+
+        elseif entry_name == "Script"
+            # OpenMM's CHARMM files add their impropers with a Python script, which Molly cannot
+            #   run, so the lists have to come from a <CHARMMImpropers> element instead
+            report_issue(
+                "<Script> elements are not run, so anything they would add is missing. For " *
+                "OpenMM's CHARMM force fields this is the impropers, which Molly instead reads " *
+                "from a <CHARMMImpropers> element, so also pass the matching impropers file " *
+                "such as data/force_fields/charmm36m/charmm36_2024_impropers.xml",
+                strictness;
+                error_type=ForceFieldXMLError,
+            )
+
         elseif entry_name in (
                     "RBTorsionForce", "GBSAOBCForce", "CustomBondForce", "CustomAngleForce",
                     "CustomGBForce", "CustomHbondForce",
@@ -1178,6 +1225,10 @@ struct MolecularForceField{T, G, NB, M, D, DA, E, K, KA, C}
     angle_resolver::AngleResolver{KA, DA, K, D}
     torsion_resolver::TorsionResolver{T, E}
     cmap_resolver::CMAPResolver{E}
+    charmm_impropers::CHARMMImproperTables{T, E}
+    # Patched residue template name to the names of the residue template and the patch it is made
+    #   of, which the CHARMM improper lists are keyed by
+    patched_from::Dict{String, Tuple{String, String}}
     units::Bool
 end
 
@@ -1225,13 +1276,14 @@ function MolecularForceField(ff_files::AbstractString...; units::Bool=true,
     cmap_rules = CMAPRule{E}[]
     nb_atom_classes, ljforce_atom_classes = AtomType[], AtomType[]
     nbfix_pairs = NBFixPair[]
+    charmm_impropers = CHARMMImproperTables{T, E}()
 
     for ff_file in ff_files
         read_ff_xml!(ff_file, ff_param_array, atom_types, atom_type_order, attributes_from_residue,
                      residues, residue_overrides, patches, bond_rule_specs, angle_rule_specs,
                      torsion_rule_specs, cmap_rules, custor_rule_specs, nb_atom_classes,
-                     ljforce_atom_classes, nbfix_pairs, urey_rule_specs, units, strictness,
-                     T, IC)
+                     ljforce_atom_classes, nbfix_pairs, urey_rule_specs, charmm_impropers,
+                     units, strictness, T, IC)
     end
     torsion_order = ff_param_array[1]
     weight_14_coulomb = ff_param_array[2]
@@ -1254,6 +1306,7 @@ function MolecularForceField(ff_files::AbstractString...; units::Bool=true,
     end
 
     # Apply residue patches
+    patched_from = Dict{String, Tuple{String, String}}()
     for res_name in collect(keys(residues)) # Collect required since residues changes
         patches_to_apply = copy(residues[res_name].allowed_patches)
         for patch_name in keys(patches)
@@ -1283,6 +1336,7 @@ function MolecularForceField(ff_files::AbstractString...; units::Bool=true,
                                     patch_res_name, res_name, patch_name, atom_types, strictness)
             if !isnothing(patched_res) # Invalid patches warn and return nothing
                 residues[patch_res_name] = patched_res
+                patched_from[patch_res_name] = (res_name, patch_name)
             end
         end
     end
@@ -1496,7 +1550,7 @@ function MolecularForceField(ff_files::AbstractString...; units::Bool=true,
         global_params, dispersion_correction, ff_param_array[13], nbfix_pairs_conc,
         attributes_from_residue, resname_replacements, atomname_replacements, standard_bonds,
         type_to_class, class_to_types, bond_resolver, angle_resolver, torsion_resolver,
-        cmap_resolver, units,
+        cmap_resolver, charmm_impropers, patched_from, units,
     )
 end
 

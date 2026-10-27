@@ -725,6 +725,11 @@ function System(coord_file::AbstractString,
                                               Union{Vector{Int}, Nothing},
                                               Union{String, Nothing},
                                               Union{Vector{String}, Nothing}}}()
+    # The CHARMM improper lists are keyed by residue template and patch name and find the atoms
+    #   by their name in the template, so both are recorded per residue while matching
+    charmm_impropers = force_field.charmm_impropers
+    use_charmm_impropers = !isempty(charmm_impropers)
+    charmm_residue_atoms = Dict{String, Dict{Int, CHARMMResidueAtoms}}()
     for (chain, resids) in canonical_system
         for (res_id, rgraph) in resids
             template, matches = match_residue(rgraph, force_field, sorted_template_names,
@@ -740,6 +745,14 @@ function System(coord_file::AbstractString,
                     resnum_of[global_idx] = resnum_from_atom_idx(global_idx, atom_lookup)
                 end
                 add_virtual_sites!(virtual_sites, template, rgraph, matches)
+                if use_charmm_impropers
+                    res_name, patch = get(force_field.patched_from, template.name,
+                                          (template.name, ""))
+                    atoms_by_name = Dict{String, Int}(template.atoms[m_i] => rgraph.atom_inds[r_i]
+                                                      for (r_i, m_i) in enumerate(matches))
+                    get!(Dict{Int, CHARMMResidueAtoms}, charmm_residue_atoms, chain)[res_id] =
+                        CHARMMResidueAtoms(res_name, patch, atoms_by_name)
+                end
             end
             if !matched
                 n_names = length(rgraph.atom_names)
@@ -1082,6 +1095,29 @@ function System(coord_file::AbstractString,
             push!(htors_il.ks, k)
             push!(htors_il.ls, l)
             push!(htors_il.types, atom_types_to_string(types...))
+            push!(htors_il.inters, HarmonicTorsion(k=T(tt.k), θ0=T(tt.θ0)))
+        end
+    end
+
+    # CHARMM impropers, which come from the residue lists rather than from the topology
+    if use_charmm_impropers
+        charmm_periodic, charmm_harmonic = build_charmm_impropers(charmm_impropers,
+                        charmm_residue_atoms, adj, atom_type_of, force_field.type_to_class)
+        for ((i, j, k, l), classes, tt) in charmm_periodic
+            push!(imps_il.is, i)
+            push!(imps_il.js, j)
+            push!(imps_il.ks, k)
+            push!(imps_il.ls, l)
+            push!(imps_il.types, atom_types_to_string(classes...))
+            push!(imps_il.inters, PeriodicTorsion(periodicities=tt.periodicities,
+                                    phases=T.(tt.phases), ks=T.(tt.ks), proper=false))
+        end
+        for ((i, j, k, l), classes, tt) in charmm_harmonic
+            push!(htors_il.is, i)
+            push!(htors_il.js, j)
+            push!(htors_il.ks, k)
+            push!(htors_il.ls, l)
+            push!(htors_il.types, atom_types_to_string(classes...))
             push!(htors_il.inters, HarmonicTorsion(k=T(tt.k), θ0=T(tt.θ0)))
         end
     end
@@ -1452,7 +1488,7 @@ function System(T, TH, AT, atoms, coords, boundary, velocities, atoms_data, virt
             if !iszero_value(σ14) && !iszero_value(ϵ14)
                 push!(inds_used, torsion_i)
                 push!(pairs_used, (min(i, l), max(i, l)))
-                push!(lj14_inters, LennardJones14(σ14, ϵ14, weight_14_lj))
+                push!(lj14_inters, lj14_interaction(lj_cutoff, σ14, ϵ14, weight_14_lj))
             end
         end
         if length(inds_used) > 0
