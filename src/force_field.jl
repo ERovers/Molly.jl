@@ -536,7 +536,7 @@ end
 function read_ff_xml!(ff_file, ff_param_array, atom_types, atom_type_order, attributes_from_residue,
                       residues, residue_overrides, patches, bond_rule_specs, angle_rule_specs,
                       torsion_rule_specs, cmap_rules, custor_rule_specs, nb_atom_classes,
-                      ljforce_atom_classes, nbfix_pairs, urey_rule_specs, units, strictness,
+                      ljforce_atom_classes, nbfix_pairs, urey_rule_specs, charmm_impropers, units, strictness,
                       T, IC)
     P = typeof(inv(oneunit(IC))) # Length type of a virtual site local position
     if !isfile(ff_file)

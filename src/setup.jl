@@ -1134,6 +1134,29 @@ function System(coord_file::AbstractString,
         end
     end
 
+    # CHARMM impropers, which come from the residue lists rather than from the topology
+    if use_charmm_impropers
+        charmm_periodic, charmm_harmonic = build_charmm_impropers(charmm_impropers,
+                        charmm_residue_atoms, adj, atom_type_of, force_field.type_to_class)
+        for ((i, j, k, l), classes, tt) in charmm_periodic
+            push!(imps_il.is, i)
+            push!(imps_il.js, j)
+            push!(imps_il.ks, k)
+            push!(imps_il.ls, l)
+            push!(imps_il.types, atom_types_to_string(classes...))
+            push!(imps_il.inters, PeriodicTorsion(periodicities=tt.periodicities,
+                                    phases=T.(tt.phases), ks=T.(tt.ks), proper=false))
+        end
+        for ((i, j, k, l), classes, tt) in charmm_harmonic
+            push!(htors_il.is, i)
+            push!(htors_il.js, j)
+            push!(htors_il.ks, k)
+            push!(htors_il.ls, l)
+            push!(htors_il.types, atom_types_to_string(classes...))
+            push!(htors_il.inters, HarmonicTorsion(k=T(tt.k), θ0=T(tt.θ0)))
+        end
+    end
+
     # CMAP corrections
     cmaps_maps_vec = []
     # The same CMAP appears in many torsions, so only build its coefficients once
@@ -1591,7 +1614,7 @@ function System(T, TH, AT, atoms, coords, boundary, velocities, atoms_data, virt
                 push!(lj14_ls, l)
                 push!(lj14_types, atom_types_to_string(atoms_data[i].atom_type,
                                                        atoms_data[l].atom_type))
-                push!(lj14_inters, LennardJones14(σ14, ϵ14, weight_14_lj))
+                push!(lj14_inters, lj14_interaction(lj_cutoff, σ14, ϵ14, weight_14_lj))
             end
         end
         if length(lj14_inters) > 0

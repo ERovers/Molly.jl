@@ -48,6 +48,12 @@ function CHARMMForceSwitchCutoff(dist_activation, dist_cutoff)
     return CHARMMForceSwitchCutoff{1, typeof(r_on), typeof(lj), typeof(elec)}(r_on, r_off, lj, elec)
 end
 
+# The switch constants are derived from the two radii, so a converted cutoff recomputes them
+# rather than converting them field by field, which the constructor of four fields would need
+convert_component(c::SystemConversion, cutoff::CHARMMForceSwitchCutoff) =
+    CHARMMForceSwitchCutoff(convert_component(c, cutoff.dist_activation),
+                            convert_component(c, cutoff.dist_cutoff))
+
 # The r^-12 and r^-6 terms are switched separately, so the parameters are needed as
 #   A = 4ϵσ^12 and B = 4ϵσ^6 rather than as σ and ϵ
 @inline function force_switch_lj_ab((σ2, ϵ))

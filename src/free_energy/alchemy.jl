@@ -66,9 +66,12 @@ abstract type AlchemicalBondedInteraction end
 
 single_topology(inter::AlchemicalBondedInteraction) = !inter.scheduler.dual
 
-struct BeutlerSoftCore end
-struct GapsysSoftCore end
-struct ScaledSoftCore end
+# SoftCore potential options
+abstract type SoftCore end
+
+struct BeutlerSoftCore <: SoftCore end
+struct GapsysSoftCore  <: SoftCore end
+struct ScaledSoftCore  <: SoftCore end
 
 # Lambda Schedulers
 # The schedule of a `LambdaScheduler` is one of these empty types, which the scaling functions
@@ -129,6 +132,8 @@ struct QuartersSchedule end
 Schedule of a [`Molly.EleScaledLambdaScheduler`](@ref), passed to [`Molly.LambdaScheduler`](@ref).
 """
 struct EleScaledSchedule end
+
+struct DiffusionSchedule end
 
 """
     LambdaScheduler(schedule=Molly.DefaultSchedule(); dual=true, LJindividual=false,
@@ -322,6 +327,9 @@ full coupling and quickly close to decoupling.
 A [`Molly.LambdaScheduler`](@ref), see there for the keyword arguments.
 """
 const EleScaledLambdaScheduler = LambdaScheduler{EleScaledSchedule}
+
+# DiffusionLambdaScheduler to scale bonded interactions before sterics and electrostatics.
+const DiffusionLambdaScheduler = LambdaScheduler{DiffusionSchedule}
 
 # `Val(scheduler.dual)` builds a type from a runtime field, which the GPU compiler cannot
 # lower. Branching on the Bool instead keeps both `Val`s compile-time literals, so these are

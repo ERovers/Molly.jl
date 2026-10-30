@@ -86,19 +86,22 @@ parameter_fields(x) = parameter_fields(typeof(x))
 end
 
 # Atoms are handled like an interaction with one element per atom, keyed by the atom type
-#   except for the charge, which is keyed by the charge type of the atom
-@inline atom_parameter_values(at) = (at.mass, at.charge, at.σ, at.ϵ)
+#   except for the charge, which is keyed by the charge type of the atom, and the λ, which
+#   is keyed by the index of the atom so that each atom has its own
+@inline atom_parameter_values(at) = (at.mass, at.charge, at.σ, at.ϵ, at.λ)
 
-function atom_parameter_keys(ad)
+function atom_parameter_keys(ad, at)
     prefix = string("atom_", ad.atom_type, "_")
     charge_type = (isempty(ad.charge_type) ? ad.atom_type : ad.charge_type)
-    return (prefix * "mass", string("atom_", charge_type, "_charge"), prefix * "σ", prefix * "ϵ")
+    return (prefix * "mass", string("atom_", charge_type, "_charge"), prefix * "σ",
+            prefix * "ϵ", string("atom_", at.index, "_λ"))
 end
 
-@inline function inject_atom(at, m, q, s, e)
+@inline function inject_atom(at, m, q, s, e, l)
     return Atom(at.index, at.atom_type, convert_parameter(typeof(at.mass), m),
                 convert_parameter(typeof(at.charge), q), convert_parameter(typeof(at.σ), s),
-                convert_parameter(typeof(at.ϵ), e), at.λ, at.alch_role)
+                convert_parameter(typeof(at.ϵ), e), convert_parameter(typeof(at.λ), l),
+                at.alch_role)
 end
 
 # Atom keys whose atoms do not all have the same value, for example the masses of a type
@@ -108,7 +111,7 @@ function inconsistent_atom_keys(atoms, atoms_data)
     first_values = Dict{String, Any}()
     inconsistent = Set{String}()
     for (at, ad) in zip(atoms, atoms_data)
-        for (key, val) in zip(atom_parameter_keys(ad), atom_parameter_values(at))
+        for (key, val) in zip(atom_parameter_keys(ad, at), atom_parameter_values(at))
             get!(first_values, key, val) == val || push!(inconsistent, key)
         end
     end
@@ -250,11 +253,11 @@ function ParameterPlan(sys::System, params_dic)
                     "different atom or charge types"))
             end
         end
-        plan_block!(state, map(atom_parameter_keys, sys.atoms_data),
-                    map(atom_parameter_values, atoms_cpu), 4)
+        plan_block!(state, map(atom_parameter_keys, sys.atoms_data, atoms_cpu),
+                    map(atom_parameter_values, atoms_cpu), 5)
     else
         # No atom data, so no atom types to key on
-        for _ in 1:4
+        for _ in 1:5
             push!(ranges, (length(slots) + 1):length(slots))
         end
     end
@@ -335,12 +338,16 @@ end
 
 @inline function inject_atoms(sys, flat, plan, ::Type{AT}) where {AT}
     isempty(plan.ranges[1]) && return sys.atoms
-    m, q, s, e = target_views(flat, plan, 1, Val(4))
-    return to_device(inject_atom.(plan.atoms_host, m, q, s, e), AT)
+    m, q, s, e, l = target_views(flat, plan, 1, Val(5))
+    return to_device(inject_atom.(plan.atoms_host, m, q, s, e, l), AT)
 end
 
-# Whether the dictionary sets the charge of any atom
-@inline injects_charges(plan::ParameterPlan) = !isempty(plan.ranges[2]) && any(!iszero, view(plan.slots, plan.ranges[2]))
+@inline injects_block(plan::ParameterPlan, i) =
+    !isempty(plan.ranges[i]) && any(!iszero, view(plan.slots, plan.ranges[i]))
+
+# Whether the dictionary sets the charge or λ of any atom, both of which change the
+#   λ-scaled charges that an interaction may cache
+@inline injects_charges(plan::ParameterPlan) = injects_block(plan, 2) || injects_block(plan, 5)
 
 @inline function inject_list(il, inters_host, flat, plan, target, ::Type{AT}) where {AT}
     N = n_parameters_val(eltype(inters_host))
@@ -408,7 +415,7 @@ end
 
 @inline function injected_masses(sys, flat, plan, ::Type{AT}) where {AT}
     isempty(plan.ranges[1]) && return sys.masses, sys.total_mass
-    m_host = first(target_views(flat, plan, 1, Val(4)))
+    m_host = first(target_views(flat, plan, 1, Val(5)))
     masses_host = convert_parameter.(eltype(sys.masses), m_host)
     return to_device(masses_host, AT), sum(masses_host)
 end
@@ -500,7 +507,7 @@ A dictionary of the force field parameters of a system, keyed by strings, for us
 
 Atoms contribute `atom_<type>_mass`, `atom_<type>_σ` and `atom_<type>_ϵ` for each atom type,
 and `atom_<charge type>_charge` for each charge type, the `charge_type` of
-[`AtomData`](@ref) (the atom type if empty). A key whose atoms have different values, for
+[`AtomData`](@ref) (the atom type if empty), and `atom_<index>_λ` for each atom. A key whose atoms have different values, for
 example masses after hydrogen mass repartitioning, is left out, so that injecting the
 dictionary leaves those values unchanged. Leaving out a charge, σ or ϵ key is reported
 according to `strictness`: `:warn` to emit a warning (the default), `:nowarn` to suppress it
@@ -528,7 +535,7 @@ function extract_parameters(sys::System{<:Any, <:Any, T}, ff=nothing;
     if length(sys.atoms_data) == length(atoms_cpu)
         check_scalar_atoms(atoms_cpu)
         for (at, ad) in zip(atoms_cpu, sys.atoms_data)
-            extract_block!(params_dic, "", atom_parameter_keys(ad), atom_parameter_values(at))
+            extract_block!(params_dic, "", atom_parameter_keys(ad, at), atom_parameter_values(at))
         end
         inconsistent = inconsistent_atom_keys(atoms_cpu, sys.atoms_data)
         for key in inconsistent
