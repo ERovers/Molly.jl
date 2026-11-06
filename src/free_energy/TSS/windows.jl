@@ -28,7 +28,7 @@ struct TSSWindow
             end
         end
 
-        evaluation_state_indices = unique(Int.(collect(vcat(state_indices, evaluation_state_indices))))
+        evaluation_state_indices = sort!(unique(Int.(collect(vcat(state_indices, evaluation_state_indices)))))
         if isempty(evaluation_state_indices)
             throw(ArgumentError("evaluation_state_indices must be non-empty"))
         end
@@ -287,12 +287,12 @@ end
 function validate_tss_state_window_coverage!(windows::AbstractVector{TSSWindow},
                                               state_to_windows::Vector{Vector{Int}},
                                               K::Int;
-                                              required_coverage::Int = length(windows) == 1 ? 1 : 2)
+                                              min_coverage::Int = length(windows) == 1 ? 1 : 2)
     for state_index in 1:K
         n_cover = length(state_to_windows[state_index])
-        if n_cover != required_coverage
-            throw(ArgumentError("state $(state_index) must be covered by exactly " *
-                                "$(required_coverage) window(s); got $(n_cover)."))
+        if n_cover < min_coverage
+            throw(ArgumentError("state $(state_index) must be covered by at least " *
+                                "$(min_coverage) window(s); got $(n_cover)."))
         end
     end
 
@@ -701,7 +701,7 @@ function build_tss_graph(builder::TSSGraphBuilder)
         windows,
         state_to_windows,
         n_total;
-        required_coverage = 2,
+        min_coverage = 2,
     )
 
     return TSSGraph(
@@ -713,20 +713,31 @@ function build_tss_graph(builder::TSSGraphBuilder)
     )
 end
 
-function tss_swap_window(graph::TSSGraph, active_window::Integer, state_index::Integer)
-    state_index = Int(state_index)
+function tss_swap_window(graph::TSSGraph, active_window::Integer, state_index::Integer;
+                         rng::AbstractRNG = Random.default_rng(),
+                         p_switch::Real = 1.0)
     if !(1 <= state_index <= graph.n_states)
         throw(ArgumentError("state $(state_index) is out of TSS graph bounds."))
     end
     active_window = Int(active_window)
     windows = graph.state_to_windows[state_index]
-    if length(windows) != 2
-        throw(ArgumentError("state $(state_index) is not covered by exactly two windows."))
+    if 0 > p_switch || p_switch > 1
+        throw(ArgumentError("p_switch must be in (0, 1], got $(p_switch)."))
     end
-    if active_window == windows[1]
-        return windows[2]
-    elseif active_window == windows[2]
-        return windows[1]
+    m = length(windows)
+    m == 1 && return active_window
+
+    if p_switch < 1 && rand(rng) >= p_switch
+        return active_window
+    end
+    if m == 2
+        return windows[1] == active_window ? windows[2] : windows[1]
+    end
+    r = rand(rng, 1:(m - 1))
+    for w in windows
+        w == active_window && continue
+        r -= 1
+        r == 0 && return w
     end
     throw(ArgumentError("active window $(active_window) does not contain state $(state_index)."))
 end
@@ -919,7 +930,7 @@ end
 
 function other_window_for_state(state::TSSState,
                                 active_window::Integer,
-                                global_state::Integer)
+                                global_state::Integer; kwargs...)
     windows = windows_for_state(state, global_state)
     if length(windows) == 1
         only_window = only(windows)
@@ -928,11 +939,11 @@ function other_window_for_state(state::TSSState,
         end
         return only_window
     end
-    return tss_swap_window(state.graph, active_window, global_state)
+    return tss_swap_window(state.graph, active_window, global_state; kwargs...)
 end
 
-function other_window_for_state(state::TSSState, global_state::Integer)
-    return other_window_for_state(state, state.active_window, global_state)
+function other_window_for_state(state::TSSState, global_state::Integer; kwargs...)
+    return other_window_for_state(state, state.active_window, global_state; kwargs...)
 end
 
 function check_windowed_tss_invariant(state::TSSState)

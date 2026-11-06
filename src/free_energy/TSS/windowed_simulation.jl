@@ -721,7 +721,8 @@ function collect_windowed_tss_observation!(state::TSSState{FT},
     check_windowed_tss_replica_invariant(state, replica)
 
     entry_state = replica.active_state.active_idx
-    replica.active_window = other_window_for_state(state, replica.active_window, entry_state)
+    replica.active_window = other_window_for_state(state, replica.active_window, entry_state;
+                                                    rng = workspace.rng)
     cycle_window = replica.active_window
     estimator = state.estimators[cycle_window]
     check_windowed_tss_replica_cycle_state!(
