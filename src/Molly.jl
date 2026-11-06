@@ -118,6 +118,7 @@ include("free_energy/TSS.jl")
 include("free_energy/cycle.jl")
 include("bias/bias.jl")
 include("bias/cv.jl")
+include("bias/cv_device.jl")
 include("bias/metadynamics.jl")
 
 

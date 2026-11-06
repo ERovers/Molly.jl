@@ -13,7 +13,7 @@ export
     CalcAngle,
     CalcTorsion
 
-@public cv_gradient, cv_period
+@public cv_gradient, cv_period, cv_atom_inds, cv_localise, cv_uses_velocity
 
 # Defined in Enzyme extension, but available here for use in testing
 function cv_gradient_enzyme end
@@ -562,7 +562,8 @@ The angle is defined by the angle between the vectors (j -> i) and (j -> k), whe
 
 # Fields
 - `atom_inds::AbstractVector{Int}`: The indices of the three atoms (i, j, k) defining the angle.
-- `correction::Symbol`: The method used to handle periodic boundary conditions. Defaults to `:pbc`.
+- `correction::Symbol`: The method used to handle periodic boundary conditions, one of
+    `:pbc` or `:wrap`. Defaults to `:pbc`.
 - `has_virial::Bool`: Whether the virial contribution should be calculated for this collective variable. Defaults to `true`.
 """
 struct CalcAngle
@@ -852,7 +853,8 @@ bond-vector norms.
 
 # Fields
 - `atom_inds::AbstractVector{Int}`: The indices of the four atoms (i, j, k, l) defining the torsion.
-- `correction::Symbol`: The method used to handle periodic boundary conditions. Defaults to `:pbc`.
+- `correction::Symbol`: The method used to handle periodic boundary conditions, one of
+    `:pbc` or `:wrap`. Defaults to `:pbc`.
 - `has_virial::Bool`: Whether the virial contribution should be calculated for this collective variable. Defaults to `true`.
 - `gradient_singularity_tol::Float64`: Relative tolerance used to cap torsion gradients near collinear geometries.
 """
@@ -977,3 +979,95 @@ periodic define a method, which may depend on the instance, e.g.
 """
 cv_period(cv) = 0
 cv_period(::CalcTorsion) = 2π
+
+# Evaluating a collective variable on only the atoms it reads.
+#
+# A CV typically reads a handful of atoms, so copying the whole system to the host every step
+# and scattering a dense gradient back over every atom is wasted work. The atoms a CV reads are
+# gathered once, the CV is re-indexed into that gathered array, and the existing calculate_cv /
+# cv_gradient / calculate_virial! methods then run unchanged on the small host copy.
+#
+# A CV type that declares nothing gets a selection of (:) and follows the whole-system path.
+
+# Atoms a collective variable reads, (:) meaning all of them
+cv_atom_inds(cv) = (:)
+cv_atom_inds(cv::CalcDist) = vcat(cv.atom_inds_1, cv.atom_inds_2)
+cv_atom_inds(cv::Union{CalcAngle, CalcTorsion}) = cv.atom_inds
+cv_atom_inds(cv::Union{CalcRg, CalcRMSD}) = (isempty(cv.atom_inds) ? (:) : cv.atom_inds)
+
+# Whether a CV reads velocities, so that they are only copied when they are used
+cv_uses_velocity(cv) = false
+
+# A copy of a CV with its atom indices pointing into the selected atoms, where loc maps a
+#   system atom index to its position in the selection
+cv_localise(cv::CalcDist, loc) = CalcDist(loc[cv.atom_inds_1], loc[cv.atom_inds_2],
+                                          cv.dist_type, cv.correction, cv.has_virial)
+cv_localise(cv::CalcAngle, loc) = CalcAngle(loc[cv.atom_inds], cv.correction, cv.has_virial)
+cv_localise(cv::CalcTorsion, loc) = CalcTorsion(loc[cv.atom_inds], cv.correction, cv.has_virial;
+                                        gradient_singularity_tol=cv.gradient_singularity_tol)
+cv_localise(cv::CalcRg, loc) = CalcRg(loc[cv.atom_inds], cv.correction, cv.has_virial)
+# ref_atom_inds indexes ref_coords, which is not part of the selection and is left alone
+cv_localise(cv::CalcRMSD, loc) = CalcRMSD(cv.ref_coords, loc[cv.atom_inds], cv.ref_atom_inds,
+                                          cv.correction, cv.has_virial)
+
+struct CVSelection{I, ID, A, C, DV}
+    inds::I      # Indices read, unique so that the force scatter writes each atom once
+    inds_dev::ID # The same indices on the array type of the system, for gathering on device
+    atoms::A     # Atoms at those indices on the host, gathered once since masses are fixed
+    cv_local::C  # The CV re-indexed into the selection
+    device::DV   # Workspace for the device kernels, nothing when the CV stays on the host
+    n_atoms::Int # Together with at, detects a selection built for a different system
+    at::Type
+end
+
+function CVSelection(cv, sys)
+    inds, n_atoms, at = cv_atom_inds(cv), length(sys.atoms), array_type(sys.coords)
+    if inds isa Colon
+        return CVSelection(inds, inds, from_device(sys.atoms), cv, nothing, n_atoms, at)
+    end
+    inds_u = unique(inds)
+    loc = zeros(Int, n_atoms)
+    loc[inds_u] = eachindex(inds_u)
+    cv_local = cv_localise(cv, loc)
+    # The atoms are copied in full once here, which is the cost the per-step path avoids
+    atoms_sel = from_device(sys.atoms)[inds_u]
+    return CVSelection(inds_u, to_device(inds_u, at), atoms_sel, cv_local,
+                       cv_device_workspace(cv, sys, inds_u, cv_local, atoms_sel),
+                       n_atoms, at)
+end
+
+function bias_selection!(bias, sys)
+    sel = bias.selection[]
+    if isnothing(sel) || sel.n_atoms != length(sys.atoms) || sel.at !== array_type(sys.coords)
+        sel = CVSelection(bias.cv_type, sys)
+        bias.selection[] = sel
+    end
+    return sel
+end
+
+# Gathers the selected elements of a device array onto the host, or the whole array when
+#   the selection is (:)
+cv_gather(sel::CVSelection{Colon}, arr) = from_device(arr)
+cv_gather(sel::CVSelection, arr) = from_device(arr[sel.inds_dev])
+
+# The coordinates of the selected atoms on the host with the molecule correction applied
+function cv_coords(sel::CVSelection, cv, sys)
+    if cv.correction == :pbc
+        coords_cpu = unwrap_molecules(sys)
+        return sel.inds isa Colon ? coords_cpu : coords_cpu[sel.inds]
+    else
+        return cv_gather(sel, sys.coords)
+    end
+end
+
+cv_velocities(sel::CVSelection, cv, sys) =
+    (cv_uses_velocity(cv) || sel.inds isa Colon) ? cv_gather(sel, sys.velocities) : nothing
+
+# Subtracts the bias forces from the forces of the selected atoms. The indices are unique, so
+#   no atom is written twice and the scatter needs no atomics
+subtract_forces_at!(fs, ::Colon, vals) = (fs .-= to_device(vals, typeof(fs)); fs)
+
+function subtract_forces_at!(fs, inds, vals)
+    view(fs, inds) .-= to_device(vals, typeof(fs))
+    return fs
+end

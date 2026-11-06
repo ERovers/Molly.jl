@@ -250,7 +250,17 @@ the built-in CV types when `has_virial` is `true`.
 struct BiasPotential{C, B}
     cv_type::C
     bias_type::B
+    # The atoms the CV reads, gathered on first use; Ref{Any} because CVSelection is defined
+    #   in bias/cv.jl, which is included after this file
+    selection::Base.RefValue{Any}
 end
+
+BiasPotential(cv_type, bias_type) = BiasPotential(cv_type, bias_type, Ref{Any}(nothing))
+
+# The default conversion would call the three argument constructor with a converted cache;
+#   the cache is dropped instead and rebuilt on the converted system
+convert_component(c::SystemConversion, bias::BiasPotential) =
+    BiasPotential(convert_component(c, bias.cv_type), convert_component(c, bias.bias_type))
 
 bias_all_finite(values::AbstractArray) = all(bias_all_finite, values)
 bias_all_finite(values::Tuple) = all(bias_all_finite, values)
@@ -281,18 +291,18 @@ function check_bias_finite(value, label::AbstractString, bias;
 end
 
 function AtomsCalculators.potential_energy(sys, bias::BiasPotential; kwargs...)
-    if bias.cv_type.correction == :pbc
-        coords = unwrap_molecules(sys)
-    else
-        coords = sys.coords
+    sel = bias_selection!(bias, sys)
+    if cv_device_ready(sel, bias)
+        return bias_energy_device(sys, bias, sel, sel.device; kwargs...)
     end
+    coords = cv_coords(sel, bias.cv_type, sys)
 
     cv_sim = calculate_cv(
-        bias.cv_type,
-        from_device(coords),
-        from_device(sys.atoms),
+        sel.cv_local,
+        coords,
+        sel.atoms,
         sys.boundary,
-        from_device(sys.velocities);
+        cv_velocities(sel, bias.cv_type, sys);
         kwargs...,
     )
     check_bias_finite(cv_sim, "collective variable", bias)
@@ -307,19 +317,20 @@ function AtomsCalculators.forces!(
     buffers = nothing, # Dummy to be able to have explicit kwarg. In reality a buffer will always be passed
     kwargs...
 )
-    if bias.cv_type.correction == :pbc
-        coords = unwrap_molecules(sys)
-    else
-        coords = sys.coords
+    sel = bias_selection!(bias, sys)
+    if cv_device_ready(sel, bias)
+        return bias_forces_device!(fs, sys, bias, sel, sel.device; needs_vir=needs_vir,
+                                   buffers=buffers)
     end
+    coords = cv_coords(sel, bias.cv_type, sys)
 
     # Gradient of CV with respect to coordinates
     d_coords, cv_sim = cv_gradient(
-        bias.cv_type,
-        from_device(coords),
-        from_device(sys.atoms),
+        sel.cv_local,
+        coords,
+        sel.atoms,
         sys.boundary,
-        from_device(sys.velocities),
+        cv_velocities(sel, bias.cv_type, sys),
     )
     check_bias_finite(cv_sim, "collective variable", bias)
     check_bias_finite(d_coords, "CV gradient", bias; cv_sim=cv_sim)
@@ -338,10 +349,10 @@ function AtomsCalculators.forces!(
     )
     
     if needs_vir && bias.cv_type.has_virial
-        calculate_virial!(buffers.virial, bias.cv_type, from_device(coords), -fs_svec,
-                          from_device(sys.atoms), sys.boundary)
+        calculate_virial!(buffers.virial, sel.cv_local, coords, -fs_svec, sel.atoms,
+                          sys.boundary)
     end
 
-    fs .-= to_device(fs_svec, typeof(fs))
+    subtract_forces_at!(fs, sel.inds_dev, fs_svec)
     return fs
 end
