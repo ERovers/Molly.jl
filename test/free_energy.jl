@@ -545,7 +545,9 @@ end
         params = extract_parameters(sys; strictness=:nowarn)
         # The B copies of the core atoms of a dual topology system have zero mass
         @test all(k -> haskey(params, k) || endswith(k, "_mass"), keys(params_ref))
-        @test all(k -> params[k] == params_ref[k], intersect(keys(params), keys(params_ref)))
+        # An alchemical atom carries the global λ, where the original system has λ = 1
+        @test all(k -> endswith(k, "_λ") || params[k] == params_ref[k],
+                  intersect(keys(params), keys(params_ref)))
 
         sys_rt = inject_gradients(sys, params)
         @test sys_rt.atoms == sys.atoms
