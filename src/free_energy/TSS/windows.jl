@@ -131,6 +131,7 @@ mutable struct WindowedTSSStats{T}
     replica_visited_states::Vector{Vector{Int}}
     replica_sampled_next_states::Vector{Vector{Int}}
     replica_max_abs_delta_f::Vector{Vector{T}}
+    worker_occupancy::Vector{Vector{Int}} # Replicas per worker per cycle, multi-GPU runs only
 end
 
 function Base.show(io::IO, stats::WindowedTSSStats)
@@ -161,6 +162,7 @@ function WindowedTSSStats(::Type{FT}) where {FT}
         Vector{Int}[],
         Vector{Int}[],
         Vector{FT}[],
+        Vector{Int}[],
     )
 end
 
@@ -721,7 +723,7 @@ function tss_swap_window(graph::TSSGraph, active_window::Integer, state_index::I
     end
     active_window = Int(active_window)
     windows = graph.state_to_windows[state_index]
-    if 0 > p_switch || p_switch > 1
+    if !(0 < p_switch <= 1)
         throw(ArgumentError("p_switch must be in (0, 1], got $(p_switch)."))
     end
     m = length(windows)
@@ -799,6 +801,7 @@ function TSSState(thermo_states::AbstractVector{<:ThermoState};
                           ETA::Real = 2.0,
                           dens_reg::Real = 1e-6,
                           reuse_neighbors::Bool = true,
+                          build_λ_systems::Bool = true,
                           history_forgetting = nothing,
                           adaptive_gamma = nothing,
                           global_visit_control::Bool = true,
@@ -807,7 +810,8 @@ function TSSState(thermo_states::AbstractVector{<:ThermoState};
                           visit_control_damping::Real = 1.0,
                           pi_regularization::Real = 1e-3)
 
-    state_space = ExtendedStateSpace(thermo_states; reuse_neighbors = reuse_neighbors)
+    state_space = ExtendedStateSpace(thermo_states; reuse_neighbors = reuse_neighbors,
+                                     build_λ_systems = build_λ_systems)
     K = n_states(state_space)
     explicit_graph = !isnothing(graph)
     if isnothing(graph)
