@@ -22,13 +22,15 @@ struct ExtendedStateSpace{P, TS, S, I, B, PR, HP, SPI, SSI, SGI}
 end
 
 function ExtendedStateSpace(thermo_states::AbstractArray{<:ThermoState};
-                            reuse_neighbors::Bool=true)
+                            reuse_neighbors::Bool=true,
+                            build_λ_systems::Bool=true)
     isempty(thermo_states) && throw(ArgumentError("at least one ThermoState is required"))
 
     thermo_states_vec = collect(thermo_states)
     ref_sys = first(thermo_states_vec).system
     TH = float_type_high(ref_sys)
-    partition = AlchemicalPartition(thermo_states_vec; reuse_neighbors=reuse_neighbors)
+    partition = AlchemicalPartition(thermo_states_vec; reuse_neighbors=reuse_neighbors,
+                                    build_λ_systems=build_λ_systems)
 
     systems = [ts.system for ts in thermo_states_vec]
     integrators = [ts.integrator for ts in thermo_states_vec]
@@ -54,19 +56,105 @@ function ExtendedStateSpace(thermo_states::AbstractArray{<:ThermoState};
     )
 end
 
-# The partition evaluates the energies of the states with frozen copies of the
-#   interactions, so a changing bias would be ignored
-function check_thermo_states_history_inters(thermo_states, sim_name)
-    for ts in thermo_states
-        check_no_history_inters(values(ts.system.general_inters), sim_name)
-    end
-    return nothing
+function ExtendedStateSpace(space::ExtendedStateSpace;
+                            partition=space.partition,
+                            thermo_states=space.thermo_states,
+                            systems=space.systems,
+                            integrators=space.integrators,
+                            state_pairwise_inters=space.state_pairwise_inters,
+                            state_specific_inter_lists=space.state_specific_inter_lists,
+                            state_general_inters=space.state_general_inters)
+    return ExtendedStateSpace(
+        partition,
+        thermo_states,
+        systems,
+        integrators,
+        space.betas,
+        space.pressures,
+        space.has_pressure,
+        state_pairwise_inters,
+        state_specific_inter_lists,
+        state_general_inters,
+    )
 end
 
-# n_states(space::ExtendedStateSpace)
-#
-# Return the number of thermodynamic states in an expanded ensemble.
 n_states(space::ExtendedStateSpace) = length(space.betas)
+
+# Only the interactions of the carrier are read, but the base system and the finder are still
+# constrained twice over: `neighbor_finder=nothing` is rejected whenever a pairwise interaction uses
+# the neighbour list, and the base has to be on the same device as the interactions handed in, since
+# `System` checks that before it applies `array_type`. So the base is the source-type system and its
+# own finder comes along, which costs one mask conversion per call and is thrown away with it
+function convert_state_inters(ref_sys, pairwise, specific, general, ::Type{AT}) where AT
+    carrier = System(ref_sys;
+        pairwise_inters      = pairwise,
+        specific_inter_lists = specific,
+        general_inters       = general,
+        loggers              = (),
+        array_type           = AT,
+        strictness           = :nowarn,
+    )
+    return (carrier.pairwise_inters, carrier.specific_inter_lists, carrier.general_inters)
+end
+
+# An expanded ensemble holding only `states`, on the given array type. Per-state vectors keep their
+# global indices and hold `nothing` elsewhere, so indexing them needs no remapping. The exclusion
+# matrices are converted twice however many states are resident, and shared.
+function localize_state_space(space::ExtendedStateSpace, states, ::Type{AT}) where AT
+    resident = sort!(unique!(Int.(collect(states))))
+    ref_sys = space.systems[first(resident)]
+    reference = System(ref_sys; array_type=AT, loggers=())
+    master = System(space.partition.master_sys; array_type=AT, loggers=())
+    λ_eligible = to_device(space.partition.λ_eligible, AT)
+    special_mask = to_device(space.partition.special_mask, AT)
+
+    K = n_states(space)
+    λ_systems, λ_atoms, hamiltonians = (Vector{Any}(nothing, K) for _ in 1:3)
+    systems, integrators = (Vector{Any}(nothing, K) for _ in 1:2)
+    pairwise, specific, general = (Vector{Any}(nothing, K) for _ in 1:3)
+
+    for k in resident
+        source = space.partition.λ_hamiltonians[k]
+        hamiltonians[k] = LambdaHamiltonian(convert_state_inters(ref_sys, source.pairwise_inters,
+            source.specific_inter_lists, source.general_inters, AT)...)
+        λ_atoms[k] = to_device(space.partition.λ_atoms[k], AT)
+        # Every part is already on the target array type, so this converts nothing and the masks
+        # are shared rather than copied per state
+        λ_systems[k] = System(master;
+            atoms                = λ_atoms[k],
+            pairwise_inters      = hamiltonians[k].pairwise_inters,
+            specific_inter_lists = hamiltonians[k].specific_inter_lists,
+            general_inters       = hamiltonians[k].general_inters,
+            neighbor_finder      = build_neighbor_finder(master.neighbor_finder, λ_eligible,
+                                        special_mask; reuse_neighbors=space.partition.reuse_neighbors,
+                                        boundary=master.boundary),
+            loggers              = (),
+        )
+        pairwise[k], specific[k], general[k] = convert_state_inters(ref_sys,
+            space.state_pairwise_inters[k], space.state_specific_inter_lists[k],
+            space.state_general_inters[k], AT)
+        # One object at every resident index: `ActiveThermoState` deepcopies it, so nothing aliases
+        systems[k] = reference
+        integrators[k] = space.integrators[k]
+    end
+
+    return ExtendedStateSpace(space;
+        partition = AlchemicalPartition(space.partition;
+            master_sys     = master,
+            λ_systems      = λ_systems,
+            λ_atoms        = λ_atoms,
+            λ_hamiltonians = hamiltonians,
+            λ_eligible     = λ_eligible,
+            special_mask   = special_mask,
+        ),
+        thermo_states = nothing,
+        systems = systems,
+        integrators = integrators,
+        state_pairwise_inters = pairwise,
+        state_specific_inter_lists = specific,
+        state_general_inters = general,
+    )
+end
 
 mutable struct PartitionedReducedPotentialWorkspace{P, TS, E}
     partition::P
@@ -183,10 +271,6 @@ function evaluate_energy_subset!(energies::AbstractVector,
                           force_recompute=true, n_threads=n_threads)
 
     @inbounds for (out_i, state_index) in pairs(state_indices)
-        if !(1 <= state_index <= length(partition.λ_systems))
-            throw(ArgumentError("state_index ($state_index) out of range " *
-                                "1:$(length(partition.λ_systems))"))
-        end
         pe_specific = evaluate_λ_energy!(
             partition.λ_systems[state_index],
             coords,
