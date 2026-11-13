@@ -56,6 +56,15 @@ function ExtendedStateSpace(thermo_states::AbstractArray{<:ThermoState};
     )
 end
 
+# The partition evaluates the energies of the states with frozen copies of the
+#   interactions, so a changing bias would be ignored
+function check_thermo_states_history_inters(thermo_states, sim_name)
+    for ts in thermo_states
+        check_no_history_inters(values(ts.system.general_inters), sim_name)
+    end
+    return nothing
+end
+
 function ExtendedStateSpace(space::ExtendedStateSpace;
                             partition=space.partition,
                             thermo_states=space.thermo_states,
@@ -271,6 +280,10 @@ function evaluate_energy_subset!(energies::AbstractVector,
                           force_recompute=true, n_threads=n_threads)
 
     @inbounds for (out_i, state_index) in pairs(state_indices)
+        if !(1 <= state_index <= length(partition.λ_systems))
+            throw(ArgumentError("state_index ($state_index) out of range " *
+                                "1:$(length(partition.λ_systems))"))
+        end
         pe_specific = evaluate_λ_energy!(
             partition.λ_systems[state_index],
             coords,

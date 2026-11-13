@@ -808,6 +808,7 @@ function TSSState(thermo_states::AbstractVector{<:ThermoState};
                           visit_control_damping::Real = 1.0,
                           pi_regularization::Real = 1e-3)
 
+    check_thermo_states_history_inters(thermo_states, "TSS")
     state_space = ExtendedStateSpace(thermo_states; reuse_neighbors = reuse_neighbors,
                                      build_λ_systems = build_λ_systems)
     K = n_states(state_space)

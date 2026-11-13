@@ -1252,8 +1252,7 @@ function choose_windowed_tss_cycle_windows!(sim::TSSSimulation)
         replica.active_window = other_window_for_state(
             state,
             replica.active_window,
-            replica.active_state.active_idx;
-            rng = sim.replica_workspaces[replica_i].rng,
+            replica.active_state.active_idx,
         )
     end
     return sim
