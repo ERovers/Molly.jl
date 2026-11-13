@@ -201,7 +201,7 @@ Base.show(io::IO, ::MIME"text/plain", coupling::WindowedTSSCoupling) = show(io, 
 """
     TSSState(thermo_states; graph=nothing, first_state=1, first_window=nothing,
              gamma=nothing, initial_f=nothing, ETA=2.0, dens_reg=1e-6,
-             reuse_neighbors=true, history_forgetting=nothing,
+             reuse_neighbors=true, build_λ_systems=true, history_forgetting=nothing,
              adaptive_gamma=nothing, global_visit_control=true,
              visit_control_tolerance=1e-8,
              visit_control_max_iterations=1000,
@@ -216,6 +216,15 @@ windowed TSS. `history_forgetting` can be a [`Molly.TSSHistoryForgetting`](@ref)
 The state owns the active thermodynamic state, local window estimators,
 visit-control coupling state, and diagnostic histories.
 Loggers are attached by [`TSSSimulation`](@ref), not by `TSSState`.
+History-dependent general interactions such as [`Metadynamics`](@ref) are not supported.
+
+- `reuse_neighbors::Bool=true`: Whether the λ systems share an explicit neighbor list when
+    evaluating state energies. Generally improves performance. The master system is a single
+    system with a nearly dense eligible matrix, so it has no list to share and always keeps
+    the neighbor finder of its device.
+- `build_λ_systems::Bool=true`: Whether to build the λ systems of the partition here. They
+    hold most of the memory of a TSS run, so a host that evaluates no energy itself, as in a
+    multi-GPU run, can pass `false` and leave them to the worker processes.
 """
 mutable struct TSSState{T, ES, AS, G, W, E}
     state_space::ES # Shared ExtendedStateSpace among windows

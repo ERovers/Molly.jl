@@ -246,6 +246,18 @@ are called by the task that runs that replica, in sample order, so with
 Without sample loggers, no sample is constructed.
 Pass `replica_rngs` to [`simulate!`](@ref) to supply one RNG stream per replica;
 otherwise, each replica RNG is reseeded from the top-level `rng`.
+
+`replica_parallel` selects how [`simulate!`](@ref) runs the replicas of a cycle: `:serial` one
+after another, `:threads` on separate threads for CPU replicas, or `:distributed` on
+Distributed.jl worker processes, one per GPU. The default `:auto` picks `:distributed` for
+GPU-backed replicas when worker processes are available, `:threads` for multiple CPU replicas
+and `:serial` otherwise. With `:distributed` every worker holds every window and the replicas
+are dealt out between the workers, so the GPUs run replicas concurrently and the host keeps the
+estimators; the number of replicas each worker ran per cycle is recorded in
+`state.stats.worker_occupancy`. Add the workers with `addprocs` and load Molly and the GPU
+package on them with `@everywhere` beforehand, and pass `gpu_devices` to [`simulate!`](@ref) to
+select the devices, one per worker, all visible devices being used by default. PMF
+deconvolution is not supported with `:distributed`.
 """
 mutable struct TSSSimulation{S, R, W, P}
     state::S
