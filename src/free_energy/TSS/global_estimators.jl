@@ -211,7 +211,7 @@ function compute_window_transition_matrix!(state::TSSState{FT};
 
         for local_state in eachindex(estimator.state_indices)
             global_state = estimator.state_indices[local_state]
-            contribution = FT(0.5) *windowed_local_weight(estimator, local_state, use_tilts) / denom
+            contribution = FT(1 / length(state.state_to_windows[global_state])) * windowed_local_weight(estimator, local_state, use_tilts) / denom
             for window_i in state.state_to_windows[global_state]
                 if visited_mask[window_i]
                     Q[window_i, window_j] += contribution
