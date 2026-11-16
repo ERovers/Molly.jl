@@ -823,26 +823,6 @@ function System(coord_file::AbstractString,
                 push!(unmatched_residues, (chain, res_id, rgraph))
             else
                 push!(matched_residues, (rgraph, template, matches))
-            matched = !isnothing(matches)
-            if matched
-                for (r_i, m_i) in enumerate(matches)
-                    global_idx = rgraph.atom_inds[r_i]
-                    atom_type_of[global_idx] = template.types[m_i]
-                    charge_of[global_idx] = template.charges[m_i]
-                    element_of[global_idx] = force_field.atom_types[template.types[m_i]].element
-                    template_id_of[global_idx] = m_i
-                    template_of[global_idx] = template
-                    resnum_of[global_idx] = resnum_from_atom_idx(global_idx, atom_lookup)
-                end
-                add_virtual_sites!(virtual_sites, template, rgraph, matches)
-                if use_charmm_impropers
-                    res_name, patch = get(force_field.patched_from, template.name,
-                                          (template.name, ""))
-                    atoms_by_name = Dict{String, Int}(template.atoms[m_i] => rgraph.atom_inds[r_i]
-                                                      for (r_i, m_i) in enumerate(matches))
-                    get!(Dict{Int, CHARMMResidueAtoms}, charmm_residue_atoms, chain)[res_id] =
-                        CHARMMResidueAtoms(res_name, patch, atoms_by_name)
-                end
             end
         end
     end
@@ -874,6 +854,16 @@ function System(coord_file::AbstractString,
             resnum_of[global_idx] = resnum_from_atom_idx(global_idx, atom_lookup)
         end
         add_virtual_sites!(virtual_sites, template, rgraph, matches)
+        if use_charmm_impropers
+            # The residue is identified by its first atom, since a residue matched as part of a
+            #   bonded pair does not carry the chain and residue number of the matching loop
+            chain, res_id = atom_lookup[first(rgraph.atom_inds)][1:2]
+            res_name, patch = get(force_field.patched_from, template.name, (template.name, ""))
+            atoms_by_name = Dict{String, Int}(template.atoms[m_i] => rgraph.atom_inds[r_i]
+                                              for (r_i, m_i) in enumerate(matches))
+            get!(Dict{Int, CHARMMResidueAtoms}, charmm_residue_atoms, chain)[res_id] =
+                CHARMMResidueAtoms(res_name, patch, atoms_by_name)
+        end
     end
     virtual_sites_type = (length(virtual_sites) > 0 ? virtual_sites : [])
 

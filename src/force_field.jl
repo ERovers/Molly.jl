@@ -562,8 +562,8 @@ end
 function read_ff_xml!(ff_file, ff_param_array, atom_types, atom_type_order, attributes_from_residue,
                       residues, residue_overrides, patches, two_residue_patches, bond_rule_specs,
                       angle_rule_specs, torsion_rule_specs, cmap_rules, custor_rule_specs,
-                      nb_atom_classes, ljforce_atom_classes, nbfix_pairs, urey_rule_specs, units,
-                      strictness, T, IC)
+                      nb_atom_classes, ljforce_atom_classes, nbfix_pairs, urey_rule_specs,
+                      charmm_impropers, units, strictness, T, IC)
     P = typeof(inv(oneunit(IC))) # Length type of a virtual site local position
     if !isfile(ff_file)
         throw(ArgumentError("force field XML file $ff_file does not exist"))
@@ -590,8 +590,8 @@ function read_ff_xml!(ff_file, ff_param_array, atom_types, atom_type_order, attr
                          attributes_from_residue, residues, residue_overrides, patches,
                          two_residue_patches, bond_rule_specs, angle_rule_specs,
                          torsion_rule_specs, cmap_rules, custor_rule_specs, nb_atom_classes,
-                         ljforce_atom_classes, nbfix_pairs, urey_rule_specs, units, strictness,
-                         T, IC)
+                         ljforce_atom_classes, nbfix_pairs, urey_rule_specs, charmm_impropers,
+                         units, strictness, T, IC)
 
         elseif entry_name == "AtomTypes"
             for atom_type in eachelement(entry)
@@ -1352,7 +1352,7 @@ function MolecularForceField(ff_files::AbstractString...; units::Bool=true,
                      residues, residue_overrides, patches, two_residue_patch_dict,
                      bond_rule_specs, angle_rule_specs, torsion_rule_specs, cmap_rules,
                      custor_rule_specs, nb_atom_classes, ljforce_atom_classes, nbfix_pairs,
-                     urey_rule_specs, units, strictness, T, IC)
+                     urey_rule_specs, charmm_impropers, units, strictness, T, IC)
     end
     torsion_order = ff_param_array[1]
     weight_14_coulomb = ff_param_array[2]
@@ -1437,7 +1437,12 @@ function MolecularForceField(ff_files::AbstractString...; units::Bool=true,
                 patched_res = apply_residue_patch(residues[name], res_patch,
                                     "$(name)_$(patch.pname)", name, patch.pname, atom_types,
                                     (name == res_name ? strictness : :nowarn))
-                isnothing(patched_res) || push!(patch.templates[ri], patched_res)
+                if !isnothing(patched_res)
+                    push!(patch.templates[ri], patched_res)
+                    # Recorded as for a single residue patch, so that tables keyed by residue
+                    #   and patch name, such as the CHARMM impropers, find the template
+                    patched_from[patched_res.name] = (name, patch.pname)
+                end
             end
         end
     end

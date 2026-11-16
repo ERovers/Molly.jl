@@ -232,12 +232,13 @@ const softcore_param_names = Dict((:beutler, :LJ) => (:α,), (:gapsys, :LJ) => (
                                   (:gapsys, :C) => (:α, :σQ), (:scaled, :C) => (),
                                   (:msld, :LJ) => (:r_soft,), (:msld, :C) => (:r_soft,))
 
-function check_softcores(lj_softcore, coulomb_softcore, lj_softcore_params=(;), coulomb_softcore_params=(;))
-    if !(lj_softcore in (:beutler, :gapsys, :scaled))
-        throw(ArgumentError("lj_softcore is $(repr(lj_softcore)), use :beutler, :gapsys or :scaled"))
-    end
-    if !(coulomb_softcore in (:beutler, :gapsys, :scaled))
-        throw(ArgumentError("coulomb_softcore is $(repr(coulomb_softcore)), use :beutler, :gapsys or :scaled"))
+function check_softcores(lj_softcore, coulomb_softcore, lj_softcore_params=(;),
+                         coulomb_softcore_params=(;))
+    for (name, softcore) in ((:lj_softcore, lj_softcore), (:coulomb_softcore, coulomb_softcore))
+        if !haskey(softcore_dic, softcore)
+            throw(ArgumentError("$name is $(repr(softcore)), use one of " *
+                                join(sort([repr(k) for k in keys(softcore_dic)]), ", ")))
+        end
     end
     for (side, softcore, params) in ((:LJ, lj_softcore, lj_softcore_params),
                                      (:C, coulomb_softcore, coulomb_softcore_params))

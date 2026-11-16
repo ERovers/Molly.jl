@@ -345,7 +345,7 @@ end
 @inline function inject_atoms_host(flat, plan)
     isempty(plan.ranges[1]) && return plan.atoms_host
     m, q, s, e, l = target_views(flat, plan, 1, Val(5))
-    return to_device(inject_atom.(plan.atoms_host, m, q, s, e, l), AT)
+    return inject_atom.(plan.atoms_host, m, q, s, e, l)
 end
 
 @inline function inject_atoms(sys, atoms_host, plan, ::Type{AT}) where {AT}
@@ -353,8 +353,8 @@ end
     return to_device(atoms_host, AT)
 end
 
-# Whether the dictionary sets the charge of any atom
-@inline injects_charges(plan::ParameterPlan) = !isempty(plan.ranges[2]) && any(!iszero, view(plan.slots, plan.ranges[2]))
+@inline injects_block(plan::ParameterPlan, i) =
+    !isempty(plan.ranges[i]) && any(!iszero, view(plan.slots, plan.ranges[i]))
 
 # Whether the dictionary sets the charge or λ of any atom, both of which change the
 #   λ-scaled charges that an interaction may cache
