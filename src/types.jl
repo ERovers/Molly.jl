@@ -30,6 +30,8 @@ export
     read_frame!
 
 @public pairwise_uses_velocity,
+    evaluate_before_pairwise,
+    concurrent_with_pairwise,
     from_device,
     to_device
 
@@ -50,6 +52,37 @@ An alias for NBodyInteraction{2}.
 Custom pairwise interactions should subtype this.
 """
 const PairwiseInteraction = NBodyInteraction{2}
+
+"""
+    evaluate_before_pairwise(inter)
+
+Whether a general interaction is evaluated before pairwise and specific interactions
+when calculating the potential energy and forces.
+
+This is `false` by default, meaning that general interactions are calculated afterwards.
+Custom general interactions should implement this function to return `true` if
+they change the state such that it affects subsequent interactions (e.g. atomic charges).
+
+On the GPU those calculated afterwards can instead be calculated at the same time as the
+pairwise and specific interactions, see [`Molly.concurrent_with_pairwise`](@ref).
+"""
+evaluate_before_pairwise(inter) = false
+
+"""
+    concurrent_with_pairwise(inter)
+
+Whether a general interaction that is not evaluated before the pairwise interactions, see
+[`Molly.evaluate_before_pairwise`](@ref), can be calculated at the same time as the pairwise
+and specific interactions on the GPU.
+
+This is `false` by default, meaning that the interaction is calculated after the forces of
+the pairwise and specific interactions have been added.
+Custom general interactions can implement this function to return `true` if they only add
+their forces, rather than reading the forces of other interactions or changing the state.
+They are then calculated on a separate stream while the pairwise force kernel runs, unless
+a general interaction before them in the list returns `false`.
+"""
+concurrent_with_pairwise(inter) = false
 
 """
     from_device(arr)
@@ -781,6 +814,14 @@ struct MolecularTopology
     atom_molecule_inds::Vector{Int32}
     molecule_atom_counts::Vector{Int32}
     bonded_atoms::Vector{Tuple{Int32, Int32}}
+    # Cache of the data used to move molecules as units on the GPU, see
+    #   `molecule_unwrap_plan`, filled when first needed
+    unwrap_cache::Base.RefValue{Any}
+end
+
+function MolecularTopology(atom_molecule_inds, molecule_atom_counts, bonded_atoms)
+    return MolecularTopology(atom_molecule_inds, molecule_atom_counts, bonded_atoms,
+                             Ref{Any}(nothing))
 end
 
 function bond_graph(bond_is, bond_js, n_atoms)
@@ -820,7 +861,21 @@ The first `n` entries of `list` are the `(i, j, special)` pairs, see
 mutable struct NeighborList{T}
     n::Int # Number of neighbors in list (n <= length(list))
     list::T
+    # Not used, but makes the object take more than 128 bytes. CellListMap.jl fills a
+    #   list for each task, which are allocated next to each other and have `n` changed
+    #   for every pair. When two of them shared a 128 byte block of memory, which the
+    #   cache of Intel CPUs fetches together, the cores slowed each other down.
+    padding::NTuple{15, Int}
+
+    function NeighborList{T}(n, list,
+                             padding::NTuple{15, Int}=ntuple(_ -> 0, Val(15))) where T
+        return new{T}(n, list, padding)
+    end
 end
+
+NeighborList(n, list::T, padding...) where {T} = NeighborList{T}(n, list, padding...)
+
+Base.show(io::IO, nl::NeighborList) = print(io, typeof(nl), "(", nl.n, ", ", nl.list, ")")
 
 NeighborList() = NeighborList{Vector{Tuple{Int32, Int32, Bool}}}(0, [])
 
@@ -1448,6 +1503,7 @@ function System(;
     end
 
     check_specific_inter_lists(specific_inter_lists, n_atoms, on_gpu)
+    check_reaction_field_parameters(pairwise_inters, specific_inter_lists)
     check_neighbor_finder(neighbor_finder, pairwise_inters, n_atoms, boundary, on_gpu, strictness)
     max_sqdist = max_zero_beyond(pairwise_inters)
     if !isnothing(max_sqdist) && !iszero(max_sqdist)

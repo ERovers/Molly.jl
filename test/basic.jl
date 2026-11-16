@@ -264,6 +264,52 @@
         @test wrap_coords(coord, b_skewed) ≈ expected
     end
 
+    # Negative off-diagonal components, for which wrapped coordinates can be negative
+    #   e.g. a truncated octahedron, given as basis vectors and as basis vector angles
+    d_to = 5.0
+    b_to = TriclinicBoundary(
+        SVector(d_to, 0.0, 0.0),
+        SVector(d_to / 3, 2 * sqrt(2) * d_to / 3, 0.0),
+        SVector(-d_to / 3, sqrt(2) * d_to / 3, sqrt(6) * d_to / 3),
+    )
+    θ_to = acos(-1 / 3)
+    b_to_angles = TriclinicBoundary(SVector(d_to, d_to, d_to), SVector(θ_to, θ_to, θ_to))
+    @test b_to_angles.basis_vectors[3][2] < 0
+    rng_to = Xoshiro(10)
+    for b_neg in (b_to, b_to_angles)
+        H_neg = Molly.box_matrix(b_neg)
+        @test all(1:1_000) do _
+            coord = (rand(rng_to, SVector{3, Float64}) .- 0.5) .* 30
+            wrapped = wrap_coords(coord, b_neg)
+            fractional = H_neg \ wrapped
+            shift = H_neg \ (coord - wrapped)
+            return all(f -> 0 <= f < 1, fractional) && isapprox(shift, round.(shift); atol=1e-8)
+        end
+    end
+    @test Molly.cubic_bounding_box_min(b_to) ≈ SVector(-d_to / 3, 0.0, 0.0)
+    @test Molly.cubic_bounding_box(b_to) ≈ SVector(4 * d_to / 3, sqrt(2) * d_to, sqrt(6) * d_to / 3)
+    lims_to = Molly.axis_limits(Molly.cubic_bounding_box(b_to), CoordinatesLogger(1), 1,
+                                Molly.cubic_bounding_box_min(b_to))
+    @test lims_to[1] ≈ -d_to / 3
+    @test lims_to[2] ≈ 4 * d_to / 3
+
+    # The box given to Chemfiles, which is used to write trajectories, has the same lengths
+    #   and angles and gives back the same basis vectors
+    for b_cf in (b, b_to_angles) # Units of nm, and no units which are taken as nm
+        cell_cf = Chemfiles.UnitCell(b_cf)
+        lengths_nm = [norm(ustrip.(bv)) for bv in b_cf.basis_vectors]
+        @test Chemfiles.lengths(cell_cf) ≈ 10 .* lengths_nm
+        @test Chemfiles.angles(cell_cf) ≈ rad2deg.([b_cf.α, b_cf.β, b_cf.γ])
+    end
+    b_cf_back = Molly.boundary_from_chemfiles(Chemfiles.UnitCell(b))
+    @test all(isapprox.(b_cf_back.basis_vectors, b.basis_vectors; atol=1e-6u"nm"))
+
+    # The minimum image setting is kept when the box is changed
+    b_exact_images = TriclinicBoundary(H_skewed; approx_images=false)
+    @test typeof(scale_boundary(b_exact_images, 1.1)) == typeof(b_exact_images)
+    @test typeof(Molly.rebuild_boundary(b_exact_images, 1.1 * H_skewed)) == typeof(b_exact_images)
+    @test typeof(ustrip(b_exact_images)) == typeof(b_exact_images)
+
     @test AtomsBase.cell_vectors(b) == (b.basis_vectors[1], b.basis_vectors[2], b.basis_vectors[3])
     @test volume(b) ≈ 3.89937463181886u"nm^3"
     @test isapprox(Molly.box_center(b), SVector(2.28944, 1.1359815, 0.5116602)u"nm"; atol=1e-6u"nm")
@@ -669,13 +715,24 @@ end
     @test ff_garnet.dispersion_correction == false
     @test ff_garnet.custom_nonbonded == true
     @test ff_garnet.global_params == [12.159626, 4.326311]
-    @test_throws ArgumentError System(
+    # The double exponential gets its own dispersion correction rather than the Lennard-Jones
+    #   one
+    sys_garnet_dc = System(
         joinpath(data_dir, "ethanol_garnet.pdb"),
-        ff_garnet;
+        MolecularForceField(
+            joinpath(ff_dir, "ethanol_garnet.xml");
+            custom_residue_templates=joinpath(ff_dir, "ethanol_garnet_residues.xml"),
+            units=false,
+        );
         units=false,
         dispersion_correction=true,
         strictness=:nowarn,
     )
+    dc_garnet = only(gi for gi in sys_garnet_dc.general_inters
+                     if gi isa DExpDispersionCorrection)
+    @test (dc_garnet.α, dc_garnet.β) == (12.159626, 4.326311)
+    @test !any(gi -> gi isa LJDispersionCorrection, sys_garnet_dc.general_inters)
+    @test potential_energy(sys_garnet_dc; pairwise_inters=(), specific_inter_lists=()) < 0
 
     ff_tip3p = MolecularForceField(joinpath(ff_dir, "tip3p_standard.xml"); units=false)
     @test ff_tip3p.custom_nonbonded == false
@@ -830,6 +887,36 @@ end
     end
     @test neighbors_dist == sort_nbs(neighbors.list)
 
+    # Boxes less than twice the cutoff, where CellListMap.jl can give a pair once for each
+    #   image within the cutoff, should still list each pair once
+    for boundary_small in (
+                CubicBoundary(1.5u"nm"),
+                TriclinicBoundary(
+                    SVector( 1.5,  0.0, 0.0)u"nm",
+                    SVector(-0.4,  1.5, 0.0)u"nm",
+                    SVector( 0.3, -0.5, 1.5)u"nm",
+                ),
+            )
+        n_atoms_small = 200
+        coords_small = place_atoms(n_atoms_small, boundary_small; min_dist=0.05u"nm")
+        dist_cutoff_small = 1.0u"nm"
+        nf_small = CellListMapNeighborFinder(n_atoms=n_atoms_small,
+                                             dist_cutoff=dist_cutoff_small,
+                                             boundary=boundary_small)
+        sys_small = System(atoms=fill(Atom(), n_atoms_small), coords=coords_small,
+                           boundary=boundary_small, neighbor_finder=nf_small)
+        neighbors_small_dist = Tuple{Int32, Int32, Bool}[]
+        for i in 1:n_atoms_small, j in (i + 1):n_atoms_small
+            if norm(vector(coords_small[i], coords_small[j], boundary_small)) <= dist_cutoff_small
+                push!(neighbors_small_dist, (Int32(i), Int32(j), false))
+            end
+        end
+        for n_threads in (1, Threads.nthreads())
+            neighbors_small = find_neighbors(sys_small; n_threads=n_threads)
+            @test sort_nbs(neighbors_small.list[1:neighbors_small.n]) == neighbors_small_dist
+        end
+    end
+
     # Test all neighbor finders agree for a larger system
     ff = MolecularForceField(joinpath.(ff_dir, ["ff99SBildn.xml", "tip3p_standard.xml"])...)
     dist_cutoff = 1.2u"nm"
@@ -983,8 +1070,11 @@ end
                     for i in 1:n_atoms
                 ], AT)
 
+                # The lists are reused on the schedule of n_steps, which some of the tests
+                #   rely on
                 finder = GPUCellListNeighborFinder(
                     dist_cutoff=cutoff,
+                    auto_update=false,
                     n_steps=10,
                     max_neighbors=max_neighbors,
                     output=output,
@@ -1286,7 +1376,7 @@ end
                 for (n_atoms, boundary) in (
                             (300, CubicBoundary(4.0f0)),
                             (400, CubicBoundary(SVector(4.5f0, 3.2f0, 6.1f0))),
-                            (200, CubicBoundary(3.0f0)),
+                            (200, CubicBoundary(3.0001f0)),
                             (300, TriclinicBoundary(SVector(
                                 SVector{3,Float32}(4.0, 0.0, 0.0),
                                 SVector{3,Float32}(0.4, 4.2, 0.0),
@@ -1328,7 +1418,8 @@ end
                     nf_ref = DistanceNeighborFinder(
                         eligible=to_device(eligible, AT),
                         special=to_device(special, AT),
-                        dist_cutoff=1.0f0,
+                        dist_cutoff=nextfloat(1.0f0 +
+                                             16 * eps(Float32) * opnorm(hcat(bv...), Inf)),
                     )
 
                     # Coordinates outside the box should give the same neighbors,
@@ -2521,6 +2612,23 @@ end
 
         AtomsCalculators.Testing.test_potential_energy(ab_sys, calc)
         AtomsCalculators.Testing.test_forces(ab_sys, calc)
+    end
+
+    # The allocating methods generated for a general interaction give forces like those of
+    #   the system, since the interaction has no units of its own
+    mb_sys = System(
+        atoms=[Atom(mass=1.0u"g/mol") for _ in 1:2],
+        coords=[SVector(-0.5, 1.5)u"nm", SVector(0.6, 0.0)u"nm"],
+        boundary=RectangularBoundary(Inf*u"nm"),
+        general_inters=(MullerBrown(),),
+    )
+    mb = only(mb_sys.general_inters)
+    fs_mb = forces(mb_sys)
+    for fs_ac in (AtomsCalculators.forces(mb_sys, mb),
+                  AtomsCalculators.calculate(AtomsCalculators.Forces(), mb_sys, mb).forces,
+                  AtomsCalculators.energy_forces(mb_sys, mb).forces)
+        @test typeof(fs_ac) == typeof(fs_mb)
+        @test all(isapprox.(fs_ac, fs_mb))
     end
 end
 
