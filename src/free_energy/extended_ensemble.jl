@@ -87,9 +87,28 @@ function check_thermo_states_history_inters(thermo_states, sim_name)
     return nothing
 end
 
-# n_states(space::ExtendedStateSpace)
-#
-# Return the number of thermodynamic states in an expanded ensemble.
+function ExtendedStateSpace(space::ExtendedStateSpace;
+                            partition=space.partition,
+                            thermo_states=space.thermo_states,
+                            systems=space.systems,
+                            integrators=space.integrators,
+                            state_pairwise_inters=space.state_pairwise_inters,
+                            state_specific_inter_lists=space.state_specific_inter_lists,
+                            state_general_inters=space.state_general_inters)
+    return ExtendedStateSpace(
+        partition,
+        thermo_states,
+        systems,
+        integrators,
+        space.betas,
+        space.pressures,
+        space.has_pressure,
+        state_pairwise_inters,
+        state_specific_inter_lists,
+        state_general_inters,
+    )
+end
+
 n_states(space::ExtendedStateSpace) = length(space.betas)
 
 # Only the interactions of the carrier are read, but the base system and the finder are still

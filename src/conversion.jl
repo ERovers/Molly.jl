@@ -118,7 +118,7 @@ function replace_fields(x::X, new_fields::NamedTuple) where X
 end
 
 # The fields of a struct whose type does not follow the float type of the system, such as a
-#   particle count kept in Float64: the default constructor requires that field's own type
+# particle count kept in Float64: the default constructor requires that field's own type
 unconverted_fields(::Type) = ()
 
 function convert_component(c::SystemConversion, at::Atom)
